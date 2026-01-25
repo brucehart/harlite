@@ -1,0 +1,10 @@
+[dependencies]
+clap = { version = "4", features = ["derive"] }  # CLI parsing
+serde = { version = "1", features = ["derive"] } # JSON deserialization
+serde_json = "1"                                  # HAR parsing
+rusqlite = { version = "0.31", features = ["bundled"] }  # SQLite
+url = "2"                                         # URL parsing
+chrono = { version = "0.4", features = ["serde"] }  # Timestamps
+thiserror = "1"                                   # Error handling
+indicatif = "0.17"                                # Progress bars (optional)
+blake3 = "1"  									  # Fast, modern hash

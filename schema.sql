@@ -1,0 +1,71 @@
+-- Content-addressable blob storage
+CREATE TABLE blobs (
+    hash TEXT PRIMARY KEY,
+    content BLOB NOT NULL,
+    size INTEGER NOT NULL,
+    mime_type TEXT
+);
+
+-- Import tracking
+CREATE TABLE imports (
+    id INTEGER PRIMARY KEY,
+    source_file TEXT NOT NULL,
+    imported_at TEXT NOT NULL,
+    entry_count INTEGER
+);
+
+-- Page information
+CREATE TABLE pages (
+    id TEXT PRIMARY KEY,
+    import_id INTEGER REFERENCES imports(id),
+    started_at TEXT,
+    title TEXT,
+    on_content_load_ms REAL,
+    on_load_ms REAL
+);
+
+-- Main entries table
+CREATE TABLE entries (
+    id INTEGER PRIMARY KEY,
+    import_id INTEGER REFERENCES imports(id),
+    page_id TEXT REFERENCES pages(id),
+    
+    -- Timing
+    started_at TEXT,
+    time_ms REAL,
+    
+    -- Request
+    method TEXT,
+    url TEXT,
+    host TEXT,
+    path TEXT,
+    query_string TEXT,
+    http_version TEXT,
+    request_headers TEXT,      -- JSON
+    request_cookies TEXT,      -- JSON
+    request_body_hash TEXT REFERENCES blobs(hash),
+    request_body_size INTEGER,
+    
+    -- Response  
+    status INTEGER,
+    status_text TEXT,
+    response_headers TEXT,     -- JSON
+    response_cookies TEXT,     -- JSON
+    response_body_hash TEXT REFERENCES blobs(hash),
+    response_body_size INTEGER,
+    response_mime_type TEXT,
+    
+    -- Metadata
+    is_redirect INTEGER,
+    server_ip TEXT,
+    connection_id TEXT
+);
+
+-- Indexes
+CREATE INDEX idx_entries_url ON entries(url);
+CREATE INDEX idx_entries_host ON entries(host);
+CREATE INDEX idx_entries_status ON entries(status);
+CREATE INDEX idx_entries_method ON entries(method);
+CREATE INDEX idx_entries_mime ON entries(response_mime_type);
+CREATE INDEX idx_entries_started ON entries(started_at);
+CREATE INDEX idx_entries_import ON entries(import_id);
