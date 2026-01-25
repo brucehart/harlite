@@ -31,16 +31,29 @@ Works great with AI coding agents like Codex and Claude — they already know SQ
 
 ## Installation
 
-```bash
-cargo install harlite
-```
+`harlite` is not published to crates.io yet, so install from source for now.
 
-Or build from source:
+### Build and run locally
 
 ```bash
 git clone https://github.com/brucehart/harlite
 cd harlite
+
+# Requires Rust/Cargo >= 1.85 (edition2024 deps + lockfile v4)
+# Recommended: use rustup to manage toolchains
+curl https://sh.rustup.rs -sSf | sh -s -- -y
+source "$HOME/.cargo/env"
+rustup update stable
+
+# Run without installing
+cargo run -- --help
+
+# Or install locally
+cargo install --path .
+
+# Or build a release binary
 cargo build --release
+./target/release/harlite --help
 ```
 
 ## Quick Start
@@ -442,4 +455,4 @@ Future possibilities (not yet implemented):
 
 ---
 
-*Created by Bruce Hart — because querying JSON with jq is suffering.*
+*Created by [Bruce Hart](https://bhart.org)
