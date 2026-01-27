@@ -207,6 +207,116 @@ fn test_info_command() {
 }
 
 #[test]
+fn test_query_csv_and_json() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args([
+            "query",
+            "SELECT host, status FROM entries ORDER BY id LIMIT 1",
+            "--format",
+            "csv",
+        ])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("host,status"))
+        .stdout(predicate::str::contains("api.example.com,200"));
+
+    harlite()
+        .args([
+            "query",
+            "SELECT host, status FROM entries ORDER BY id LIMIT 1",
+            "--format",
+            "json",
+        ])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"host\":\"api.example.com\""))
+        .stdout(predicate::str::contains("\"status\":200"));
+}
+
+#[test]
+fn test_query_default_db_detection() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .current_dir(tmp.path())
+        .args([
+            "query",
+            "SELECT COUNT(*) AS c FROM entries",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"c\":2"));
+}
+
+#[test]
+fn test_query_rejects_writes() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args(["query", "DELETE FROM entries", "--format", "csv"])
+        .arg(&db_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("read-only"));
+}
+
+#[test]
+fn test_query_limit_offset_wraps_query() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args([
+            "query",
+            "SELECT id FROM entries ORDER BY id",
+            "--format",
+            "json",
+            "--limit",
+            "1",
+            "--offset",
+            "1",
+        ])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"id\":2"))
+        .stdout(predicate::str::contains("\"id\":1").not());
+}
+
+#[test]
 fn test_text_only_filter() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("test.db");

@@ -30,6 +30,10 @@ pub enum HarliteError {
     /// Timestamp parsing error.
     #[error("Timestamp parsing error: {0}")]
     TimeParse(#[from] chrono::ParseError),
+
+    /// Invalid command-line arguments or options.
+    #[error("{0}")]
+    InvalidArgs(String),
 }
 
 /// Convenience result type for harlite operations.

@@ -1,0 +1,400 @@
+use std::fs;
+use std::io::{self, Write};
+use std::path::PathBuf;
+
+use clap::ValueEnum;
+use rusqlite::types::{Value, ValueRef};
+use rusqlite::{params_from_iter, Connection, OpenFlags};
+
+use crate::error::{HarliteError, Result};
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum OutputFormat {
+    Table,
+    Csv,
+    Json,
+}
+
+pub struct QueryOptions {
+    pub format: OutputFormat,
+    pub limit: Option<u64>,
+    pub offset: Option<u64>,
+    pub quiet: bool,
+}
+
+pub fn run_query(sql: String, database: Option<PathBuf>, options: &QueryOptions) -> Result<()> {
+    let trimmed = sql.trim().trim_end_matches(';').trim();
+    if trimmed.is_empty() {
+        return Err(HarliteError::InvalidArgs(
+            "SQL query cannot be empty".to_string(),
+        ));
+    }
+    let base = normalize_single_statement(trimmed)?;
+
+    let database = resolve_database(database)?;
+    let conn = Connection::open_with_flags(
+        &database,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+
+    // Defense in depth: even on a read-only handle, enforce query-only mode.
+    conn.execute_batch("PRAGMA query_only=ON;")?;
+
+    let (sql, params) = wrap_query(&base, options.limit, options.offset);
+    let mut stmt = conn.prepare(&sql)?;
+    if !stmt.readonly() {
+        return Err(HarliteError::InvalidArgs(
+            "Only read-only queries are allowed".to_string(),
+        ));
+    }
+
+    let columns: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    if columns.is_empty() {
+        return Err(HarliteError::InvalidArgs(
+            "Query returned no columns".to_string(),
+        ));
+    }
+
+    let mut rows = stmt.query(params_from_iter(params.iter()))?;
+
+    match options.format {
+        OutputFormat::Csv => write_csv(&columns, &mut rows),
+        OutputFormat::Json => write_json(&columns, &mut rows),
+        OutputFormat::Table => write_table(&columns, &mut rows, options.quiet),
+    }
+}
+
+fn resolve_database(database: Option<PathBuf>) -> Result<PathBuf> {
+    if let Some(db) = database {
+        return Ok(db);
+    }
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    for entry in fs::read_dir(".")? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|s| s.to_str()) != Some("db") {
+            continue;
+        }
+        candidates.push(path);
+    }
+
+    match candidates.len() {
+        1 => Ok(candidates.remove(0)),
+        0 => Err(HarliteError::InvalidArgs(
+            "No database specified and no .db files found in the current directory".to_string(),
+        )),
+        n => Err(HarliteError::InvalidArgs(format!(
+            "No database specified and found {} .db files in the current directory; please pass a database path",
+            n
+        ))),
+    }
+}
+
+fn wrap_query(sql: &str, limit: Option<u64>, offset: Option<u64>) -> (String, Vec<Value>) {
+    if limit.is_none() && offset.is_none() {
+        return (sql.to_string(), Vec::new());
+    }
+
+    let mut out = format!("SELECT * FROM ({})", sql);
+    let mut params: Vec<Value> = Vec::new();
+
+    match (limit, offset) {
+        (Some(lim), Some(off)) => {
+            out.push_str(" LIMIT ?1 OFFSET ?2");
+            params.push(Value::Integer(lim as i64));
+            params.push(Value::Integer(off as i64));
+        }
+        (Some(lim), None) => {
+            out.push_str(" LIMIT ?1");
+            params.push(Value::Integer(lim as i64));
+        }
+        (None, Some(off)) => {
+            out.push_str(" LIMIT -1 OFFSET ?1");
+            params.push(Value::Integer(off as i64));
+        }
+        (None, None) => {}
+    }
+
+    (out, params)
+}
+
+fn normalize_single_statement(sql: &str) -> Result<String> {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut prev = '\0';
+
+    let mut it = sql.chars().peekable();
+    while let Some(ch) = it.next() {
+        if in_line_comment {
+            if ch == '\n' {
+                in_line_comment = false;
+            }
+            prev = ch;
+            continue;
+        }
+
+        if in_block_comment {
+            if prev == '*' && ch == '/' {
+                in_block_comment = false;
+            }
+            prev = ch;
+            continue;
+        }
+
+        if in_single {
+            if ch == '\'' {
+                if it.peek() == Some(&'\'') {
+                    it.next();
+                } else {
+                    in_single = false;
+                }
+            }
+            prev = ch;
+            continue;
+        }
+
+        if in_double {
+            if ch == '"' {
+                if it.peek() == Some(&'"') {
+                    it.next();
+                } else {
+                    in_double = false;
+                }
+            }
+            prev = ch;
+            continue;
+        }
+
+        match ch {
+            '\'' => in_single = true,
+            '"' => in_double = true,
+            '-' if it.peek() == Some(&'-') => {
+                it.next();
+                in_line_comment = true;
+            }
+            '/' if it.peek() == Some(&'*') => {
+                it.next();
+                in_block_comment = true;
+            }
+            ';' => {
+                return Err(HarliteError::InvalidArgs(
+                    "Only a single SQL statement is allowed".to_string(),
+                ));
+            }
+            _ => {}
+        }
+
+        prev = ch;
+    }
+
+    Ok(sql.to_string())
+}
+
+fn write_csv(columns: &[String], rows: &mut rusqlite::Rows<'_>) -> Result<()> {
+    let mut out = io::stdout().lock();
+    write_csv_row(&mut out, columns.iter().map(|s| s.as_str()))?;
+
+    while let Some(row) = rows.next()? {
+        let values: Vec<String> = (0..columns.len())
+            .map(|i| Ok::<_, rusqlite::Error>(value_to_csv(row.get_ref(i)?)))
+            .collect::<std::result::Result<_, _>>()?;
+        write_csv_row(&mut out, values.iter().map(|s| s.as_str()))?;
+    }
+
+    Ok(())
+}
+
+fn write_csv_row<'a, I>(out: &mut impl Write, fields: I) -> Result<()>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut first = true;
+    for field in fields {
+        if !first {
+            out.write_all(b",")?;
+        }
+        first = false;
+        write_csv_field(out, field)?;
+    }
+    out.write_all(b"\n")?;
+    Ok(())
+}
+
+fn write_csv_field(out: &mut impl Write, field: &str) -> Result<()> {
+    let needs_quotes = field.contains([',', '"', '\n', '\r']);
+    if !needs_quotes {
+        out.write_all(field.as_bytes())?;
+        return Ok(());
+    }
+
+    out.write_all(b"\"")?;
+    for b in field.as_bytes() {
+        if *b == b'"' {
+            out.write_all(b"\"\"")?;
+        } else {
+            out.write_all(&[*b])?;
+        }
+    }
+    out.write_all(b"\"")?;
+    Ok(())
+}
+
+fn write_json(columns: &[String], rows: &mut rusqlite::Rows<'_>) -> Result<()> {
+    let mut out_rows: Vec<serde_json::Value> = Vec::new();
+
+    while let Some(row) = rows.next()? {
+        let mut obj = serde_json::Map::with_capacity(columns.len());
+        for (i, name) in columns.iter().enumerate() {
+            let val = value_to_json(row.get_ref(i)?);
+            obj.insert(name.clone(), val);
+        }
+        out_rows.push(serde_json::Value::Object(obj));
+    }
+
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    serde_json::to_writer(&mut handle, &out_rows)?;
+    handle.write_all(b"\n")?;
+    Ok(())
+}
+
+fn write_table(columns: &[String], rows: &mut rusqlite::Rows<'_>, quiet: bool) -> Result<()> {
+    let mut table_rows: Vec<Vec<String>> = Vec::new();
+    while let Some(row) = rows.next()? {
+        let mut out = Vec::with_capacity(columns.len());
+        for i in 0..columns.len() {
+            out.push(value_to_table(row.get_ref(i)?));
+        }
+        table_rows.push(out);
+    }
+
+    let mut widths: Vec<usize> = columns.iter().map(|c| c.len()).collect();
+    for r in &table_rows {
+        for (i, cell) in r.iter().enumerate() {
+            widths[i] = widths[i].max(cell.len());
+        }
+    }
+
+    let mut out = io::stdout().lock();
+
+    write_table_row(&mut out, columns.iter().map(|s| s.as_str()), &widths)?;
+    if !quiet {
+        write_table_sep(&mut out, &widths)?;
+    }
+    for r in &table_rows {
+        write_table_row(&mut out, r.iter().map(|s| s.as_str()), &widths)?;
+    }
+
+    Ok(())
+}
+
+fn write_table_row<'a, I>(out: &mut impl Write, fields: I, widths: &[usize]) -> Result<()>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut i = 0usize;
+    for field in fields {
+        if i > 0 {
+            out.write_all(b" | ")?;
+        }
+        let width = widths.get(i).copied().unwrap_or(0);
+        out.write_all(field.as_bytes())?;
+        if field.len() < width {
+            out.write_all(" ".repeat(width - field.len()).as_bytes())?;
+        }
+        i += 1;
+    }
+    out.write_all(b"\n")?;
+    Ok(())
+}
+
+fn write_table_sep(out: &mut impl Write, widths: &[usize]) -> Result<()> {
+    for (i, w) in widths.iter().copied().enumerate() {
+        if i > 0 {
+            out.write_all(b"-+-")?;
+        }
+        out.write_all("-".repeat(w).as_bytes())?;
+    }
+    out.write_all(b"\n")?;
+    Ok(())
+}
+
+fn value_to_csv(v: ValueRef<'_>) -> String {
+    match v {
+        ValueRef::Null => "".to_string(),
+        ValueRef::Integer(i) => i.to_string(),
+        ValueRef::Real(f) => f.to_string(),
+        ValueRef::Text(t) => String::from_utf8_lossy(t).to_string(),
+        ValueRef::Blob(b) => format!("<blob {} bytes>", b.len()),
+    }
+}
+
+fn value_to_json(v: ValueRef<'_>) -> serde_json::Value {
+    match v {
+        ValueRef::Null => serde_json::Value::Null,
+        ValueRef::Integer(i) => serde_json::Value::Number(i.into()),
+        ValueRef::Real(f) => serde_json::Number::from_f64(f)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        ValueRef::Text(t) => serde_json::Value::String(String::from_utf8_lossy(t).to_string()),
+        ValueRef::Blob(b) => {
+            use base64::{engine::general_purpose::STANDARD, Engine};
+            serde_json::json!({
+                "type": "blob",
+                "bytes": b.len(),
+                "base64": STANDARD.encode(b),
+            })
+        }
+    }
+}
+
+fn value_to_table(v: ValueRef<'_>) -> String {
+    const MAX_CELL: usize = 200;
+
+    match v {
+        ValueRef::Null => "NULL".to_string(),
+        ValueRef::Integer(i) => i.to_string(),
+        ValueRef::Real(f) => {
+            if f.is_finite() {
+                f.to_string()
+            } else {
+                "NULL".to_string()
+            }
+        }
+        ValueRef::Text(t) => sanitize_table_text(&String::from_utf8_lossy(t), MAX_CELL),
+        ValueRef::Blob(b) => format!("<blob {} bytes>", b.len()),
+    }
+}
+
+fn sanitize_table_text(s: &str, max: usize) -> String {
+    let s = s
+        .replace('\r', "\\r")
+        .replace('\n', "\\n")
+        .replace('\t', "\\t");
+    truncate(&s, max)
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    if max <= 3 {
+        return "...".to_string();
+    }
+    let mut end = 0usize;
+    for (i, ch) in s.char_indices() {
+        if i >= max - 3 {
+            break;
+        }
+        end = i + ch.len_utf8();
+    }
+    let mut out = s[..end].to_string();
+    out.push_str("...");
+    out
+}
