@@ -341,6 +341,116 @@ fn test_query_rejects_writes() {
 }
 
 #[test]
+fn test_redact_dry_run_does_not_modify() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/redact.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args(["redact", "--dry-run"])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Dry run: would redact"));
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+
+    let auth: String = conn
+        .query_row(
+            "SELECT json_extract(request_headers, '$.authorization') FROM entries",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(auth, "Bearer supersecret");
+
+    let cookie_value: String = conn
+        .query_row(
+            "SELECT json_extract(request_cookies, '$[0].value') FROM entries",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(cookie_value, "sess123");
+}
+
+#[test]
+fn test_redact_output_database_keeps_input_unchanged() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("src.db");
+    let out_db_path = tmp.path().join("redacted.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/redact.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args(["redact", "--output"])
+        .arg(&out_db_path)
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Redacted"));
+
+    assert!(out_db_path.exists());
+
+    let conn_in = rusqlite::Connection::open(&db_path).unwrap();
+    let conn_out = rusqlite::Connection::open(&out_db_path).unwrap();
+
+    let in_auth: String = conn_in
+        .query_row(
+            "SELECT json_extract(request_headers, '$.authorization') FROM entries",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(in_auth, "Bearer supersecret");
+
+    let out_auth: String = conn_out
+        .query_row(
+            "SELECT json_extract(request_headers, '$.authorization') FROM entries",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(out_auth, "REDACTED");
+
+    let out_set_cookie: String = conn_out
+        .query_row(
+            "SELECT json_extract(response_headers, '$.\"set-cookie\"') FROM entries",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(out_set_cookie, "REDACTED");
+
+    let out_cookie_value: String = conn_out
+        .query_row(
+            "SELECT json_extract(response_cookies, '$[0].value') FROM entries",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(out_cookie_value, "REDACTED");
+
+    let accept: String = conn_out
+        .query_row(
+            "SELECT json_extract(request_headers, '$.accept') FROM entries",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(accept, "application/json");
+}
+
+#[test]
 fn test_query_limit_offset_wraps_query() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("test.db");
