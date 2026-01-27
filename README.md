@@ -215,6 +215,8 @@ harlite redact traffic.db --no-defaults --match exact --header authorization --c
 # Wildcard / regex name matching
 harlite redact traffic.db --match wildcard --header '*token*'
 harlite redact traffic.db --match regex --header '^(authorization|x-api-key)$'
+```
+
 ### Query with harlite
 
 Run ad-hoc SQL against a harlite SQLite database and format the results:
