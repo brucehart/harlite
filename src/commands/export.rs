@@ -3,6 +3,7 @@ use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
+use chrono::SecondsFormat;
 use chrono::{DateTime, NaiveDate, Utc};
 use regex::Regex;
 use rusqlite::Connection;
@@ -99,7 +100,9 @@ fn parse_started_at_bound(s: &str, is_end: bool) -> Result<String> {
     }
 
     if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
-        return Ok(dt.with_timezone(&Utc).to_rfc3339());
+        return Ok(dt
+            .with_timezone(&Utc)
+            .to_rfc3339_opts(SecondsFormat::Millis, true));
     }
 
     let date = NaiveDate::parse_from_str(s, "%Y-%m-%d")?;
@@ -112,7 +115,7 @@ fn parse_started_at_bound(s: &str, is_end: bool) -> Result<String> {
             .and_then(|d| d.and_local_timezone(Utc).single())
             .ok_or_else(|| HarliteError::InvalidHar("Invalid start date".to_string()))?
     };
-    Ok(dt.to_rfc3339())
+    Ok(dt.to_rfc3339_opts(SecondsFormat::Millis, true))
 }
 
 fn headers_from_json(json: Option<&str>) -> Vec<Header> {

@@ -16,7 +16,7 @@ With `harlite`, import once and query with SQL:
 ```bash
 harlite import capture.har
 
-sqlite3 capture.db "SELECT url, status FROM entries WHERE status >= 400"
+harlite query "SELECT url, status FROM entries WHERE status >= 400"
 ```
 
 Works great with AI coding agents like Codex and Claude — they already know SQL.
@@ -59,6 +59,41 @@ cargo install --path .
 cargo build --release
 ./target/release/harlite --help
 ```
+## Features
+
+- **Fast imports** — Rust-native performance
+- **Smart deduplication** — Response bodies stored once using content-addressable hashing (BLAKE3)
+- **Flexible body storage** — Metadata-only by default, opt-in to store bodies
+- **Multi-file support** — Merge multiple HAR files into one database
+- **Queryable headers** — Headers stored as JSON, queryable with SQLite JSON functions
+- **Safe sharing** — Redact sensitive headers/cookies before sharing a database
+
+## Installation
+
+`harlite` is not published to crates.io yet, so install from source for now.
+
+### Build and run locally
+
+```bash
+git clone https://github.com/brucehart/harlite
+cd harlite
+
+# Requires Rust/Cargo >= 1.85 (edition2024 deps + lockfile v4)
+# Recommended: use rustup to manage toolchains
+curl https://sh.rustup.rs -sSf | sh -s -- -y
+source "$HOME/.cargo/env"
+rustup update stable
+
+# Run without installing
+cargo run -- --help
+
+# Or install locally
+cargo install --path .
+
+# Or build a release binary
+cargo build --release
+./target/release/harlite --help
+```
 
 ## Quick Start
 
@@ -69,8 +104,11 @@ harlite import browsing-session.har
 # Import multiple HAR files into one database
 harlite import day1.har day2.har day3.har -o traffic.db
 
-# Query with sqlite3
-sqlite3 traffic.db "SELECT method, url, status, time_ms FROM entries LIMIT 10"
+# Query with harlite
+harlite query "SELECT method, url, status, time_ms FROM entries LIMIT 10" traffic.db
+
+# Or query with sqlite3 / any SQLite tool
+# sqlite3 traffic.db "SELECT method, url, status, time_ms FROM entries LIMIT 10"
 
 # Or use any SQLite tool: DBeaver, datasette, Python, etc.
 ```
@@ -241,6 +279,25 @@ harlite redact traffic.db --no-defaults --match exact --header authorization --c
 # Wildcard / regex name matching
 harlite redact traffic.db --match wildcard --header '*token*'
 harlite redact traffic.db --match regex --header '^(authorization|x-api-key)$'
+```
+
+### Query with harlite
+
+Run ad-hoc SQL against a harlite SQLite database and format the results:
+
+```bash
+# Default output: table with headers
+harlite query "SELECT method, url, status FROM entries LIMIT 5" traffic.db
+
+# CSV / JSON output (includes headers / keys)
+harlite query "SELECT host, COUNT(*) AS n FROM entries GROUP BY host" traffic.db --format csv
+harlite query "SELECT host, COUNT(*) AS n FROM entries GROUP BY host" traffic.db --format json
+
+# Apply limit/offset without editing your SQL (wraps the query)
+harlite query "SELECT * FROM entries ORDER BY started_at" traffic.db --limit 100 --offset 200
+
+# If you omit the database path, harlite will use the only *.db in the current directory (if exactly one exists)
+harlite query "SELECT COUNT(*) AS entries FROM entries" --format json
 ```
 
 ## Database Schema
@@ -553,9 +610,9 @@ Contributions welcome! Please open an issue to discuss major changes before subm
 Future possibilities (not yet implemented):
 
 - [x] `harlite export` — Export SQLite back to HAR format
-- [ ] `harlite query` — Built-in query command with output formatting
+- [x] `harlite query` — Built-in query command with output formatting
 - [ ] `harlite stats` — Quick summary statistics without full info
-- [ ] `harlite redact` — Remove sensitive headers/cookies before sharing
+- [x] `harlite redact` — Remove sensitive headers/cookies before sharing
 - [ ] Response body decompression (gzip, brotli)
 - [ ] `--extract-bodies <dir>` — Store bodies as external files
 - [ ] Full-text search on response bodies
