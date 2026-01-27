@@ -609,15 +609,9 @@ Contributions welcome! Please open an issue to discuss major changes before subm
 
 Future possibilities (not yet implemented):
 
-- [x] `harlite export` — Export SQLite back to HAR format
-- [x] `harlite query` — Built-in query command with output formatting
-- [ ] `harlite stats` — Quick summary statistics without full info
-- [x] `harlite redact` — Remove sensitive headers/cookies before sharing
-- [ ] Response body decompression (gzip, brotli)
-- [ ] `--extract-bodies <dir>` — Store bodies as external files
-- [ ] Full-text search on response bodies
 - [ ] HAR 1.3 spec extensions
 
 ---
 
 *Created by [Bruce Hart](https://bhart.org)
+
