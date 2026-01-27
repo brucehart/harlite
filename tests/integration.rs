@@ -1034,3 +1034,113 @@ fn test_export_filter_by_source() {
         .success()
         .stdout(predicate::str::contains("Exported 1 entries"));
 }
+
+#[test]
+fn test_redact_no_defaults_with_regex_mode() {
+    // When using regex mode without --no-defaults, no patterns should be applied
+    // since defaults are wildcard patterns
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/redact.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    // With regex mode and no explicit patterns, should fail because defaults aren't applied
+    harlite()
+        .args(["redact", "--match", "regex"])
+        .arg(&db_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("No redaction patterns provided"));
+}
+
+#[test]
+fn test_redact_no_defaults_with_exact_mode() {
+    // When using exact mode without --no-defaults, no patterns should be applied
+    // since defaults are wildcard patterns
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/redact.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    // With exact mode and no explicit patterns, should fail because defaults aren't applied
+    harlite()
+        .args(["redact", "--match", "exact"])
+        .arg(&db_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("No redaction patterns provided"));
+}
+
+#[test]
+fn test_redact_defaults_with_wildcard_mode() {
+    // Wildcard mode (default) should apply defaults
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/redact.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    // With wildcard mode (default), defaults should be applied
+    harlite()
+        .args(["redact"])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Redacted"));
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+
+    // Verify authorization header was redacted
+    let auth: String = conn
+        .query_row(
+            "SELECT json_extract(request_headers, '$.authorization') FROM entries",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(auth, "REDACTED");
+}
+
+#[test]
+fn test_redact_with_explicit_regex_patterns() {
+    // Regex mode with explicit patterns should work
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/redact.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    // Use regex mode with explicit pattern
+    harlite()
+        .args(["redact", "--match", "regex", "--header", "^author.*"])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Redacted"));
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+
+    // Verify authorization header was redacted
+    let auth: String = conn
+        .query_row(
+            "SELECT json_extract(request_headers, '$.authorization') FROM entries",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(auth, "REDACTED");
+}
