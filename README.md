@@ -16,7 +16,7 @@ With `harlite`, import once and query with SQL:
 ```bash
 harlite import capture.har
 
-sqlite3 capture.db "SELECT url, status FROM entries WHERE status >= 400"
+harlite query "SELECT url, status FROM entries WHERE status >= 400"
 ```
 
 Works great with AI coding agents like Codex and Claude — they already know SQL.
@@ -65,8 +65,11 @@ harlite import browsing-session.har
 # Import multiple HAR files into one database
 harlite import day1.har day2.har day3.har -o traffic.db
 
-# Query with sqlite3
-sqlite3 traffic.db "SELECT method, url, status, time_ms FROM entries LIMIT 10"
+# Query with harlite
+harlite query "SELECT method, url, status, time_ms FROM entries LIMIT 10" traffic.db
+
+# Or query with sqlite3 / any SQLite tool
+# sqlite3 traffic.db "SELECT method, url, status, time_ms FROM entries LIMIT 10"
 
 # Or use any SQLite tool: DBeaver, datasette, Python, etc.
 ```
@@ -172,6 +175,25 @@ Common filters:
 Notes / gaps:
 - HAR `timings` are reconstructed from the stored total duration (`time_ms`), so the breakdown is best-effort.
 - Some HAR fields are not stored in the DB (e.g. `headersSize`, response `httpVersion`), so they may be omitted or approximated on export.
+
+### Query with harlite
+
+Run ad-hoc SQL against a harlite SQLite database and format the results:
+
+```bash
+# Default output: table with headers
+harlite query "SELECT method, url, status FROM entries LIMIT 5" traffic.db
+
+# CSV / JSON output (includes headers / keys)
+harlite query "SELECT host, COUNT(*) AS n FROM entries GROUP BY host" traffic.db --format csv
+harlite query "SELECT host, COUNT(*) AS n FROM entries GROUP BY host" traffic.db --format json
+
+# Apply limit/offset without editing your SQL (wraps the query)
+harlite query "SELECT * FROM entries ORDER BY started_at" traffic.db --limit 100 --offset 200
+
+# If you omit the database path, harlite will use the only *.db in the current directory (if exactly one exists)
+harlite query "SELECT COUNT(*) AS entries FROM entries" --format json
+```
 
 ## Database Schema
 
@@ -483,7 +505,7 @@ Contributions welcome! Please open an issue to discuss major changes before subm
 Future possibilities (not yet implemented):
 
 - [x] `harlite export` — Export SQLite back to HAR format
-- [ ] `harlite query` — Built-in query command with output formatting
+- [x] `harlite query` — Built-in query command with output formatting
 - [ ] `harlite stats` — Quick summary statistics without full info
 - [ ] `harlite redact` — Remove sensitive headers/cookies before sharing
 - [ ] Response body decompression (gzip, brotli)
