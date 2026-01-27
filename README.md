@@ -138,6 +138,24 @@ harlite info traffic.db
 #   Stored blobs: 156 (12.4 MB)
 ```
 
+### Database stats
+
+`harlite stats` is a faster, script-friendly alternative to `harlite info`.
+
+```bash
+harlite stats traffic.db
+# imports=3
+# entries=1247
+# date_min=2024-01-15
+# date_max=2024-01-17
+# unique_hosts=23
+# blobs=156
+# blob_bytes=13002342
+
+# JSON output
+harlite stats traffic.db --json
+```
+
 ### Export HAR files
 
 Export a `harlite` SQLite database back to HAR format (optionally with bodies if they were stored during import):

@@ -7,7 +7,8 @@ mod db;
 mod error;
 mod har;
 
-use commands::{run_export, run_import, run_info, run_query, run_schema};
+use commands::StatsOptions;
+use commands::{run_export, run_import, run_info, run_query, run_schema, run_stats};
 use commands::{ExportOptions, ImportOptions, OutputFormat, QueryOptions};
 
 #[derive(Parser)]
@@ -58,6 +59,16 @@ enum Commands {
     Info {
         /// Database file to inspect
         database: PathBuf,
+    },
+
+    /// Show lightweight database stats (script-friendly)
+    Stats {
+        /// Database file to inspect
+        database: PathBuf,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
 
     /// Export a SQLite database back to HAR format
@@ -213,6 +224,11 @@ fn main() {
         Commands::Schema { database } => run_schema(database),
 
         Commands::Info { database } => run_info(database),
+
+        Commands::Stats { database, json } => {
+            let options = StatsOptions { json };
+            run_stats(database, &options)
+        }
 
         Commands::Export {
             database,
