@@ -338,7 +338,9 @@ fn test_stats_command_with_null_entry_count() {
         .stdout(predicate::str::contains("entries=3"))
         .stdout(predicate::str::contains("date_min=2024-01-15"))
         .stdout(predicate::str::contains("date_max=2024-01-15"))
-        .stdout(predicate::str::contains("unique_hosts=2"));
+        .stdout(predicate::str::contains("unique_hosts=2"))
+        .stdout(predicate::str::contains("blobs=0"))
+        .stdout(predicate::str::contains("blob_bytes=0"));
 }
 
 #[test]
