@@ -20,6 +20,8 @@ blake3 = "1"
 indicatif = "0.17"
 base64 = "0.22"
 regex = "1"
+flate2 = "1"
+brotli = "3"
 
 [dev-dependencies]
 tempfile = "3"

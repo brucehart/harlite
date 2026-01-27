@@ -212,7 +212,10 @@ fn redact_cookies_json(
             continue;
         }
 
-        obj.insert("value".to_string(), serde_json::Value::String(token.to_string()));
+        obj.insert(
+            "value".to_string(),
+            serde_json::Value::String(token.to_string()),
+        );
         changed += 1;
         matched_names.insert(name);
     }
@@ -261,8 +264,12 @@ fn redact_entries(
         let mut new_resp_c = resp_c.clone();
 
         if let Some(json) = req_h.as_deref() {
-            let (out, n) =
-                redact_headers_json(json, header_matcher, token, &mut report.matched_header_names)?;
+            let (out, n) = redact_headers_json(
+                json,
+                header_matcher,
+                token,
+                &mut report.matched_header_names,
+            )?;
             if n > 0 {
                 new_req_h = Some(out);
                 report.request_headers += n;
@@ -270,8 +277,12 @@ fn redact_entries(
             }
         }
         if let Some(json) = resp_h.as_deref() {
-            let (out, n) =
-                redact_headers_json(json, header_matcher, token, &mut report.matched_header_names)?;
+            let (out, n) = redact_headers_json(
+                json,
+                header_matcher,
+                token,
+                &mut report.matched_header_names,
+            )?;
             if n > 0 {
                 new_resp_h = Some(out);
                 report.response_headers += n;
@@ -279,8 +290,12 @@ fn redact_entries(
             }
         }
         if let Some(json) = req_c.as_deref() {
-            let (out, n) =
-                redact_cookies_json(json, cookie_matcher, token, &mut report.matched_cookie_names)?;
+            let (out, n) = redact_cookies_json(
+                json,
+                cookie_matcher,
+                token,
+                &mut report.matched_cookie_names,
+            )?;
             if n > 0 {
                 new_req_c = Some(out);
                 report.request_cookies += n;
@@ -288,8 +303,12 @@ fn redact_entries(
             }
         }
         if let Some(json) = resp_c.as_deref() {
-            let (out, n) =
-                redact_cookies_json(json, cookie_matcher, token, &mut report.matched_cookie_names)?;
+            let (out, n) = redact_cookies_json(
+                json,
+                cookie_matcher,
+                token,
+                &mut report.matched_cookie_names,
+            )?;
             if n > 0 {
                 new_resp_c = Some(out);
                 report.response_cookies += n;
@@ -362,7 +381,13 @@ pub fn run_redact(database: Option<PathBuf>, options: &RedactOptions) -> Result<
     conn.execute_batch("PRAGMA foreign_keys=ON;")?;
 
     let report = if options.dry_run {
-        redact_entries(&conn, &header_matcher, &cookie_matcher, &options.token, false)?
+        redact_entries(
+            &conn,
+            &header_matcher,
+            &cookie_matcher,
+            &options.token,
+            false,
+        )?
     } else {
         let tx = conn.transaction()?;
         let report = redact_entries(&tx, &header_matcher, &cookie_matcher, &options.token, true)?;

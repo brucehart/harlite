@@ -1,6 +1,7 @@
 use assert_cmd::cargo::cargo_bin_cmd;
 use assert_cmd::Command;
 use predicates::prelude::*;
+use std::fs;
 use tempfile::TempDir;
 
 fn harlite() -> Command {
@@ -119,6 +120,94 @@ fn test_import_with_bodies() {
         .unwrap();
     let content_str = String::from_utf8(content).unwrap();
     assert!(content_str.contains("Alice"));
+}
+
+#[test]
+fn test_import_with_gzip_decompression() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    harlite()
+        .args([
+            "import",
+            "tests/fixtures/gzip_response.har",
+            "--bodies",
+            "--decompress-bodies",
+            "-o",
+        ])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+
+    let content: Vec<u8> = conn
+        .query_row(
+            "SELECT b.content FROM entries e JOIN blobs b ON e.response_body_hash = b.hash",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let content_str = String::from_utf8(content).unwrap();
+    assert_eq!(content_str, "Alice says hello (gzip).");
+}
+
+#[test]
+fn test_import_with_extracted_response_bodies() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+    let bodies_dir = tmp.path().join("bodies");
+
+    harlite()
+        .args([
+            "import",
+            "tests/fixtures/simple.har",
+            "--bodies",
+            "--extract-bodies",
+        ])
+        .arg(&bodies_dir)
+        .args(["--extract-bodies-kind", "response", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let (external_path, content_len, size): (String, i64, i64) = conn
+        .query_row(
+            "SELECT b.external_path, LENGTH(b.content), b.size FROM entries e JOIN blobs b ON e.response_body_hash = b.hash WHERE e.method = 'GET' LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+
+    assert!(!external_path.is_empty());
+    assert_eq!(content_len, 0);
+    assert!(size > 0);
+    assert!(std::path::Path::new(&external_path).exists());
+
+    let bytes = fs::read(&external_path).unwrap();
+    let text = String::from_utf8(bytes).unwrap();
+    assert!(text.contains("Alice"));
+}
+
+#[test]
+fn test_search_command() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "--bodies", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args(["search", "Alice"])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("api.example.com"))
+        .stdout(predicate::str::contains("Alice"));
 }
 
 #[test]

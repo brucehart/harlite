@@ -3,7 +3,8 @@ CREATE TABLE blobs (
     hash TEXT PRIMARY KEY,
     content BLOB NOT NULL,
     size INTEGER NOT NULL,
-    mime_type TEXT
+    mime_type TEXT,
+    external_path TEXT
 );
 
 -- Import tracking
@@ -53,6 +54,8 @@ CREATE TABLE entries (
     response_cookies TEXT,     -- JSON
     response_body_hash TEXT REFERENCES blobs(hash),
     response_body_size INTEGER,
+    response_body_hash_raw TEXT REFERENCES blobs(hash),
+    response_body_size_raw INTEGER,
     response_mime_type TEXT,
     
     -- Metadata
@@ -69,3 +72,7 @@ CREATE INDEX idx_entries_method ON entries(method);
 CREATE INDEX idx_entries_mime ON entries(response_mime_type);
 CREATE INDEX idx_entries_started ON entries(started_at);
 CREATE INDEX idx_entries_import ON entries(import_id);
+
+-- Full-text search over response bodies (text-only, deduped by blob hash)
+CREATE VIRTUAL TABLE response_body_fts
+USING fts5(hash UNINDEXED, body, tokenize = 'unicode61');

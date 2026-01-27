@@ -7,9 +7,15 @@ mod db;
 mod error;
 mod har;
 
+use crate::db::ExtractBodiesKind;
 use commands::StatsOptions;
-use commands::{run_export, run_import, run_info, run_query, run_redact, run_schema, run_stats};
-use commands::{ExportOptions, ImportOptions, NameMatchMode, OutputFormat, QueryOptions, RedactOptions};
+use commands::{
+    run_export, run_fts_rebuild, run_import, run_info, run_query, run_redact, run_schema,
+    run_search, run_stats,
+};
+use commands::{
+    ExportOptions, ImportOptions, NameMatchMode, OutputFormat, QueryOptions, RedactOptions,
+};
 
 #[derive(Parser)]
 #[command(name = "harlite")]
@@ -47,6 +53,26 @@ enum Commands {
         /// Show deduplication statistics after import
         #[arg(long)]
         stats: bool,
+
+        /// Decompress response bodies based on Content-Encoding (gzip, br)
+        #[arg(long)]
+        decompress_bodies: bool,
+
+        /// When decompressing, also store the original (compressed) response body
+        #[arg(long)]
+        keep_compressed: bool,
+
+        /// Write bodies to external files under DIR (stored by hash); implies --bodies
+        #[arg(long, value_name = "DIR")]
+        extract_bodies: Option<PathBuf>,
+
+        /// Which bodies to extract to files
+        #[arg(long, value_enum, default_value = "both")]
+        extract_bodies_kind: ExtractBodiesKind,
+
+        /// Optional sharding depth for extracted bodies (each level uses 2 hex chars of the hash)
+        #[arg(long, default_value_t = 0)]
+        extract_bodies_shard_depth: u8,
     },
 
     /// Print the database schema
@@ -216,6 +242,46 @@ enum Commands {
         #[arg(long)]
         quiet: bool,
     },
+
+    /// Search response bodies using SQLite full-text search (FTS5)
+    Search {
+        /// FTS query string (e.g., 'error NEAR/3 timeout')
+        #[arg(required = true)]
+        query: String,
+
+        /// Database file to search (default: the only *.db in the current directory)
+        database: Option<PathBuf>,
+
+        /// Output format
+        #[arg(short, long, value_enum, default_value = "table")]
+        format: OutputFormat,
+
+        /// Limit rows
+        #[arg(long)]
+        limit: Option<u64>,
+
+        /// Offset rows
+        #[arg(long)]
+        offset: Option<u64>,
+
+        /// Suppress extra output (for piping)
+        #[arg(long)]
+        quiet: bool,
+    },
+
+    /// Rebuild the response body FTS index for an existing database
+    FtsRebuild {
+        /// Database file to rebuild
+        database: PathBuf,
+
+        /// Tokenizer to use for the index
+        #[arg(long, value_enum, default_value = "unicode61")]
+        tokenizer: commands::FtsTokenizer,
+
+        /// Maximum body size to index (e.g., '1MB', '100KB', 'unlimited')
+        #[arg(long, default_value = "1MB")]
+        max_body_size: String,
+    },
 }
 
 fn parse_size(s: &str) -> Option<usize> {
@@ -248,6 +314,11 @@ fn main() {
             max_body_size,
             text_only,
             stats,
+            decompress_bodies,
+            keep_compressed,
+            extract_bodies,
+            extract_bodies_kind,
+            extract_bodies_shard_depth,
         } => {
             let options = ImportOptions {
                 output,
@@ -255,6 +326,11 @@ fn main() {
                 max_body_size: parse_size(&max_body_size),
                 text_only,
                 show_stats: stats,
+                decompress_bodies,
+                keep_compressed,
+                extract_bodies_dir: extract_bodies,
+                extract_bodies_kind,
+                extract_bodies_shard_depth,
             };
             run_import(&files, &options).map(|_| ())
         }
@@ -354,6 +430,29 @@ fn main() {
             };
             run_query(sql, database, &options)
         }
+
+        Commands::Search {
+            query,
+            database,
+            format,
+            limit,
+            offset,
+            quiet,
+        } => {
+            let options = QueryOptions {
+                format,
+                limit,
+                offset,
+                quiet,
+            };
+            run_search(query, database, &options)
+        }
+
+        Commands::FtsRebuild {
+            database,
+            tokenizer,
+            max_body_size,
+        } => run_fts_rebuild(database, tokenizer, parse_size(&max_body_size)),
     };
 
     if let Err(e) = result {
