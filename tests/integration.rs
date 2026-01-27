@@ -207,6 +207,59 @@ fn test_info_command() {
 }
 
 #[test]
+fn test_stats_command_key_value() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .arg("stats")
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("imports=1"))
+        .stdout(predicate::str::contains("entries=2"))
+        .stdout(predicate::str::contains("date_min=2024-01-15"))
+        .stdout(predicate::str::contains("date_max=2024-01-15"))
+        .stdout(predicate::str::contains("unique_hosts=1"))
+        .stdout(predicate::str::contains("blobs=0"))
+        .stdout(predicate::str::contains("blob_bytes=0"));
+}
+
+#[test]
+fn test_stats_command_json() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let output = harlite()
+        .args(["stats", "--json"])
+        .arg(&db_path)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(v["imports"], 1);
+    assert_eq!(v["entries"], 2);
+    assert_eq!(v["date_min"], "2024-01-15");
+    assert_eq!(v["date_max"], "2024-01-15");
+    assert_eq!(v["unique_hosts"], 1);
+    assert_eq!(v["blobs"], 0);
+    assert_eq!(v["blob_bytes"], 0);
+}
+
+#[test]
 fn test_query_csv_and_json() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("test.db");
