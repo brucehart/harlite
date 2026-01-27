@@ -214,7 +214,7 @@ fn redact_cookies_json(
 
         obj.insert("value".to_string(), serde_json::Value::String(token.to_string()));
         changed += 1;
-        matched_names.insert(name.to_lowercase());
+        matched_names.insert(name);
     }
 
     if changed == 0 {
