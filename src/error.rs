@@ -22,6 +22,14 @@ pub enum HarliteError {
     /// URL parsing error for malformed URLs.
     #[error("URL parsing error: {0}")]
     UrlParse(#[from] url::ParseError),
+
+    /// Regex compilation error.
+    #[error("Regex error: {0}")]
+    Regex(#[from] regex::Error),
+
+    /// Timestamp parsing error.
+    #[error("Timestamp parsing error: {0}")]
+    TimeParse(#[from] chrono::ParseError),
 }
 
 /// Convenience result type for harlite operations.

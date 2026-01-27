@@ -281,3 +281,164 @@ fn test_headers_as_json() {
         .unwrap();
     assert_eq!(accept, "application/json");
 }
+
+#[test]
+fn test_export_roundtrip_with_bodies() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("src.db");
+    let har_path = tmp.path().join("export.har");
+    let roundtrip_db_path = tmp.path().join("roundtrip.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "--bodies", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args(["export"])
+        .arg(&db_path)
+        .args(["--bodies", "-o"])
+        .arg(&har_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Exported 2 entries"));
+
+    assert!(har_path.exists());
+
+    harlite()
+        .args(["import", "--bodies"])
+        .arg(&har_path)
+        .args(["-o"])
+        .arg(&roundtrip_db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Imported 2 entries"));
+
+    let conn = rusqlite::Connection::open(&roundtrip_db_path).unwrap();
+    let entry_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(entry_count, 2);
+
+    let blob_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM blobs", [], |r| r.get(0))
+        .unwrap();
+    assert!(blob_count > 0);
+}
+
+#[test]
+fn test_export_filters() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("src.db");
+    let har_path = tmp.path().join("filtered.har");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args(["export"])
+        .arg(&db_path)
+        .args(["--method", "GET", "-o"])
+        .arg(&har_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Exported 1 entries"));
+
+    let exported: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(&har_path).unwrap()).unwrap();
+    let entries = exported
+        .get("log")
+        .and_then(|l| l.get("entries"))
+        .and_then(|e| e.as_array())
+        .unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0]
+            .get("request")
+            .and_then(|r| r.get("method"))
+            .and_then(|m| m.as_str())
+            .unwrap(),
+        "GET"
+    );
+}
+
+#[test]
+fn test_export_pages_namespaced_for_multi_import() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("src.db");
+    let har_path = tmp.path().join("export.har");
+
+    harlite()
+        .args([
+            "import",
+            "tests/fixtures/simple.har",
+            "tests/fixtures/with_pages.har",
+            "-o",
+        ])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args(["export"])
+        .arg(&db_path)
+        .args(["-o"])
+        .arg(&har_path)
+        .assert()
+        .success();
+
+    let exported: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(&har_path).unwrap()).unwrap();
+
+    let pages = exported
+        .get("log")
+        .and_then(|l| l.get("pages"))
+        .and_then(|p| p.as_array())
+        .unwrap();
+    assert!(!pages.is_empty());
+
+    let page_id = pages[0].get("id").and_then(|v| v.as_str()).unwrap();
+    assert!(page_id.contains(':'));
+
+    let entries = exported
+        .get("log")
+        .and_then(|l| l.get("entries"))
+        .and_then(|e| e.as_array())
+        .unwrap();
+    let pageref = entries
+        .iter()
+        .find_map(|e| e.get("pageref").and_then(|v| v.as_str()))
+        .unwrap();
+    assert_eq!(pageref, page_id);
+}
+
+#[test]
+fn test_export_filter_by_source() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("src.db");
+    let har_path = tmp.path().join("filtered.har");
+
+    harlite()
+        .args([
+            "import",
+            "tests/fixtures/simple.har",
+            "tests/fixtures/with_pages.har",
+            "-o",
+        ])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args(["export"])
+        .arg(&db_path)
+        .args(["--source", "with_pages.har", "-o"])
+        .arg(&har_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Exported 1 entries"));
+}

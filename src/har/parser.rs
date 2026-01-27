@@ -7,12 +7,12 @@ use std::path::Path;
 
 use crate::error::Result;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Har {
     pub log: Log,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Log {
     pub version: Option<String>,
     pub creator: Option<Creator>,
@@ -21,19 +21,19 @@ pub struct Log {
     pub entries: Vec<Entry>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Creator {
     pub name: String,
     pub version: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Browser {
     pub name: String,
     pub version: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Page {
     pub started_date_time: String,
@@ -42,14 +42,14 @@ pub struct Page {
     pub page_timings: Option<PageTimings>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PageTimings {
     pub on_content_load: Option<f64>,
     pub on_load: Option<f64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Entry {
     pub pageref: Option<String>,
@@ -59,11 +59,12 @@ pub struct Entry {
     pub response: Response,
     pub cache: Option<serde_json::Value>,
     pub timings: Option<Timings>,
+    #[serde(rename = "serverIPAddress", alias = "serverIpAddress")]
     pub server_ip_address: Option<String>,
     pub connection: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Request {
     pub method: String,
@@ -77,7 +78,7 @@ pub struct Request {
     pub body_size: Option<i64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Response {
     pub status: i32,
@@ -86,12 +87,13 @@ pub struct Response {
     pub cookies: Option<Vec<Cookie>>,
     pub headers: Vec<Header>,
     pub content: Content,
+    #[serde(rename = "redirectURL", alias = "redirectUrl")]
     pub redirect_url: Option<String>,
     pub headers_size: Option<i64>,
     pub body_size: Option<i64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Content {
     pub size: i64,
@@ -101,7 +103,7 @@ pub struct Content {
     pub encoding: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Header {
     pub name: String,
     pub value: String,
@@ -119,13 +121,13 @@ pub struct Cookie {
     pub secure: Option<bool>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct QueryParam {
     pub name: String,
     pub value: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PostData {
     pub mime_type: Option<String>,
@@ -133,7 +135,7 @@ pub struct PostData {
     pub params: Option<Vec<PostParam>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PostParam {
     pub name: String,
@@ -142,7 +144,7 @@ pub struct PostParam {
     pub content_type: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Timings {
     pub blocked: Option<f64>,
     pub dns: Option<f64>,
