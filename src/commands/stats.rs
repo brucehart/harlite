@@ -60,13 +60,13 @@ pub fn run_stats(database: PathBuf, options: &StatsOptions) -> Result<()> {
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
 
-    let extract_date = |s: String| s.split('T').next().unwrap_or(&s).to_string();
+    let extract_date = |s: &String| s.split('T').next().unwrap_or(s).to_string();
 
     let out = StatsOutput {
         imports: import_count,
         entries: entry_count,
-        date_min: date_range.0.map(extract_date),
-        date_max: date_range.1.map(extract_date),
+        date_min: date_range.0.as_ref().map(extract_date),
+        date_max: date_range.1.as_ref().map(extract_date),
         unique_hosts: host_count,
         blobs: blob_stats.0,
         blob_bytes: blob_stats.1,
