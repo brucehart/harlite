@@ -336,7 +336,8 @@ pub fn run_redact(database: Option<PathBuf>, options: &RedactOptions) -> Result<
 
     let mut header_patterns: Vec<String> = Vec::new();
     let mut cookie_patterns: Vec<String> = Vec::new();
-    if !options.no_defaults {
+    // Only apply defaults when using wildcard mode, since defaults are wildcard patterns
+    if !options.no_defaults && matches!(options.match_mode, NameMatchMode::Wildcard) {
         header_patterns.extend(default_header_patterns());
         cookie_patterns.extend(default_cookie_patterns());
     }
@@ -347,8 +348,13 @@ pub fn run_redact(database: Option<PathBuf>, options: &RedactOptions) -> Result<
     let cookie_matcher = NameMatcher::new(options.match_mode, &cookie_patterns)?;
 
     if header_matcher.is_empty() && cookie_matcher.is_empty() {
+        let hint = if !matches!(options.match_mode, NameMatchMode::Wildcard) {
+            " (defaults only available in wildcard mode)"
+        } else {
+            ""
+        };
         return Err(HarliteError::InvalidArgs(
-            "No redaction patterns provided (and defaults disabled)".to_string(),
+            format!("No redaction patterns provided{}", hint),
         ));
     }
 
