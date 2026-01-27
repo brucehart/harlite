@@ -78,7 +78,6 @@ pub fn run_fts_rebuild(
     let mut seen: HashSet<String> = HashSet::new();
     hashes.retain(|h| seen.insert(h.clone()));
 
-    let max_bytes = max_body_size.unwrap_or(1024 * 1024);
     let tx = conn.unchecked_transaction()?;
 
     let mut indexed = 0usize;
@@ -92,7 +91,7 @@ pub fn run_fts_rebuild(
             if blob.content.is_empty() {
                 continue;
             }
-            if blob.content.len() > max_bytes {
+            if max_body_size.is_some_and(|max| blob.content.len() > max) {
                 continue;
             }
             if blob.mime_type.is_some() && !is_text_mime_type(blob.mime_type.as_deref()) {
