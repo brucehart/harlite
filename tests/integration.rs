@@ -260,6 +260,90 @@ fn test_stats_command_json() {
 }
 
 #[test]
+fn test_stats_command_with_null_entry_count() {
+    // This test verifies the fallback path where entry_count is NULL,
+    // simulating databases created by other tools or older versions.
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    // Create database and schema manually (including blobs table required by stats)
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS blobs (
+            hash TEXT PRIMARY KEY,
+            content BLOB NOT NULL,
+            size INTEGER NOT NULL,
+            mime_type TEXT
+        );
+        CREATE TABLE IF NOT EXISTS imports (
+            id INTEGER PRIMARY KEY,
+            source_file TEXT NOT NULL,
+            imported_at TEXT NOT NULL,
+            entry_count INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS entries (
+            id INTEGER PRIMARY KEY,
+            import_id INTEGER REFERENCES imports(id),
+            started_at TEXT,
+            host TEXT,
+            method TEXT,
+            url TEXT
+        );
+        "#,
+    )
+    .unwrap();
+
+    // Insert an import with entry_count explicitly set to NULL
+    conn.execute(
+        "INSERT INTO imports (id, source_file, imported_at, entry_count) VALUES (1, 'manual.har', '2024-01-15T10:00:00Z', NULL)",
+        [],
+    )
+    .unwrap();
+
+    // Insert entries manually
+    conn.execute(
+        "INSERT INTO entries (import_id, started_at, host, method, url) VALUES (1, '2024-01-15T10:00:00Z', 'example.com', 'GET', 'https://example.com/page1')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO entries (import_id, started_at, host, method, url) VALUES (1, '2024-01-15T10:01:00Z', 'example.com', 'GET', 'https://example.com/page2')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO entries (import_id, started_at, host, method, url) VALUES (1, '2024-01-15T10:02:00Z', 'other.com', 'POST', 'https://other.com/api')",
+        [],
+    )
+    .unwrap();
+
+    // Verify entry_count is NULL
+    let entry_count_value: Option<i64> = conn
+        .query_row("SELECT entry_count FROM imports WHERE id = 1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(entry_count_value, None, "entry_count should be NULL");
+
+    drop(conn);
+
+    // Run stats command and verify it correctly counts entries using the fallback path
+    harlite()
+        .arg("stats")
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("imports=1"))
+        .stdout(predicate::str::contains("entries=3"))
+        .stdout(predicate::str::contains("date_min=2024-01-15"))
+        .stdout(predicate::str::contains("date_max=2024-01-15"))
+        .stdout(predicate::str::contains("unique_hosts=2"))
+        .stdout(predicate::str::contains("blobs=0"))
+        .stdout(predicate::str::contains("blob_bytes=0"));
+}
+
+#[test]
 fn test_query_csv_and_json() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("test.db");
@@ -480,6 +564,72 @@ fn test_query_limit_offset_wraps_query() {
 }
 
 #[test]
+fn test_query_table_null_large_and_quiet() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args([
+            "query",
+            "SELECT NULL AS n, replace(printf('%250s',''), ' ', 'a') AS big",
+            "--format",
+            "table",
+        ])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("NULL"))
+        .stdout(predicate::str::contains("..."));
+
+    harlite()
+        .args([
+            "query",
+            "SELECT host, status FROM entries ORDER BY id LIMIT 1",
+            "--format",
+            "table",
+            "--quiet",
+        ])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("-+-").not());
+}
+
+#[test]
+fn test_query_invalid_sql_and_multiple_statements_fail() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args(["query", "SELCT 1", "--format", "csv"])
+        .arg(&db_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("syntax"));
+
+    harlite()
+        .args(["query", "SELECT 1; SELECT 2", "--format", "csv"])
+        .arg(&db_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Only a single SQL statement is allowed",
+        ));
+}
+
+#[test]
 fn test_text_only_filter() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("test.db");
@@ -598,6 +748,116 @@ fn test_export_roundtrip_with_bodies() {
         .query_row("SELECT COUNT(*) FROM blobs", [], |r| r.get(0))
         .unwrap();
     assert!(blob_count > 0);
+}
+
+#[test]
+fn test_export_without_bodies_does_not_include_text() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("src.db");
+    let har_path = tmp.path().join("export.har");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "--bodies", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args(["export"])
+        .arg(&db_path)
+        .args(["-o"])
+        .arg(&har_path)
+        .assert()
+        .success();
+
+    let exported: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(&har_path).unwrap()).unwrap();
+
+    let entry0 = &exported["log"]["entries"][0];
+    assert!(entry0["response"]["content"]["text"].is_null());
+    assert!(entry0["request"]["postData"]["text"].is_null());
+}
+
+#[test]
+fn test_export_preserves_ordering_by_started_at() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("src.db");
+    let har_path = tmp.path().join("export.har");
+
+    harlite()
+        .args(["import", "tests/fixtures/out_of_order.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args(["export"])
+        .arg(&db_path)
+        .args(["-o"])
+        .arg(&har_path)
+        .assert()
+        .success();
+
+    let exported: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(&har_path).unwrap()).unwrap();
+    let entries = exported["log"]["entries"].as_array().unwrap();
+
+    let first = entries[0]["startedDateTime"].as_str().unwrap();
+    let second = entries[1]["startedDateTime"].as_str().unwrap();
+    assert!(first < second);
+    assert!(entries[0]["request"]["url"]
+        .as_str()
+        .unwrap()
+        .ends_with("/first"));
+}
+
+#[test]
+fn test_export_time_range_filters() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("src.db");
+    let har_path = tmp.path().join("export.har");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args(["export"])
+        .arg(&db_path)
+        .args(["--from", "2024-01-15T10:30:01.000Z", "-o"])
+        .arg(&har_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Exported 1 entries"));
+
+    let exported: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(&har_path).unwrap()).unwrap();
+    let entries = exported["log"]["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0]["startedDateTime"].as_str().unwrap(),
+        "2024-01-15T10:30:01.000Z"
+    );
+
+    harlite()
+        .args(["export"])
+        .arg(&db_path)
+        .args(["--to", "2024-01-15T10:30:00.000Z", "-o"])
+        .arg(&har_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Exported 1 entries"));
+
+    let exported: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(&har_path).unwrap()).unwrap();
+    let entries = exported["log"]["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0]["startedDateTime"].as_str().unwrap(),
+        "2024-01-15T10:30:00.000Z"
+    );
 }
 
 #[test]
