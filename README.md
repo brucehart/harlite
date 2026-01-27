@@ -135,6 +135,44 @@ harlite info traffic.db
 #   Stored blobs: 156 (12.4 MB)
 ```
 
+### Export HAR files
+
+Export a `harlite` SQLite database back to HAR format (optionally with bodies if they were stored during import):
+
+```bash
+# Export all entries (pretty-printed by default)
+harlite export traffic.db -o traffic.har
+
+# Export to stdout
+harlite export traffic.db -o -
+
+# Include stored request/response bodies (if present in the DB)
+harlite export traffic.db --bodies -o traffic-with-bodies.har
+
+# Compact JSON
+harlite export traffic.db --compact -o traffic.min.har
+
+# Filter examples
+harlite export traffic.db --host api.example.com --status 200 --method GET -o api-get-200.har
+harlite export traffic.db --url-regex 'example\\.com/(api|v1)/' -o filtered.har
+harlite export traffic.db --from 2024-01-15 --to 2024-01-16 -o day1.har
+harlite export traffic.db --ext js,css -o assets.har
+harlite export traffic.db --source session1.har --source-contains chrome -o sources.har
+harlite export traffic.db --mime json --min-response-size 1KB --max-response-size 200KB -o api-responses.har
+```
+
+Common filters:
+- `--url`, `--url-contains`, `--url-regex`
+- `--host`, `--method`, `--status`
+- `--mime` (substring match), `--ext` (file extension)
+- `--from` / `--to` (RFC3339 timestamp or `YYYY-MM-DD`)
+- `--min-request-size` / `--max-request-size`, `--min-response-size` / `--max-response-size`
+- `--source` / `--source-contains` (filters by `imports.source_file`)
+
+Notes / gaps:
+- HAR `timings` are reconstructed from the stored total duration (`time_ms`), so the breakdown is best-effort.
+- Some HAR fields are not stored in the DB (e.g. `headersSize`, response `httpVersion`), so they may be omitted or approximated on export.
+
 ## Database Schema
 
 ### `entries` table
@@ -444,7 +482,7 @@ Contributions welcome! Please open an issue to discuss major changes before subm
 
 Future possibilities (not yet implemented):
 
-- [ ] `harlite export` — Export SQLite back to HAR format
+- [x] `harlite export` — Export SQLite back to HAR format
 - [ ] `harlite query` — Built-in query command with output formatting
 - [ ] `harlite stats` — Quick summary statistics without full info
 - [ ] `harlite redact` — Remove sensitive headers/cookies before sharing
