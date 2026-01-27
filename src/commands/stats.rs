@@ -49,7 +49,7 @@ pub fn run_stats(database: PathBuf, options: &StatsOptions) -> Result<()> {
     )?;
 
     let host_count: i64 = conn.query_row(
-        "SELECT COUNT(DISTINCT host) FROM entries WHERE host IS NOT NULL AND host != ''",
+        "SELECT COUNT(DISTINCT host) FROM entries WHERE host IS NOT NULL",
         [],
         |row| row.get(0),
     )?;
