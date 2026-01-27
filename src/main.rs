@@ -7,8 +7,8 @@ mod db;
 mod error;
 mod har;
 
-use commands::{run_export, ExportOptions};
-use commands::{run_import, run_info, run_schema, ImportOptions};
+use commands::{run_export, run_import, run_info, run_query, run_schema};
+use commands::{ExportOptions, ImportOptions, OutputFormat, QueryOptions};
 
 #[derive(Parser)]
 #[command(name = "harlite")]
@@ -141,6 +141,32 @@ enum Commands {
         #[arg(long)]
         max_response_size: Option<String>,
     },
+
+    /// Run a SQL query against a harlite SQLite database
+    Query {
+        /// SQL string to execute (read-only)
+        #[arg(required = true)]
+        sql: String,
+
+        /// Database file to query (default: the only *.db in the current directory)
+        database: Option<PathBuf>,
+
+        /// Output format
+        #[arg(short, long, value_enum, default_value = "table")]
+        format: OutputFormat,
+
+        /// Limit rows (wraps the query)
+        #[arg(long)]
+        limit: Option<u64>,
+
+        /// Offset rows (wraps the query)
+        #[arg(long)]
+        offset: Option<u64>,
+
+        /// Suppress extra output (for piping)
+        #[arg(long)]
+        quiet: bool,
+    },
 }
 
 fn parse_size(s: &str) -> Option<usize> {
@@ -232,6 +258,23 @@ fn main() {
                 max_response_size,
             };
             run_export(database, &options)
+        }
+
+        Commands::Query {
+            sql,
+            database,
+            format,
+            limit,
+            offset,
+            quiet,
+        } => {
+            let options = QueryOptions {
+                format,
+                limit,
+                offset,
+                quiet,
+            };
+            run_query(sql, database, &options)
         }
     };
 
