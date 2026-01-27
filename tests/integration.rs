@@ -260,6 +260,88 @@ fn test_stats_command_json() {
 }
 
 #[test]
+fn test_stats_command_with_null_entry_count() {
+    // This test verifies the fallback path where entry_count is NULL,
+    // simulating databases created by other tools or older versions.
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    // Create database and schema manually (including blobs table required by stats)
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS blobs (
+            hash TEXT PRIMARY KEY,
+            content BLOB NOT NULL,
+            size INTEGER NOT NULL,
+            mime_type TEXT
+        );
+        CREATE TABLE IF NOT EXISTS imports (
+            id INTEGER PRIMARY KEY,
+            source_file TEXT NOT NULL,
+            imported_at TEXT NOT NULL,
+            entry_count INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS entries (
+            id INTEGER PRIMARY KEY,
+            import_id INTEGER REFERENCES imports(id),
+            started_at TEXT,
+            host TEXT,
+            method TEXT,
+            url TEXT
+        );
+        "#,
+    )
+    .unwrap();
+
+    // Insert an import with entry_count explicitly set to NULL
+    conn.execute(
+        "INSERT INTO imports (id, source_file, imported_at, entry_count) VALUES (1, 'manual.har', '2024-01-15T10:00:00Z', NULL)",
+        [],
+    )
+    .unwrap();
+
+    // Insert entries manually
+    conn.execute(
+        "INSERT INTO entries (import_id, started_at, host, method, url) VALUES (1, '2024-01-15T10:00:00Z', 'example.com', 'GET', 'https://example.com/page1')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO entries (import_id, started_at, host, method, url) VALUES (1, '2024-01-15T10:01:00Z', 'example.com', 'GET', 'https://example.com/page2')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO entries (import_id, started_at, host, method, url) VALUES (1, '2024-01-15T10:02:00Z', 'other.com', 'POST', 'https://other.com/api')",
+        [],
+    )
+    .unwrap();
+
+    // Verify entry_count is NULL
+    let entry_count_value: Option<i64> = conn
+        .query_row("SELECT entry_count FROM imports WHERE id = 1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(entry_count_value, None, "entry_count should be NULL");
+
+    drop(conn);
+
+    // Run stats command and verify it correctly counts entries using the fallback path
+    harlite()
+        .arg("stats")
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("imports=1"))
+        .stdout(predicate::str::contains("entries=3"))
+        .stdout(predicate::str::contains("date_min=2024-01-15"))
+        .stdout(predicate::str::contains("date_max=2024-01-15"))
+        .stdout(predicate::str::contains("unique_hosts=2"));
+}
+
+#[test]
 fn test_query_csv_and_json() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("test.db");
