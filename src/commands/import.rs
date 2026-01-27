@@ -1,11 +1,12 @@
 use std::path::{Path, PathBuf};
+use std::{fs, path};
 
 use indicatif::ProgressBar;
 use rusqlite::Connection;
 
 use crate::db::{
-    create_import, create_schema, insert_entry, insert_page, update_import_count, ImportStats,
-    InsertEntryOptions,
+    create_import, create_schema, insert_entry, insert_page, update_import_count,
+    ExtractBodiesKind, ImportStats, InsertEntryOptions,
 };
 use crate::error::{HarliteError, Result};
 use crate::har::parse_har_file;
@@ -17,6 +18,11 @@ pub struct ImportOptions {
     pub max_body_size: Option<usize>,
     pub text_only: bool,
     pub show_stats: bool,
+    pub decompress_bodies: bool,
+    pub keep_compressed: bool,
+    pub extract_bodies_dir: Option<PathBuf>,
+    pub extract_bodies_kind: ExtractBodiesKind,
+    pub extract_bodies_shard_depth: u8,
 }
 
 impl Default for ImportOptions {
@@ -27,6 +33,11 @@ impl Default for ImportOptions {
             max_body_size: Some(100 * 1024),
             text_only: false,
             show_stats: false,
+            decompress_bodies: false,
+            keep_compressed: false,
+            extract_bodies_dir: None,
+            extract_bodies_kind: ExtractBodiesKind::Both,
+            extract_bodies_shard_depth: 0,
         }
     }
 }
@@ -36,6 +47,11 @@ pub fn run_import(files: &[PathBuf], options: &ImportOptions) -> Result<ImportSt
     if files.is_empty() {
         return Err(HarliteError::InvalidHar(
             "No input files specified".to_string(),
+        ));
+    }
+    if options.keep_compressed && !options.decompress_bodies {
+        return Err(HarliteError::InvalidArgs(
+            "--keep-compressed requires --decompress-bodies".to_string(),
         ));
     }
 
@@ -56,10 +72,22 @@ pub fn run_import(files: &[PathBuf], options: &ImportOptions) -> Result<ImportSt
 
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
 
+    let extract_dir = if let Some(dir) = &options.extract_bodies_dir {
+        fs::create_dir_all(dir)?;
+        Some(path::Path::new(dir).canonicalize()?)
+    } else {
+        None
+    };
+
     let entry_options = InsertEntryOptions {
-        store_bodies: options.store_bodies,
+        store_bodies: options.store_bodies || extract_dir.is_some(),
         max_body_size: options.max_body_size,
         text_only: options.text_only,
+        decompress_bodies: options.decompress_bodies,
+        keep_compressed: options.keep_compressed,
+        extract_bodies_dir: extract_dir,
+        extract_bodies_kind: options.extract_bodies_kind,
+        extract_bodies_shard_depth: options.extract_bodies_shard_depth,
     };
 
     let mut total_stats = ImportStats {

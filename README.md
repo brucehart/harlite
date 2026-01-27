@@ -26,6 +26,9 @@ Works great with AI coding agents like Codex and Claude — they already know SQ
 - **Fast imports** — Rust-native performance
 - **Smart deduplication** — Response bodies stored once using content-addressable hashing (BLAKE3)
 - **Flexible body storage** — Metadata-only by default, opt-in to store bodies
+- **Optional body decompression** — Import gzip/br responses as decoded bytes
+- **External body extraction** — Store body blobs as hashed files on disk (`--extract-bodies`)
+- **Full-text search** — SQLite FTS5 over response bodies (`harlite search`)
 - **Multi-file support** — Merge multiple HAR files into one database
 - **Queryable headers** — Headers stored as JSON, queryable with SQLite JSON functions
 - **Safe sharing** — Redact sensitive headers/cookies before sharing a database
@@ -98,6 +101,18 @@ harlite import capture.har --bodies --text-only
 # Include all bodies under 500KB  
 harlite import capture.har --bodies --max-body-size 500KB
 
+# Decompress response bodies based on Content-Encoding (gzip, br)
+harlite import capture.har --bodies --decompress-bodies
+
+# Keep both decompressed and original (compressed) variants
+harlite import capture.har --bodies --decompress-bodies --keep-compressed
+
+# Extract bodies to files (stored by hash); implies --bodies
+harlite import capture.har --extract-bodies ./bodies
+
+# Extract only response bodies, with 2-level sharding (aa/bb/<hash>)
+harlite import capture.har --extract-bodies ./bodies --extract-bodies-kind response --extract-bodies-shard-depth 2
+
 # Include everything (warning: large databases)
 harlite import capture.har --bodies --max-body-size unlimited
 
@@ -110,6 +125,20 @@ harlite import capture.har --bodies --stats
 ```
 
 Response bodies are automatically deduplicated using BLAKE3 hashing. If the same JavaScript bundle appears in 50 entries, it's stored only once.
+
+### Full-text search (FTS5)
+
+If you imported bodies, `harlite` maintains a SQLite FTS index over response bodies (text only):
+
+```bash
+harlite search "timeout NEAR/3 error" traffic.db
+```
+
+To rebuild the index (or change tokenizers):
+
+```bash
+harlite fts-rebuild traffic.db --tokenizer porter
+```
 
 ### View schema
 

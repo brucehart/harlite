@@ -280,13 +280,24 @@ pub fn load_pages_for_imports(conn: &Connection, import_ids: &[i64]) -> Result<V
 pub struct BlobRow {
     pub hash: String,
     pub content: Vec<u8>,
+    pub size: i64,
     pub mime_type: Option<String>,
+    pub external_path: Option<String>,
 }
 
 pub fn load_blobs_by_hashes(conn: &Connection, hashes: &[String]) -> Result<Vec<BlobRow>> {
     if hashes.is_empty() {
         return Ok(Vec::new());
     }
+
+    let has_external_path = {
+        let mut stmt = conn.prepare("PRAGMA table_info(blobs)")?;
+        let cols: Vec<String> = stmt
+            .query_map([], |row| row.get(1))?
+            .filter_map(|r| r.ok())
+            .collect();
+        cols.iter().any(|c| c == "external_path")
+    };
 
     let mut out: Vec<BlobRow> = Vec::new();
     // SQLite defaults to 999 parameters; stay under that.
@@ -297,19 +308,39 @@ pub fn load_blobs_by_hashes(conn: &Connection, hashes: &[String]) -> Result<Vec<
             .take(chunk.len())
             .collect::<Vec<_>>()
             .join(", ");
-        let sql =
-            format!("SELECT hash, content, mime_type FROM blobs WHERE hash IN ({placeholders})");
         let params: Vec<Value> = chunk.iter().map(|h| Value::Text(h.clone())).collect();
 
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params_from_iter(params.iter()), |row| {
-            Ok(BlobRow {
-                hash: row.get(0)?,
-                content: row.get(1)?,
-                mime_type: row.get(2)?,
-            })
-        })?;
-        out.extend(rows.filter_map(|r| r.ok()));
+        if has_external_path {
+            let sql = format!(
+                "SELECT hash, content, size, mime_type, external_path FROM blobs WHERE hash IN ({placeholders})"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(params.iter()), |row| {
+                Ok(BlobRow {
+                    hash: row.get(0)?,
+                    content: row.get(1)?,
+                    size: row.get(2)?,
+                    mime_type: row.get(3)?,
+                    external_path: row.get(4)?,
+                })
+            })?;
+            out.extend(rows.filter_map(|r| r.ok()));
+        } else {
+            let sql = format!(
+                "SELECT hash, content, size, mime_type FROM blobs WHERE hash IN ({placeholders})"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(params.iter()), |row| {
+                Ok(BlobRow {
+                    hash: row.get(0)?,
+                    content: row.get(1)?,
+                    size: row.get(2)?,
+                    mime_type: row.get(3)?,
+                    external_path: None,
+                })
+            })?;
+            out.extend(rows.filter_map(|r| r.ok()));
+        }
     }
 
     Ok(out)

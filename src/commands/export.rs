@@ -201,6 +201,16 @@ fn body_text_and_encoding(content: &[u8]) -> (Option<String>, Option<String>) {
     }
 }
 
+fn hydrate_blob_content(mut blob: BlobRow) -> Result<BlobRow> {
+    if !blob.content.is_empty() || blob.size <= 0 {
+        return Ok(blob);
+    }
+    if let Some(path) = &blob.external_path {
+        blob.content = std::fs::read(path)?;
+    }
+    Ok(blob)
+}
+
 fn page_export_id(import_id: i64, page_id: &str, multi_import: bool) -> String {
     if multi_import {
         format!("{import_id}:{page_id}")
@@ -412,7 +422,11 @@ pub fn run_export(database: PathBuf, options: &ExportOptions) -> Result<()> {
         hashes.sort();
         hashes.dedup();
         let blobs = load_blobs_by_hashes(&conn, &hashes)?;
-        blob_map = blobs.into_iter().map(|b| (b.hash.clone(), b)).collect();
+        let hydrated: Vec<BlobRow> = blobs
+            .into_iter()
+            .map(hydrate_blob_content)
+            .collect::<Result<Vec<_>>>()?;
+        blob_map = hydrated.into_iter().map(|b| (b.hash.clone(), b)).collect();
     }
 
     let mut har_entries: Vec<Entry> = Vec::with_capacity(entries.len());

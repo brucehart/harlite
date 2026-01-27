@@ -32,4 +32,3 @@ pub fn resolve_database(database: Option<PathBuf>) -> Result<PathBuf> {
         ))),
     }
 }
-
