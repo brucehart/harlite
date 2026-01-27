@@ -31,22 +31,16 @@ pub fn run_stats(database: PathBuf, options: &StatsOptions) -> Result<()> {
 
     let import_count: i64 = conn.query_row("SELECT COUNT(*) FROM imports", [], |row| row.get(0))?;
 
-    // Prefer summing imports.entry_count (fast) over counting all entries (slow), but fall back if
-    // entry_count is missing for any import.
-    let missing_entry_counts: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM imports WHERE entry_count IS NULL",
+    // Prefer using imports.entry_count where available (fast) and only count entries for imports
+    // that are missing entry_count, instead of falling back to counting all entries.
+    let entry_count: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(entry_count), 0) + (\
+             SELECT COUNT(*) FROM entries \
+             WHERE import_id IN (SELECT id FROM imports WHERE entry_count IS NULL)\
+         ) FROM imports",
         [],
         |row| row.get(0),
     )?;
-    let entry_count: i64 = if missing_entry_counts == 0 {
-        conn.query_row(
-            "SELECT COALESCE(SUM(entry_count), 0) FROM imports",
-            [],
-            |row| row.get(0),
-        )?
-    } else {
-        conn.query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))?
-    };
 
     let date_range: (Option<String>, Option<String>) = conn.query_row(
         "SELECT MIN(started_at), MAX(started_at) FROM entries",
