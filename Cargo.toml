@@ -2,11 +2,21 @@
 name = "harlite"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.85"
 description = "Import HAR files into SQLite. Query your web traffic with SQL."
 license = "MIT"
+readme = "README.md"
 repository = "https://github.com/brucehart/harlite"
+homepage = "https://github.com/brucehart/harlite"
 keywords = ["har", "http", "sqlite", "web", "debugging"]
 categories = ["command-line-utilities", "web-programming"]
+include = [
+    "src/**",
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "LICENSE",
+]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

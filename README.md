@@ -35,7 +35,11 @@ Works great with AI coding agents like Codex and Claude — they already know SQ
 
 ## Installation
 
-`harlite` is not published to crates.io yet, so install from source for now.
+### Install with Cargo
+
+```bash
+cargo install harlite
+```
 
 ### Build and run locally
 
@@ -43,7 +47,7 @@ Works great with AI coding agents like Codex and Claude — they already know SQ
 git clone https://github.com/brucehart/harlite
 cd harlite
 
-# Requires Rust/Cargo >= 1.85 (edition2024 deps + lockfile v4)
+# Requires Rust/Cargo >= 1.85
 # Recommended: use rustup to manage toolchains
 curl https://sh.rustup.rs -sSf | sh -s -- -y
 source "$HOME/.cargo/env"
@@ -70,7 +74,11 @@ cargo build --release
 
 ## Installation
 
-`harlite` is not published to crates.io yet, so install from source for now.
+### Install with Cargo
+
+```bash
+cargo install harlite
+```
 
 ### Build and run locally
 
@@ -78,7 +86,7 @@ cargo build --release
 git clone https://github.com/brucehart/harlite
 cd harlite
 
-# Requires Rust/Cargo >= 1.85 (edition2024 deps + lockfile v4)
+# Requires Rust/Cargo >= 1.85
 # Recommended: use rustup to manage toolchains
 curl https://sh.rustup.rs -sSf | sh -s -- -y
 source "$HOME/.cargo/env"
