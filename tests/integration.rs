@@ -429,8 +429,67 @@ fn test_redact_dry_run_does_not_modify() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("test.db");
 
+    // Create a minimal HAR file inline instead of relying on an external fixture.
+    let har_path = tmp.path().join("redact.har");
+    let har_content = r#"{
+        "log": {
+            "version": "1.2",
+            "creator": { "name": "harlite-test", "version": "1.0" },
+            "entries": [
+                {
+                    "startedDateTime": "2020-01-01T00:00:00.000Z",
+                    "time": 0,
+                    "request": {
+                        "method": "GET",
+                        "url": "https://example.com/",
+                        "httpVersion": "HTTP/1.1",
+                        "cookies": [
+                            {
+                                "name": "session",
+                                "value": "sess123"
+                            }
+                        ],
+                        "headers": [
+                            {
+                                "name": "Authorization",
+                                "value": "Bearer supersecret"
+                            }
+                        ],
+                        "queryString": [],
+                        "headersSize": -1,
+                        "bodySize": -1
+                    },
+                    "response": {
+                        "status": 200,
+                        "statusText": "OK",
+                        "httpVersion": "HTTP/1.1",
+                        "cookies": [],
+                        "headers": [],
+                        "content": {
+                            "size": 0,
+                            "mimeType": "text/plain",
+                            "text": ""
+                        },
+                        "redirectURL": "",
+                        "headersSize": -1,
+                        "bodySize": -1
+                    },
+                    "cache": {},
+                    "timings": {
+                        "send": 0,
+                        "wait": 0,
+                        "receive": 0
+                    }
+                }
+            ]
+        }
+    }"#;
+    std::fs::write(&har_path, har_content).unwrap();
+
     harlite()
-        .args(["import", "tests/fixtures/redact.har", "-o"])
+        .arg("import")
+        .arg(&har_path)
+        .arg("-o")
         .arg(&db_path)
         .assert()
         .success();
