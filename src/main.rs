@@ -8,8 +8,8 @@ mod error;
 mod har;
 
 use commands::StatsOptions;
-use commands::{run_export, run_import, run_info, run_query, run_schema, run_stats};
-use commands::{ExportOptions, ImportOptions, OutputFormat, QueryOptions};
+use commands::{run_export, run_import, run_info, run_query, run_redact, run_schema, run_stats};
+use commands::{ExportOptions, ImportOptions, NameMatchMode, OutputFormat, QueryOptions, RedactOptions};
 
 #[derive(Parser)]
 #[command(name = "harlite")]
@@ -153,6 +153,44 @@ enum Commands {
         max_response_size: Option<String>,
     },
 
+    /// Redact sensitive headers/cookies in a harlite SQLite database
+    Redact {
+        /// Output database file (default: modify in-place)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Overwrite output database if it exists
+        #[arg(long)]
+        force: bool,
+
+        /// Only report what would be redacted (no writes)
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Disable default redaction patterns
+        #[arg(long)]
+        no_defaults: bool,
+
+        /// Header name pattern to redact (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        header: Vec<String>,
+
+        /// Cookie name pattern to redact (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        cookie: Vec<String>,
+
+        /// Pattern matching mode for names
+        #[arg(long = "match", value_enum, default_value = "wildcard")]
+        match_mode: NameMatchMode,
+
+        /// Replacement token to write for redacted values
+        #[arg(long, default_value = "REDACTED")]
+        token: String,
+
+        /// Database file to redact (default: the only *.db in the current directory)
+        database: Option<PathBuf>,
+    },
+
     /// Run a SQL query against a harlite SQLite database
     Query {
         /// SQL string to execute (read-only)
@@ -274,6 +312,30 @@ fn main() {
                 max_response_size,
             };
             run_export(database, &options)
+        }
+
+        Commands::Redact {
+            output,
+            force,
+            dry_run,
+            no_defaults,
+            header,
+            cookie,
+            match_mode,
+            token,
+            database,
+        } => {
+            let options = RedactOptions {
+                output,
+                force,
+                dry_run,
+                no_defaults,
+                headers: header,
+                cookies: cookie,
+                match_mode,
+                token,
+            };
+            run_redact(database, &options)
         }
 
         Commands::Query {

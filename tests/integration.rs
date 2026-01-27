@@ -425,6 +425,175 @@ fn test_query_rejects_writes() {
 }
 
 #[test]
+fn test_redact_dry_run_does_not_modify() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    // Create a minimal HAR file inline instead of relying on an external fixture.
+    let har_path = tmp.path().join("redact.har");
+    let har_content = r#"{
+        "log": {
+            "version": "1.2",
+            "creator": { "name": "harlite-test", "version": "1.0" },
+            "entries": [
+                {
+                    "startedDateTime": "2020-01-01T00:00:00.000Z",
+                    "time": 0,
+                    "request": {
+                        "method": "GET",
+                        "url": "https://example.com/",
+                        "httpVersion": "HTTP/1.1",
+                        "cookies": [
+                            {
+                                "name": "session",
+                                "value": "sess123"
+                            }
+                        ],
+                        "headers": [
+                            {
+                                "name": "Authorization",
+                                "value": "Bearer supersecret"
+                            }
+                        ],
+                        "queryString": [],
+                        "headersSize": -1,
+                        "bodySize": -1
+                    },
+                    "response": {
+                        "status": 200,
+                        "statusText": "OK",
+                        "httpVersion": "HTTP/1.1",
+                        "cookies": [],
+                        "headers": [],
+                        "content": {
+                            "size": 0,
+                            "mimeType": "text/plain",
+                            "text": ""
+                        },
+                        "redirectURL": "",
+                        "headersSize": -1,
+                        "bodySize": -1
+                    },
+                    "cache": {},
+                    "timings": {
+                        "send": 0,
+                        "wait": 0,
+                        "receive": 0
+                    }
+                }
+            ]
+        }
+    }"#;
+    std::fs::write(&har_path, har_content).unwrap();
+
+    harlite()
+        .arg("import")
+        .arg(&har_path)
+        .arg("-o")
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args(["redact", "--dry-run"])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Dry run: would redact"));
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+
+    let auth: String = conn
+        .query_row(
+            "SELECT json_extract(request_headers, '$.authorization') FROM entries",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(auth, "Bearer supersecret");
+
+    let cookie_value: String = conn
+        .query_row(
+            "SELECT json_extract(request_cookies, '$[0].value') FROM entries",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(cookie_value, "sess123");
+}
+
+#[test]
+fn test_redact_output_database_keeps_input_unchanged() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("src.db");
+    let out_db_path = tmp.path().join("redacted.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/redact.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args(["redact", "--output"])
+        .arg(&out_db_path)
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Redacted"));
+
+    assert!(out_db_path.exists());
+
+    let conn_in = rusqlite::Connection::open(&db_path).unwrap();
+    let conn_out = rusqlite::Connection::open(&out_db_path).unwrap();
+
+    let in_auth: String = conn_in
+        .query_row(
+            "SELECT json_extract(request_headers, '$.authorization') FROM entries",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(in_auth, "Bearer supersecret");
+
+    let out_auth: String = conn_out
+        .query_row(
+            "SELECT json_extract(request_headers, '$.authorization') FROM entries",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(out_auth, "REDACTED");
+
+    let out_set_cookie: String = conn_out
+        .query_row(
+            "SELECT json_extract(response_headers, '$.\"set-cookie\"') FROM entries",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(out_set_cookie, "REDACTED");
+
+    let out_cookie_value: String = conn_out
+        .query_row(
+            "SELECT json_extract(response_cookies, '$[0].value') FROM entries",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(out_cookie_value, "REDACTED");
+
+    let accept: String = conn_out
+        .query_row(
+            "SELECT json_extract(request_headers, '$.accept') FROM entries",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(accept, "application/json");
+}
+
+#[test]
 fn test_query_limit_offset_wraps_query() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("test.db");
@@ -864,4 +1033,114 @@ fn test_export_filter_by_source() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Exported 1 entries"));
+}
+
+#[test]
+fn test_redact_no_defaults_with_regex_mode() {
+    // When using regex mode without --no-defaults, no patterns should be applied
+    // since defaults are wildcard patterns
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/redact.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    // With regex mode and no explicit patterns, should fail because defaults aren't applied
+    harlite()
+        .args(["redact", "--match", "regex"])
+        .arg(&db_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("No redaction patterns provided"));
+}
+
+#[test]
+fn test_redact_no_defaults_with_exact_mode() {
+    // When using exact mode without --no-defaults, no patterns should be applied
+    // since defaults are wildcard patterns
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/redact.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    // With exact mode and no explicit patterns, should fail because defaults aren't applied
+    harlite()
+        .args(["redact", "--match", "exact"])
+        .arg(&db_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("No redaction patterns provided"));
+}
+
+#[test]
+fn test_redact_defaults_with_wildcard_mode() {
+    // Wildcard mode (default) should apply defaults
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/redact.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    // With wildcard mode (default), defaults should be applied
+    harlite()
+        .args(["redact"])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Redacted"));
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+
+    // Verify authorization header was redacted
+    let auth: String = conn
+        .query_row(
+            "SELECT json_extract(request_headers, '$.authorization') FROM entries",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(auth, "REDACTED");
+}
+
+#[test]
+fn test_redact_with_explicit_regex_patterns() {
+    // Regex mode with explicit patterns should work
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/redact.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    // Use regex mode with explicit pattern
+    harlite()
+        .args(["redact", "--match", "regex", "--header", "^author.*"])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Redacted"));
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+
+    // Verify authorization header was redacted
+    let auth: String = conn
+        .query_row(
+            "SELECT json_extract(request_headers, '$.authorization') FROM entries",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(auth, "REDACTED");
 }

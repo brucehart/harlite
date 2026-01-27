@@ -28,6 +28,7 @@ Works great with AI coding agents like Codex and Claude — they already know SQ
 - **Flexible body storage** — Metadata-only by default, opt-in to store bodies
 - **Multi-file support** — Merge multiple HAR files into one database
 - **Queryable headers** — Headers stored as JSON, queryable with SQLite JSON functions
+- **Safe sharing** — Redact sensitive headers/cookies before sharing a database
 
 ## Installation
 
@@ -193,6 +194,28 @@ Common filters:
 Notes / gaps:
 - HAR `timings` are reconstructed from the stored total duration (`time_ms`), so the breakdown is best-effort.
 - Some HAR fields are not stored in the DB (e.g. `headersSize`, response `httpVersion`), so they may be omitted or approximated on export.
+
+### Redact sensitive data
+
+Redact common sensitive headers/cookies (by default: `authorization`, `cookie`, `set-cookie`, `x-api-key`, etc.) before sharing:
+
+```bash
+# Modify in-place
+harlite redact traffic.db
+
+# Write to a new database (recommended)
+harlite redact traffic.db --output traffic.redacted.db
+
+# Dry run (no writes)
+harlite redact traffic.db --dry-run
+
+# Customize patterns (wildcard match by default)
+harlite redact traffic.db --no-defaults --match exact --header authorization --cookie sessionid
+
+# Wildcard / regex name matching
+harlite redact traffic.db --match wildcard --header '*token*'
+harlite redact traffic.db --match regex --header '^(authorization|x-api-key)$'
+```
 
 ### Query with harlite
 
@@ -525,7 +548,7 @@ Future possibilities (not yet implemented):
 - [x] `harlite export` — Export SQLite back to HAR format
 - [x] `harlite query` — Built-in query command with output formatting
 - [ ] `harlite stats` — Quick summary statistics without full info
-- [ ] `harlite redact` — Remove sensitive headers/cookies before sharing
+- [x] `harlite redact` — Remove sensitive headers/cookies before sharing
 - [ ] Response body decompression (gzip, brotli)
 - [ ] `--extract-bodies <dir>` — Store bodies as external files
 - [ ] Full-text search on response bodies
