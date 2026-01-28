@@ -67,6 +67,48 @@ fn test_import_simple() {
 }
 
 #[test]
+fn test_import_simple_gzip() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har.gz", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Imported 2 entries"));
+
+    assert!(db_path.exists());
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 2);
+}
+
+#[test]
+fn test_import_simple_brotli() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har.br", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Imported 2 entries"));
+
+    assert!(db_path.exists());
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 2);
+}
+
+#[test]
 fn test_imports_list_and_prune() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("test.db");
