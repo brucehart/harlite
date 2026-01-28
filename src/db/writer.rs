@@ -169,6 +169,7 @@ fn is_text_mime_type(mime: Option<&str>) -> bool {
                 || m.contains("javascript")
                 || m.contains("css")
                 || m.contains("html")
+                || m.contains("x-www-form-urlencoded")
         }
     }
 }
@@ -191,6 +192,29 @@ fn decode_body(content: &crate::har::Content) -> Option<Vec<u8>> {
         }
         _ => Some(text.as_bytes().to_vec()),
     }
+}
+
+fn synthesize_post_params(post_data: &crate::har::PostData) -> Option<(Vec<u8>, Option<String>)> {
+    let params = post_data.params.as_ref()?;
+    if params.is_empty() {
+        return None;
+    }
+
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    for param in params {
+        let value = param.value.as_deref().unwrap_or("");
+        serializer.append_pair(&param.name, value);
+    }
+    let body = serializer.finish();
+    if body.is_empty() {
+        return None;
+    }
+
+    let mime = post_data
+        .mime_type
+        .clone()
+        .or_else(|| Some("application/x-www-form-urlencoded".to_string()));
+    Some((body.into_bytes(), mime))
 }
 
 fn read_to_end_limited<R: Read>(mut r: R, max: Option<usize>) -> std::io::Result<Vec<u8>> {
@@ -434,6 +458,19 @@ pub fn insert_entry(
                     }
                     bytes_accounted = body.len();
                 }
+            } else if let Some((body, mime)) = synthesize_post_params(post_data) {
+                let size_ok = options.max_body_size.is_none_or(|max| body.len() <= max);
+                let mime = mime.as_deref();
+                let type_ok = !options.text_only || is_text_mime_type(mime);
+
+                if size_ok && type_ok && !body.is_empty() {
+                    let (hash, is_new) = store_request_blob(conn, &body, mime, options)?;
+                    request_body_hash = Some(hash);
+                    if is_new {
+                        blob_created = true;
+                    }
+                    bytes_accounted = body.len();
+                }
             }
         }
     }
@@ -607,5 +644,144 @@ mod tests {
             .query_row("SELECT host FROM entries", [], |r| r.get(0))
             .expect("host");
         assert_eq!(host, "example.com");
+    }
+
+    #[test]
+    fn inserts_params_only_request_body() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        create_schema(&conn).expect("schema created");
+
+        let json = r#"
+        {
+          "log": {
+            "entries": [
+              {
+                "startedDateTime": "2024-01-15T10:30:00.000Z",
+                "time": 45.0,
+                "request": {
+                  "method": "POST",
+                  "url": "https://example.com/form",
+                  "httpVersion": "HTTP/1.1",
+                  "headers": [{"name": "Content-Type", "value": "application/x-www-form-urlencoded"}],
+                  "postData": {
+                    "params": [
+                      {"name": "a", "value": "1"},
+                      {"name": "b", "value": "two words"}
+                    ]
+                  }
+                },
+                "response": {
+                  "status": 204,
+                  "statusText": "No Content",
+                  "httpVersion": "HTTP/1.1",
+                  "headers": [],
+                  "content": {
+                    "size": 0
+                  }
+                }
+              }
+            ]
+          }
+        }
+        "#;
+
+        let har: Har = serde_json::from_str(json).expect("parse har");
+        let entry = &har.log.entries[0];
+
+        let options = InsertEntryOptions {
+            store_bodies: true,
+            max_body_size: None,
+            text_only: false,
+            ..Default::default()
+        };
+
+        let import_id = 1i64;
+        conn.execute(
+            "INSERT INTO imports (id, source_file, imported_at, entry_count) VALUES (?1, ?2, ?3, ?4)",
+            params![import_id, "test.har", "2024-01-01T00:00:00Z", 0],
+        )
+        .expect("insert import");
+
+        insert_entry(&conn, import_id, entry, &options).expect("insert entry");
+
+        let (hash, body): (String, Vec<u8>) = conn
+            .query_row(
+                "SELECT blobs.hash, blobs.content FROM entries JOIN blobs ON entries.request_body_hash = blobs.hash",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("request body blob");
+
+        assert!(!hash.is_empty());
+        assert_eq!(String::from_utf8(body).expect("utf8"), "a=1&b=two+words");
+    }
+
+    #[test]
+    fn params_only_request_body_respects_max_body_size() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        create_schema(&conn).expect("schema created");
+
+        let json = r#"
+        {
+          "log": {
+            "entries": [
+              {
+                "startedDateTime": "2024-01-15T10:30:00.000Z",
+                "time": 45.0,
+                "request": {
+                  "method": "POST",
+                  "url": "https://example.com/form",
+                  "httpVersion": "HTTP/1.1",
+                  "headers": [],
+                  "postData": {
+                    "params": [
+                      {"name": "a", "value": "1"},
+                      {"name": "b", "value": "two words"}
+                    ]
+                  }
+                },
+                "response": {
+                  "status": 204,
+                  "statusText": "No Content",
+                  "httpVersion": "HTTP/1.1",
+                  "headers": [],
+                  "content": {
+                    "size": 0
+                  }
+                }
+              }
+            ]
+          }
+        }
+        "#;
+
+        let har: Har = serde_json::from_str(json).expect("parse har");
+        let entry = &har.log.entries[0];
+
+        let options = InsertEntryOptions {
+            store_bodies: true,
+            max_body_size: Some(5),
+            text_only: false,
+            ..Default::default()
+        };
+
+        let import_id = 1i64;
+        conn.execute(
+            "INSERT INTO imports (id, source_file, imported_at, entry_count) VALUES (?1, ?2, ?3, ?4)",
+            params![import_id, "test.har", "2024-01-01T00:00:00Z", 0],
+        )
+        .expect("insert import");
+
+        insert_entry(&conn, import_id, entry, &options).expect("insert entry");
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM blobs", [], |r| r.get(0))
+            .expect("count blobs");
+        assert_eq!(count, 0);
+
+        let request_hash: Option<String> = conn
+            .query_row("SELECT request_body_hash FROM entries", [], |r| r.get(0))
+            .expect("request body hash");
+        assert!(request_hash.is_none());
     }
 }
