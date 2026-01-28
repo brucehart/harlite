@@ -148,6 +148,12 @@ To rebuild the index (or change tokenizers):
 harlite fts-rebuild traffic.db --tokenizer porter
 ```
 
+If your database stores extracted bodies on disk, you must opt-in to reading them:
+
+```bash
+harlite fts-rebuild traffic.db --allow-external-paths --external-path-root ./bodies
+```
+
 ### View schema
 
 ```bash
@@ -204,6 +210,9 @@ harlite export traffic.db -o -
 
 # Include stored request/response bodies (if present in the DB)
 harlite export traffic.db --bodies -o traffic-with-bodies.har
+
+# If bodies were extracted to disk, opt in to reading them
+harlite export traffic.db --bodies --allow-external-paths --external-path-root ./bodies -o traffic-with-bodies.har
 
 # Compact JSON
 harlite export traffic.db --compact -o traffic.min.har
