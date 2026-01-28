@@ -73,6 +73,30 @@ enum Commands {
         /// Optional sharding depth for extracted bodies (each level uses 2 hex chars of the hash)
         #[arg(long, default_value_t = 0)]
         extract_bodies_shard_depth: u8,
+
+        /// Hostname filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        host: Vec<String>,
+
+        /// HTTP method filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        method: Vec<String>,
+
+        /// HTTP status filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        status: Vec<i32>,
+
+        /// URL regex match (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        url_regex: Vec<String>,
+
+        /// Only import entries on/after this timestamp (RFC3339) or date (YYYY-MM-DD)
+        #[arg(long)]
+        from: Option<String>,
+
+        /// Only import entries on/before this timestamp (RFC3339) or date (YYYY-MM-DD)
+        #[arg(long)]
+        to: Option<String>,
     },
 
     /// Print the database schema
@@ -339,6 +363,12 @@ fn main() {
             extract_bodies,
             extract_bodies_kind,
             extract_bodies_shard_depth,
+            host,
+            method,
+            status,
+            url_regex,
+            from,
+            to,
         } => {
             let options = ImportOptions {
                 output,
@@ -351,6 +381,12 @@ fn main() {
                 extract_bodies_dir: extract_bodies,
                 extract_bodies_kind,
                 extract_bodies_shard_depth,
+                host,
+                method,
+                status,
+                url_regex,
+                from,
+                to,
             };
             run_import(&files, &options).map(|_| ())
         }

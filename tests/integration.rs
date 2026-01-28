@@ -124,6 +124,72 @@ fn test_import_with_bodies() {
 }
 
 #[test]
+fn test_import_filters_method_status_regex() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("filtered.db");
+
+    harlite()
+        .args([
+            "import",
+            "tests/fixtures/simple.har",
+            "--method",
+            "GET",
+            "--status",
+            "200",
+            "--url-regex",
+            "example\\.com/users$",
+            "-o",
+        ])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Imported 1 entries"));
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 1);
+
+    let method: String = conn
+        .query_row("SELECT method FROM entries", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(method, "GET");
+}
+
+#[test]
+fn test_import_filters_date_range() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("filtered-date.db");
+
+    harlite()
+        .args([
+            "import",
+            "tests/fixtures/simple.har",
+            "--from",
+            "2024-01-15T10:30:01Z",
+            "--to",
+            "2024-01-15T10:30:01Z",
+            "-o",
+        ])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Imported 1 entries"));
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 1);
+
+    let method: String = conn
+        .query_row("SELECT method FROM entries", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(method, "POST");
+}
+
+#[test]
 fn test_import_stats_counts_request_and_response_bodies() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("test.db");

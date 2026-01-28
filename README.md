@@ -134,6 +134,21 @@ harlite import capture.har --bodies --stats
 
 Response bodies are automatically deduplicated using BLAKE3 hashing. If the same JavaScript bundle appears in 50 entries, it's stored only once.
 
+### Import filters
+
+Filter entries at import time to reduce database size:
+
+```bash
+# Only keep GETs to a host with 200 responses
+harlite import capture.har --host api.example.com --method GET --status 200
+
+# Filter by URL regex (repeatable)
+harlite import capture.har --url-regex 'example\\.com/(api|v1)/'
+
+# Import a specific time range (RFC3339 or YYYY-MM-DD)
+harlite import capture.har --from 2024-01-15 --to 2024-01-16
+```
+
 ### Full-text search (FTS5)
 
 If you imported bodies, `harlite` maintains a SQLite FTS index over response bodies (text only):
