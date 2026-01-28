@@ -453,7 +453,7 @@ fn finalize_pending_requests(state: &mut CaptureState, options: &CdpOptions) -> 
         .requests
         .iter()
         .filter_map(|(id, record)| {
-            if record.end_ts.is_some() && record.body.is_none() && record.failed.is_some() {
+            if record.end_ts.is_some() {
                 Some(id.clone())
             } else {
                 None
