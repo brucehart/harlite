@@ -68,6 +68,25 @@ cargo build --release
 ```
 
 Performance note: HAR parsing streams entries from disk using `serde_json::Deserializer` to avoid loading the full JSON blob at once; memory still scales with the number of entries imported.
+
+### Shell completions
+
+Generate completions from the CLI (always in sync with flags/subcommands):
+
+```bash
+harlite completions bash > ~/.local/share/bash-completion/completions/harlite
+harlite completions zsh > ~/.zsh/completions/_harlite
+harlite completions fish > ~/.config/fish/completions/harlite.fish
+```
+
+For zsh, ensure your `~/.zsh/completions` directory is in `fpath` (e.g., add `fpath=(~/.zsh/completions $fpath)` to `~/.zshrc`).
+
+PowerShell (save and dot-source in your profile):
+
+```powershell
+harlite completions powershell > $HOME\Documents\PowerShell\Completions\harlite.ps1
+". $HOME\Documents\PowerShell\Completions\harlite.ps1" >> $PROFILE
+```
 ## Quick Start
 
 ```bash
