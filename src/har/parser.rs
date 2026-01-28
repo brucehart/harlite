@@ -124,7 +124,7 @@ pub struct Content {
     pub extensions: Extensions,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Header {
     pub name: String,
     pub value: String,
@@ -472,10 +472,7 @@ mod tests {
 
         let har: Har = serde_json::from_str(json).expect("HAR should parse");
         assert_eq!(
-            har.log
-                .extensions
-                .get("_logExt")
-                .and_then(|v| v.as_str()),
+            har.log.extensions.get("_logExt").and_then(|v| v.as_str()),
             Some("keep")
         );
         assert_eq!(

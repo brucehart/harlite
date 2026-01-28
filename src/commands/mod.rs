@@ -26,3 +26,5 @@ pub use redact::{run_redact, NameMatchMode, RedactOptions};
 pub use schema::run_schema;
 pub use search::run_search;
 pub use stats::{run_stats, StatsOptions};
+mod cdp;
+pub use cdp::{run_cdp, CdpOptions};
