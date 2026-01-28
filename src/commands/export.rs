@@ -21,6 +21,7 @@ pub struct ExportOptions {
     pub output: Option<PathBuf>,
     pub pretty: bool,
     pub include_bodies: bool,
+    pub include_raw_response_bodies: bool,
     pub allow_external_paths: bool,
     pub external_path_root: Option<PathBuf>,
 
@@ -51,6 +52,7 @@ impl Default for ExportOptions {
             output: None,
             pretty: true,
             include_bodies: false,
+            include_raw_response_bodies: false,
             allow_external_paths: false,
             external_path_root: None,
             url: Vec::new(),
@@ -455,7 +457,11 @@ pub fn run_export(database: PathBuf, options: &ExportOptions) -> Result<()> {
         let mut hashes: Vec<String> = entries
             .iter()
             .flat_map(|e| {
-                [e.request_body_hash.as_ref(), e.response_body_hash.as_ref()]
+                [
+                    e.request_body_hash.as_ref(),
+                    e.response_body_hash.as_ref(),
+                    e.response_body_hash_raw.as_ref(),
+                ]
                     .into_iter()
                     .flatten()
             })
@@ -499,24 +505,64 @@ pub fn run_export(database: PathBuf, options: &ExportOptions) -> Result<()> {
         let mut response_body_text: Option<String> = None;
         let mut response_body_encoding: Option<String> = None;
         let mut response_body_size: i64 = row.response_body_size.unwrap_or(0);
+        let mut response_body_size_raw: Option<i64> = row.response_body_size_raw;
         let mut response_mime = row.response_mime_type.clone();
+        let mut response_compression: Option<i64> = None;
+        let mut response_body_is_raw = false;
+
         if options.include_bodies {
-            if let Some(hash) = &row.response_body_hash {
-                if let Some(blob) = blob_map.get(hash) {
-                    let (text, enc) = body_text_and_encoding(&blob.content);
-                    response_body_text = text;
-                    response_body_encoding = enc;
-                    response_body_size = blob.content.len() as i64;
-                    if response_mime.is_none() {
-                        response_mime = blob.mime_type.clone();
+            let mut resolved = false;
+            if options.include_raw_response_bodies {
+                if let Some(hash) = &row.response_body_hash_raw {
+                    if let Some(blob) = blob_map.get(hash) {
+                        let (text, enc) = body_text_and_encoding(&blob.content);
+                        response_body_text = text;
+                        response_body_encoding = enc;
+                        response_body_size_raw = Some(blob.content.len() as i64);
+                        response_body_is_raw = true;
+                        resolved = true;
+                        if response_mime.is_none() {
+                            response_mime = blob.mime_type.clone();
+                        }
+                    }
+                }
+            }
+
+            if !resolved {
+                if let Some(hash) = &row.response_body_hash {
+                    if let Some(blob) = blob_map.get(hash) {
+                        let (text, enc) = body_text_and_encoding(&blob.content);
+                        response_body_text = text;
+                        response_body_encoding = enc;
+                        response_body_size = blob.content.len() as i64;
+                        if response_mime.is_none() {
+                            response_mime = blob.mime_type.clone();
+                        }
                     }
                 }
             }
         }
 
+        if response_body_is_raw {
+            let raw_len = response_body_size_raw.unwrap_or(0);
+            let uncompressed_len = if response_body_size > 0 {
+                response_body_size
+            } else {
+                raw_len
+            };
+            response_body_size = uncompressed_len;
+            if uncompressed_len > raw_len && raw_len > 0 {
+                response_compression = Some(uncompressed_len - raw_len);
+            }
+        }
+
         let request_body_size = row.request_body_size.or(request_body_len);
         let response_body_size_field = if options.include_bodies && response_body_text.is_some() {
-            Some(response_body_size)
+            if response_body_is_raw {
+                response_body_size_raw
+            } else {
+                Some(response_body_size)
+            }
         } else {
             row.response_body_size
         };
@@ -567,7 +613,7 @@ pub fn run_export(database: PathBuf, options: &ExportOptions) -> Result<()> {
                 headers: response_headers,
                 content: Content {
                     size: response_body_size,
-                    compression: None,
+                    compression: response_compression,
                     mime_type: response_mime,
                     text: response_body_text,
                     encoding: response_body_encoding,

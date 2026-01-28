@@ -211,6 +211,9 @@ harlite export traffic.db -o -
 # Include stored request/response bodies (if present in the DB)
 harlite export traffic.db --bodies -o traffic-with-bodies.har
 
+# Prefer raw/compressed response bodies when available (requires import with --decompress-bodies --keep-compressed)
+harlite export traffic.db --bodies-raw -o traffic-with-raw-bodies.har
+
 # If bodies were extracted to disk, opt in to reading them
 harlite export traffic.db --bodies --allow-external-paths --external-path-root ./bodies -o traffic-with-bodies.har
 
@@ -237,6 +240,7 @@ Common filters:
 Notes / gaps:
 - HAR `timings` are reconstructed from the stored total duration (`time_ms`), so the breakdown is best-effort.
 - Some HAR fields are not stored in the DB (e.g. `headersSize`, response `httpVersion`), so they may be omitted or approximated on export.
+- `--bodies-raw` uses the raw/compressed response body (if stored), sets `content.encoding` when base64-encoded, and fills `content.compression` when the uncompressed size is known.
 
 ### Redact sensitive data
 

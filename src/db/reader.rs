@@ -22,6 +22,8 @@ pub struct EntryRow {
     pub response_cookies: Option<String>,
     pub response_body_hash: Option<String>,
     pub response_body_size: Option<i64>,
+    pub response_body_hash_raw: Option<String>,
+    pub response_body_size_raw: Option<i64>,
     pub response_mime_type: Option<String>,
     pub server_ip: Option<String>,
     pub connection_id: Option<String>,
@@ -189,6 +191,8 @@ pub fn load_entries(conn: &Connection, query: &EntryQuery) -> Result<Vec<EntryRo
             response_cookies,
             response_body_hash,
             response_body_size,
+            response_body_hash_raw,
+            response_body_size_raw,
             response_mime_type,
             server_ip,
             connection_id
@@ -222,9 +226,11 @@ pub fn load_entries(conn: &Connection, query: &EntryQuery) -> Result<Vec<EntryRo
             response_cookies: row.get(14)?,
             response_body_hash: row.get(15)?,
             response_body_size: row.get(16)?,
-            response_mime_type: row.get(17)?,
-            server_ip: row.get(18)?,
-            connection_id: row.get(19)?,
+            response_body_hash_raw: row.get(17)?,
+            response_body_size_raw: row.get(18)?,
+            response_mime_type: row.get(19)?,
+            server_ip: row.get(20)?,
+            connection_id: row.get(21)?,
         })
     })?;
 

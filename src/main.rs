@@ -110,6 +110,10 @@ enum Commands {
         #[arg(long)]
         bodies: bool,
 
+        /// Prefer raw/compressed response bodies when available
+        #[arg(long)]
+        bodies_raw: bool,
+
         /// Allow reading external blob paths from the database
         #[arg(long)]
         allow_external_paths: bool,
@@ -364,6 +368,7 @@ fn main() {
             database,
             output,
             bodies,
+            bodies_raw,
             allow_external_paths,
             external_path_root,
             compact,
@@ -387,7 +392,8 @@ fn main() {
             let options = ExportOptions {
                 output,
                 pretty: !compact,
-                include_bodies: bodies,
+                include_bodies: bodies || bodies_raw,
+                include_raw_response_bodies: bodies_raw,
                 allow_external_paths,
                 external_path_root,
                 url,

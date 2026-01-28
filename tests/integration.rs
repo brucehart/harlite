@@ -1,5 +1,6 @@
 use assert_cmd::cargo::cargo_bin_cmd;
 use assert_cmd::Command;
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use predicates::prelude::*;
 use std::fs;
 use tempfile::TempDir;
@@ -896,6 +897,63 @@ fn test_export_roundtrip_with_bodies() {
         .query_row("SELECT COUNT(*) FROM blobs", [], |r| r.get(0))
         .unwrap();
     assert!(blob_count > 0);
+}
+
+#[test]
+fn test_export_with_raw_response_bodies() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("src.db");
+    let har_path = tmp.path().join("export.har");
+
+    harlite()
+        .args([
+            "import",
+            "tests/fixtures/gzip_response.har",
+            "--bodies",
+            "--decompress-bodies",
+            "--keep-compressed",
+            "-o",
+        ])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args(["export", "--bodies-raw"])
+        .arg(&db_path)
+        .args(["-o"])
+        .arg(&har_path)
+        .assert()
+        .success();
+
+    let exported: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(&har_path).unwrap()).unwrap();
+    let entry0 = &exported["log"]["entries"][0];
+    let content = &entry0["response"]["content"];
+    let text = content["text"].as_str().unwrap_or("");
+    let encoding = content["encoding"].as_str();
+    let decoded = match encoding {
+        Some("base64") => STANDARD.decode(text).unwrap(),
+        _ => text.as_bytes().to_vec(),
+    };
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let raw_blob: Vec<u8> = conn
+        .query_row(
+            "SELECT b.content FROM entries e JOIN blobs b ON e.response_body_hash_raw = b.hash LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(decoded, raw_blob);
+
+    let body_size = entry0["response"]["bodySize"].as_i64().unwrap_or(-1);
+    assert_eq!(body_size, raw_blob.len() as i64);
+
+    if let Some(compression) = content["compression"].as_i64() {
+        let size = content["size"].as_i64().unwrap_or(body_size);
+        assert_eq!(compression, size - body_size);
+    }
 }
 
 #[test]
