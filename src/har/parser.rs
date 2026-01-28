@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::BufReader;
@@ -7,12 +8,12 @@ use std::path::Path;
 
 use crate::error::Result;
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Serialize)]
 pub struct Har {
     pub log: Log,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Serialize)]
 pub struct Log {
     pub version: Option<String>,
     pub creator: Option<Creator>,
@@ -159,8 +160,172 @@ pub struct Timings {
 pub fn parse_har_file(path: &Path) -> Result<Har> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
-    let har: Har = serde_json::from_reader(reader)?;
+    let mut deserializer = serde_json::Deserializer::from_reader(reader);
+    let har = Har::deserialize(&mut deserializer)?;
+    deserializer.end()?;
     Ok(har)
+}
+
+impl<'de> Deserialize<'de> for Har {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct HarVisitor;
+
+        impl<'de> Visitor<'de> for HarVisitor {
+            type Value = Har;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a HAR object with a log field")
+            }
+
+            fn visit_map<M>(self, mut map: M) -> std::result::Result<Har, M::Error>
+            where
+                M: MapAccess<'de>,
+            {
+                let mut log: Option<Log> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "log" => {
+                            if log.is_some() {
+                                return Err(de::Error::duplicate_field("log"));
+                            }
+                            log = Some(map.next_value()?);
+                        }
+                        _ => {
+                            let _: IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+
+                let log = log.ok_or_else(|| de::Error::missing_field("log"))?;
+                Ok(Har { log })
+            }
+        }
+
+        deserializer.deserialize_map(HarVisitor)
+    }
+}
+
+impl<'de> Deserialize<'de> for Log {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct LogVisitor;
+
+        impl<'de> Visitor<'de> for LogVisitor {
+            type Value = Log;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a HAR log object")
+            }
+
+            fn visit_map<M>(self, mut map: M) -> std::result::Result<Log, M::Error>
+            where
+                M: MapAccess<'de>,
+            {
+                let mut version: Option<String> = None;
+                let mut creator: Option<Creator> = None;
+                let mut browser: Option<Browser> = None;
+                let mut pages: Option<Vec<Page>> = None;
+                let mut seen_version = false;
+                let mut seen_creator = false;
+                let mut seen_browser = false;
+                let mut seen_pages = false;
+                let mut entries: Option<Vec<Entry>> = None;
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "version" => {
+                            if seen_version {
+                                return Err(de::Error::duplicate_field("version"));
+                            }
+                            seen_version = true;
+                            version = map.next_value::<Option<String>>()?;
+                        }
+                        "creator" => {
+                            if seen_creator {
+                                return Err(de::Error::duplicate_field("creator"));
+                            }
+                            seen_creator = true;
+                            creator = map.next_value::<Option<Creator>>()?;
+                        }
+                        "browser" => {
+                            if seen_browser {
+                                return Err(de::Error::duplicate_field("browser"));
+                            }
+                            seen_browser = true;
+                            browser = map.next_value::<Option<Browser>>()?;
+                        }
+                        "pages" => {
+                            if seen_pages {
+                                return Err(de::Error::duplicate_field("pages"));
+                            }
+                            seen_pages = true;
+                            pages = map.next_value::<Option<Vec<Page>>>()?;
+                        }
+                        "entries" => {
+                            if entries.is_some() {
+                                return Err(de::Error::duplicate_field("entries"));
+                            }
+                            entries = Some(map.next_value_seed(EntriesSeed)?);
+                        }
+                        _ => {
+                            let _: IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+
+                let entries = entries.ok_or_else(|| de::Error::missing_field("entries"))?;
+
+                Ok(Log {
+                    version,
+                    creator,
+                    browser,
+                    pages,
+                    entries,
+                })
+            }
+        }
+
+        deserializer.deserialize_map(LogVisitor)
+    }
+}
+
+struct EntriesSeed;
+
+impl<'de> DeserializeSeed<'de> for EntriesSeed {
+    type Value = Vec<Entry>;
+
+    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Vec<Entry>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(EntriesVisitor)
+    }
+}
+
+struct EntriesVisitor;
+
+impl<'de> Visitor<'de> for EntriesVisitor {
+    type Value = Vec<Entry>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a list of HAR entries")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Vec<Entry>, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut entries = Vec::new();
+        while let Some(entry) = seq.next_element()? {
+            entries.push(entry);
+        }
+        Ok(entries)
+    }
 }
 
 #[cfg(test)]
