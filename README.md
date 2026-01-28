@@ -567,6 +567,8 @@ GROUP BY i.id;
 
 ## Working with AI Agents
 
+Agent-specific repository instructions live in `AGENTS.md`.
+
 `harlite` is designed to work seamlessly with AI coding assistants:
 
 ```bash
