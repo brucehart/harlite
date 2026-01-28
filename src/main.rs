@@ -6,6 +6,7 @@ mod commands;
 mod db;
 mod error;
 mod har;
+mod size;
 
 use crate::db::ExtractBodiesKind;
 use commands::StatsOptions;
@@ -42,7 +43,7 @@ enum Commands {
         #[arg(long)]
         bodies: bool,
 
-        /// Maximum body size to store (e.g., "100KB", "1MB", "unlimited")
+        /// Maximum body size to store (e.g., "100KB", "1.5MB", "1M", "100k", "unlimited")
         #[arg(long, default_value = "100KB")]
         max_body_size: String,
 
@@ -174,19 +175,19 @@ enum Commands {
         #[arg(long)]
         to: Option<String>,
 
-        /// Minimum request body size (e.g., '1KB', '500B')
+        /// Minimum request body size (e.g., '1KB', '1.5MB', '1M', '100k', '500B')
         #[arg(long)]
         min_request_size: Option<String>,
 
-        /// Maximum request body size (e.g., '100KB', 'unlimited')
+        /// Maximum request body size (e.g., '100KB', '1.5MB', '1M', '100k', 'unlimited')
         #[arg(long)]
         max_request_size: Option<String>,
 
-        /// Minimum response body size (e.g., '1KB', '500B')
+        /// Minimum response body size (e.g., '1KB', '1.5MB', '1M', '100k', '500B')
         #[arg(long)]
         min_response_size: Option<String>,
 
-        /// Maximum response body size (e.g., '100KB', 'unlimited')
+        /// Maximum response body size (e.g., '100KB', '1.5MB', '1M', '100k', 'unlimited')
         #[arg(long)]
         max_response_size: Option<String>,
     },
@@ -290,7 +291,7 @@ enum Commands {
         #[arg(long, value_enum, default_value = "unicode61")]
         tokenizer: commands::FtsTokenizer,
 
-        /// Maximum body size to index (e.g., '1MB', '100KB', 'unlimited')
+        /// Maximum body size to index (e.g., '1MB', '1.5MB', '1M', '100k', 'unlimited')
         #[arg(long, default_value = "1MB")]
         max_body_size: String,
 
@@ -304,29 +305,11 @@ enum Commands {
     },
 }
 
-fn parse_size(s: &str) -> Option<usize> {
-    let s = s.trim().to_lowercase();
-    if s == "unlimited" {
-        return None;
-    }
-
-    let (num, mult) = if s.ends_with("kb") {
-        (s.trim_end_matches("kb").trim(), 1024)
-    } else if s.ends_with("mb") {
-        (s.trim_end_matches("mb").trim(), 1024 * 1024)
-    } else if s.ends_with("gb") {
-        (s.trim_end_matches("gb").trim(), 1024 * 1024 * 1024)
-    } else {
-        (s.as_str(), 1)
-    };
-
-    num.parse::<usize>().ok().map(|n| n * mult)
-}
-
 fn main() {
     let cli = Cli::parse();
 
-    let result = match cli.command {
+    let result = (|| {
+        match cli.command {
         Commands::Import {
             files,
             output,
@@ -340,10 +323,11 @@ fn main() {
             extract_bodies_kind,
             extract_bodies_shard_depth,
         } => {
+            let max_body_size = size::parse_size_bytes_usize(&max_body_size)?;
             let options = ImportOptions {
                 output,
                 store_bodies: bodies,
-                max_body_size: parse_size(&max_body_size),
+                max_body_size,
                 text_only,
                 show_stats: stats,
                 decompress_bodies,
@@ -480,14 +464,18 @@ fn main() {
             max_body_size,
             allow_external_paths,
             external_path_root,
-        } => run_fts_rebuild(
-            database,
-            tokenizer,
-            parse_size(&max_body_size),
-            allow_external_paths,
-            external_path_root,
-        ),
-    };
+        } => {
+            let max_body_size = size::parse_size_bytes_usize(&max_body_size)?;
+            run_fts_rebuild(
+                database,
+                tokenizer,
+                max_body_size,
+                allow_external_paths,
+                external_path_root,
+            )
+        }
+    }
+    })();
 
     if let Err(e) = result {
         eprintln!("Error: {}", e);
