@@ -515,14 +515,16 @@ pub fn run_export(database: PathBuf, options: &ExportOptions) -> Result<()> {
             if options.include_raw_response_bodies {
                 if let Some(hash) = &row.response_body_hash_raw {
                     if let Some(blob) = blob_map.get(hash) {
-                        let (text, enc) = body_text_and_encoding(&blob.content);
-                        response_body_text = text;
-                        response_body_encoding = enc;
-                        response_body_size_raw = Some(blob.content.len() as i64);
-                        response_body_is_raw = true;
-                        resolved = true;
-                        if response_mime.is_none() {
-                            response_mime = blob.mime_type.clone();
+                        if !blob.content.is_empty() || blob.size <= 0 {
+                            let (text, enc) = body_text_and_encoding(&blob.content);
+                            response_body_text = text;
+                            response_body_encoding = enc;
+                            response_body_size_raw = Some(blob.content.len() as i64);
+                            response_body_is_raw = true;
+                            resolved = true;
+                            if response_mime.is_none() {
+                                response_mime = blob.mime_type.clone();
+                            }
                         }
                     }
                 }
