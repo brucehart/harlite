@@ -3,7 +3,7 @@
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Cursor, Read};
 use std::path::Path;
 
 use crate::error::Result;
@@ -158,12 +158,54 @@ pub struct Timings {
 
 /// Parse a HAR file from disk into strongly typed structures.
 pub fn parse_har_file(path: &Path) -> Result<Har> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
+    let mut file = File::open(path)?;
+    let mut prefix = [0u8; 4];
+    let prefix_len = file.read(&mut prefix)?;
+    let prefix_reader = Cursor::new(prefix[..prefix_len].to_vec());
+    let chained = prefix_reader.chain(file);
+
+    let reader: Box<dyn Read> = match detect_compression(path, &prefix[..prefix_len]) {
+        Compression::Gzip => Box::new(flate2::read::GzDecoder::new(chained)),
+        Compression::Brotli => Box::new(brotli::Decompressor::new(chained, 4096)),
+        Compression::None => Box::new(chained),
+    };
+
+    let reader = BufReader::new(reader);
     let mut deserializer = serde_json::Deserializer::from_reader(reader);
     let har = Har::deserialize(&mut deserializer)?;
     deserializer.end()?;
     Ok(har)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Compression {
+    None,
+    Gzip,
+    Brotli,
+}
+
+fn detect_compression(path: &Path, prefix: &[u8]) -> Compression {
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let extension = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    if extension == "br" || file_name.ends_with(".har.br") {
+        return Compression::Brotli;
+    }
+
+    let gzip_magic = prefix.len() >= 2 && prefix[0] == 0x1f && prefix[1] == 0x8b;
+    if extension == "gz" || file_name.ends_with(".har.gz") || gzip_magic {
+        return Compression::Gzip;
+    }
+
+    Compression::None
 }
 
 impl<'de> Deserialize<'de> for Har {
