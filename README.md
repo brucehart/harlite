@@ -77,6 +77,12 @@ Optional flags:
 - `--duration` to capture for N seconds (otherwise stop with Ctrl+C)
 - `--bodies`, `--text-only`, `--max-body-size` to control stored response bodies
 
+Show full CDP options:
+
+```bash
+harlite cdp --help
+```
+
 ### Build and run locally
 
 ```bash

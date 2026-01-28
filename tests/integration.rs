@@ -19,6 +19,17 @@ fn test_help() {
 }
 
 #[test]
+fn test_cdp_help() {
+    harlite()
+        .args(["cdp", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--host"))
+        .stdout(predicate::str::contains("--port"))
+        .stdout(predicate::str::contains("--duration"));
+}
+
+#[test]
 fn test_version() {
     harlite()
         .arg("--version")
