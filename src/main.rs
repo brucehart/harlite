@@ -10,8 +10,8 @@ mod har;
 use crate::db::ExtractBodiesKind;
 use commands::StatsOptions;
 use commands::{
-    run_export, run_fts_rebuild, run_import, run_info, run_query, run_redact, run_schema,
-    run_search, run_stats,
+    run_export, run_fts_rebuild, run_import, run_imports, run_info, run_prune, run_query,
+    run_redact, run_schema, run_search, run_stats,
 };
 use commands::{
     ExportOptions, ImportOptions, NameMatchMode, OutputFormat, QueryOptions, RedactOptions,
@@ -85,6 +85,22 @@ enum Commands {
     Info {
         /// Database file to inspect
         database: PathBuf,
+    },
+
+    /// List import metadata for a database
+    Imports {
+        /// Database file to inspect
+        database: PathBuf,
+    },
+
+    /// Remove entries for a specific import id
+    Prune {
+        /// Database file to modify
+        database: PathBuf,
+
+        /// Import id to remove
+        #[arg(long)]
+        import_id: i64,
     },
 
     /// Show lightweight database stats (script-friendly)
@@ -358,6 +374,13 @@ fn main() {
         Commands::Schema { database } => run_schema(database),
 
         Commands::Info { database } => run_info(database),
+
+        Commands::Imports { database } => run_imports(database),
+
+        Commands::Prune {
+            database,
+            import_id,
+        } => run_prune(database, import_id),
 
         Commands::Stats { database, json } => {
             let options = StatsOptions { json };

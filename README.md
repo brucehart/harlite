@@ -197,6 +197,20 @@ harlite stats traffic.db
 harlite stats traffic.db --json
 ```
 
+### Imports list and prune
+
+List import metadata (id, source, date range, entry count):
+
+```bash
+harlite imports traffic.db
+```
+
+Remove a specific import and its entries/pages/blobs:
+
+```bash
+harlite prune traffic.db --import-id 2
+```
+
 ### Export HAR files
 
 Export a `harlite` SQLite database back to HAR format (optionally with bodies if they were stored during import):
@@ -344,6 +358,7 @@ Page/document information from the HAR (if present).
 ### `imports` table
 
 Tracks import history for auditing and multi-file management.
+Use `harlite imports` to list these records and `harlite prune --import-id <id>` to remove a specific import.
 
 | Column | Type | Description |
 |--------|------|-------------|
