@@ -123,6 +123,25 @@ fn test_import_with_bodies() {
 }
 
 #[test]
+fn test_import_stats_counts_request_and_response_bodies() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    harlite()
+        .args([
+            "import",
+            "tests/fixtures/simple.har",
+            "--bodies",
+            "--stats",
+            "-o",
+        ])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Unique blobs stored: 3"));
+}
+
+#[test]
 fn test_import_with_gzip_decompression() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("test.db");

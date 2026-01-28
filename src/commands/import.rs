@@ -5,7 +5,7 @@ use indicatif::ProgressBar;
 use rusqlite::Connection;
 
 use crate::db::{
-    create_import, create_schema, insert_entry, insert_page, update_import_count,
+    create_import, create_schema, insert_entry, insert_page, update_import_count, BlobStats,
     ExtractBodiesKind, ImportStats, InsertEntryOptions,
 };
 use crate::error::{HarliteError, Result};
@@ -92,19 +92,15 @@ pub fn run_import(files: &[PathBuf], options: &ImportOptions) -> Result<ImportSt
 
     let mut total_stats = ImportStats {
         entries_imported: 0,
-        blobs_created: 0,
-        blobs_deduplicated: 0,
-        bytes_stored: 0,
-        bytes_deduplicated: 0,
+        request: BlobStats::default(),
+        response: BlobStats::default(),
     };
 
     for file_path in files {
         let stats = import_single_file(&conn, file_path, &entry_options)?;
         total_stats.entries_imported += stats.entries_imported;
-        total_stats.blobs_created += stats.blobs_created;
-        total_stats.blobs_deduplicated += stats.blobs_deduplicated;
-        total_stats.bytes_stored += stats.bytes_stored;
-        total_stats.bytes_deduplicated += stats.bytes_deduplicated;
+        total_stats.request.add_assign(stats.request);
+        total_stats.response.add_assign(stats.response);
     }
 
     if options.show_stats {
@@ -146,27 +142,18 @@ fn import_single_file(
 
     let mut stats = ImportStats {
         entries_imported: 0,
-        blobs_created: 0,
-        blobs_deduplicated: 0,
-        bytes_stored: 0,
-        bytes_deduplicated: 0,
+        request: BlobStats::default(),
+        response: BlobStats::default(),
     };
 
     let tx = conn.unchecked_transaction()?;
 
     for entry in entries {
-        let (blob_created, bytes) = insert_entry(&tx, import_id, entry, options)?;
+        let entry_stats = insert_entry(&tx, import_id, entry, options)?;
         stats.entries_imported += 1;
 
-        if options.store_bodies {
-            if blob_created {
-                stats.blobs_created += 1;
-                stats.bytes_stored += bytes;
-            } else if bytes > 0 {
-                stats.blobs_deduplicated += 1;
-                stats.bytes_deduplicated += bytes;
-            }
-        }
+        stats.request.add_assign(entry_stats.request);
+        stats.response.add_assign(entry_stats.response);
 
         pb.inc(1);
     }
@@ -180,15 +167,21 @@ fn import_single_file(
 }
 
 fn print_stats(stats: &ImportStats) {
+    let total_created = stats.request.created + stats.response.created;
+    let total_deduplicated = stats.request.deduplicated + stats.response.deduplicated;
+    let total_bytes_stored = stats.request.bytes_stored + stats.response.bytes_stored;
+    let total_bytes_deduplicated =
+        stats.request.bytes_deduplicated + stats.response.bytes_deduplicated;
+
     println!("\nImport Statistics:");
     println!("  Entries imported: {}", stats.entries_imported);
-    if stats.blobs_created > 0 || stats.blobs_deduplicated > 0 {
-        println!("  Unique blobs stored: {}", stats.blobs_created);
-        println!("  Duplicate blobs skipped: {}", stats.blobs_deduplicated);
-        println!("  Bytes stored: {} KB", stats.bytes_stored / 1024);
+    if total_created > 0 || total_deduplicated > 0 {
+        println!("  Unique blobs stored: {}", total_created);
+        println!("  Duplicate blobs skipped: {}", total_deduplicated);
+        println!("  Bytes stored: {} KB", total_bytes_stored / 1024);
         println!(
             "  Bytes saved by deduplication: {} KB",
-            stats.bytes_deduplicated / 1024
+            total_bytes_deduplicated / 1024
         );
     }
 }

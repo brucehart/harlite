@@ -10,10 +10,45 @@ use std::path::{Path, PathBuf};
 /// Summary statistics for an import operation.
 pub struct ImportStats {
     pub entries_imported: usize,
-    pub blobs_created: usize,
-    pub blobs_deduplicated: usize,
+    pub request: BlobStats,
+    pub response: BlobStats,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BlobStats {
+    pub created: usize,
+    pub deduplicated: usize,
     pub bytes_stored: usize,
     pub bytes_deduplicated: usize,
+}
+
+impl BlobStats {
+    fn record(&mut self, is_new: bool, bytes: usize) {
+        if bytes == 0 {
+            return;
+        }
+
+        if is_new {
+            self.created += 1;
+            self.bytes_stored += bytes;
+        } else {
+            self.deduplicated += 1;
+            self.bytes_deduplicated += bytes;
+        }
+    }
+
+    pub fn add_assign(&mut self, other: BlobStats) {
+        self.created += other.created;
+        self.deduplicated += other.deduplicated;
+        self.bytes_stored += other.bytes_stored;
+        self.bytes_deduplicated += other.bytes_deduplicated;
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EntryBlobStats {
+    pub request: BlobStats,
+    pub response: BlobStats,
 }
 
 /// Create an import record and return its row id.
@@ -333,7 +368,7 @@ pub fn insert_entry(
     import_id: i64,
     entry: &Entry,
     options: &InsertEntryOptions,
-) -> Result<(bool, usize)> {
+) -> Result<EntryBlobStats> {
     let (host, path, query_string) = parse_url_parts(&entry.request.url);
 
     let request_headers_json = headers_to_json(&entry.request.headers);
@@ -365,8 +400,7 @@ pub fn insert_entry(
     }
     let response_mime = response_mime_owned.as_deref();
 
-    let mut blob_created = false;
-    let mut bytes_accounted = 0usize;
+    let mut entry_stats = EntryBlobStats::default();
 
     if options.store_bodies {
         if let Some(mut body) = decode_body(&entry.response.content) {
@@ -387,9 +421,7 @@ pub fn insert_entry(
                                     let (hash, is_new) =
                                         store_response_blob(conn, &body, response_mime, options)?;
                                     response_body_hash_raw = Some(hash);
-                                    if is_new {
-                                        blob_created = true;
-                                    }
+                                    entry_stats.response.record(is_new, body.len());
                                 }
                             }
                             body = decompressed;
@@ -402,10 +434,7 @@ pub fn insert_entry(
                     let (hash, is_new) = store_response_blob(conn, &body, response_mime, options)?;
                     response_body_hash = Some(hash.clone());
                     response_body_size = Some(body.len() as i64);
-                    if is_new {
-                        blob_created = true;
-                    }
-                    bytes_accounted = body.len();
+                    entry_stats.response.record(is_new, body.len());
 
                     // Index decompressed/stored bytes when they are text.
                     maybe_index_response_body_fts(
@@ -429,10 +458,7 @@ pub fn insert_entry(
                 if size_ok && type_ok && !body.is_empty() {
                     let (hash, is_new) = store_request_blob(conn, body, mime, options)?;
                     request_body_hash = Some(hash);
-                    if is_new {
-                        blob_created = true;
-                    }
-                    bytes_accounted = body.len();
+                    entry_stats.request.record(is_new, body.len());
                 }
             }
         }
@@ -481,7 +507,7 @@ pub fn insert_entry(
         ],
     )?;
 
-    Ok((blob_created, bytes_accounted))
+    Ok(entry_stats)
 }
 
 fn store_request_blob(
@@ -590,8 +616,9 @@ mod tests {
         )
         .expect("insert import");
 
-        let (_created, _bytes) =
-            insert_entry(&conn, import_id, entry, &options).expect("insert entry");
+        let stats = insert_entry(&conn, import_id, entry, &options).expect("insert entry");
+        assert_eq!(stats.request.created, 0);
+        assert_eq!(stats.response.created, 1);
 
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))
