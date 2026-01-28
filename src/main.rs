@@ -11,11 +11,12 @@ mod size;
 use crate::db::ExtractBodiesKind;
 use commands::StatsOptions;
 use commands::{
-    run_export, run_fts_rebuild, run_import, run_imports, run_info, run_prune, run_query,
-    run_redact, run_schema, run_search, run_stats,
+    run_diff, run_export, run_fts_rebuild, run_import, run_imports, run_info, run_prune,
+    run_query, run_redact, run_schema, run_search, run_stats,
 };
 use commands::{
-    ExportOptions, ImportOptions, NameMatchMode, OutputFormat, QueryOptions, RedactOptions,
+    DiffOptions, ExportOptions, ImportOptions, NameMatchMode, OutputFormat, QueryOptions,
+    RedactOptions,
 };
 
 #[derive(Parser)]
@@ -278,6 +279,35 @@ enum Commands {
         database: Option<PathBuf>,
     },
 
+    /// Compare two HAR files or two SQLite databases
+    Diff {
+        /// Left-hand HAR or database file
+        left: PathBuf,
+
+        /// Right-hand HAR or database file
+        right: PathBuf,
+
+        /// Output format
+        #[arg(short, long, value_enum, default_value = "table")]
+        format: OutputFormat,
+
+        /// Hostname filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        host: Vec<String>,
+
+        /// HTTP method filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        method: Vec<String>,
+
+        /// HTTP status filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        status: Vec<i32>,
+
+        /// URL regex match (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        url_regex: Vec<String>,
+    },
+
     /// Run a SQL query against a harlite SQLite database
     Query {
         /// SQL string to execute (read-only)
@@ -493,6 +523,25 @@ fn main() {
                 token,
             };
             run_redact(database, &options)
+        }
+
+        Commands::Diff {
+            left,
+            right,
+            format,
+            host,
+            method,
+            status,
+            url_regex,
+        } => {
+            let options = DiffOptions {
+                format,
+                host,
+                method,
+                status,
+                url_regex,
+            };
+            run_diff(left, right, &options)
         }
 
         Commands::Query {

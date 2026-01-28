@@ -1,5 +1,6 @@
 mod export;
 mod fts;
+mod diff;
 mod import;
 mod imports;
 mod info;
@@ -13,6 +14,7 @@ mod util;
 
 pub use export::{run_export, ExportOptions};
 pub use fts::{run_fts_rebuild, FtsTokenizer};
+pub use diff::{run_diff, DiffOptions};
 pub use import::{run_import, ImportOptions};
 pub use imports::run_imports;
 pub use info::run_info;

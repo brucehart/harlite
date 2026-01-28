@@ -282,6 +282,23 @@ fn test_import_filters_date_range() {
 }
 
 #[test]
+fn test_diff_har_json() {
+    harlite()
+        .args([
+            "diff",
+            "tests/fixtures/simple.har",
+            "tests/fixtures/simple_changed.har",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"change\":\"changed\""))
+        .stdout(predicate::str::contains("\"change\":\"removed\""))
+        .stdout(predicate::str::contains("\"change\":\"added\""));
+}
+
+#[test]
 fn test_import_stats_counts_request_and_response_bodies() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("test.db");
