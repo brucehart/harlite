@@ -642,13 +642,8 @@ MIT
 
 Contributions welcome! Please open an issue to discuss major changes before submitting a PR.
 
-## Roadmap
-
-Future possibilities (not yet implemented):
-
-- [ ] HAR 1.3 spec extensions
-
 ---
 
 *Created by [Bruce Hart](https://bhart.org)
+
 
