@@ -33,6 +33,9 @@ base64 = "0.22"
 regex = "1"
 flate2 = "1"
 brotli = "3"
+ctrlc = "3"
+tungstenite = "0.21"
+ureq = { version = "2", features = ["json"] }
 
 [dev-dependencies]
 tempfile = "3"

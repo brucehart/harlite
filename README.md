@@ -35,6 +35,7 @@ Works great with AI coding agents like Codex and Claude — they already know SQ
 - **Safe sharing** — Redact sensitive headers/cookies before sharing a database
 - **Diffing** — Compare two HAR files or two databases (`harlite diff`)
 - **HAR extensions preserved** — Store and round-trip HAR 1.3 extension fields as JSON
+- **CDP capture** — Capture from Chrome and write directly to HAR or SQLite
 
 ## Installation
 
@@ -45,6 +46,36 @@ cargo install harlite
 ```
 
 Published on crates.io as `harlite`.
+
+## Capture from Chrome (CDP)
+
+You can capture network traffic directly from a running Chrome instance using the Chrome DevTools Protocol (CDP).
+
+```bash
+# Start Chrome with remote debugging enabled
+google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/harlite-profile
+
+# Capture to HAR
+harlite cdp --har capture.har
+
+# Capture to SQLite (imports entries directly)
+harlite cdp --output capture.db
+
+# Capture both (with bodies)
+harlite cdp --har capture.har --output capture.db --bodies
+```
+
+Required Chrome launch flags:
+
+- `--remote-debugging-port=9222` (or a different port you pass via `--port`)
+- A dedicated user data directory (`--user-data-dir=...`) to avoid conflicts with existing Chrome sessions
+
+Optional flags:
+
+- `--host` / `--port` to select the CDP address
+- `--target` to match a specific page by id, URL, or title substring
+- `--duration` to capture for N seconds (otherwise stop with Ctrl+C)
+- `--bodies`, `--text-only`, `--max-body-size` to control stored response bodies
 
 ### Build and run locally
 

@@ -11,12 +11,12 @@ mod size;
 use crate::db::ExtractBodiesKind;
 use commands::StatsOptions;
 use commands::{
-    run_diff, run_export, run_fts_rebuild, run_import, run_imports, run_info, run_merge, run_prune,
-    run_query, run_redact, run_schema, run_search, run_stats,
+    run_cdp, run_diff, run_export, run_fts_rebuild, run_import, run_imports, run_info, run_merge,
+    run_prune, run_query, run_redact, run_schema, run_search, run_stats,
 };
 use commands::{
-    DedupStrategy, DiffOptions, ExportOptions, ImportOptions, MergeOptions, NameMatchMode,
-    OutputFormat, QueryOptions, RedactOptions,
+    CdpOptions, DedupStrategy, DiffOptions, ExportOptions, ImportOptions, MergeOptions,
+    NameMatchMode, OutputFormat, QueryOptions, RedactOptions,
 };
 
 #[derive(Parser)]
@@ -99,6 +99,45 @@ enum Commands {
         /// Only import entries on/before this timestamp (RFC3339) or date (YYYY-MM-DD)
         #[arg(long)]
         to: Option<String>,
+    },
+
+    /// Capture network traffic from Chrome via CDP
+    Cdp {
+        /// Chrome host (CDP remote debugging address)
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+
+        /// Chrome remote debugging port
+        #[arg(long, default_value_t = 9222)]
+        port: u16,
+
+        /// Target selector (id, URL, or title substring)
+        #[arg(long)]
+        target: Option<String>,
+
+        /// Write captured HAR to this path
+        #[arg(long, value_name = "FILE")]
+        har: Option<PathBuf>,
+
+        /// Output database file (imports captured entries)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Store response bodies (fetch via CDP)
+        #[arg(long)]
+        bodies: bool,
+
+        /// Maximum body size to store (e.g., "100KB", "1.5MB", "unlimited")
+        #[arg(long, default_value = "100KB")]
+        max_body_size: String,
+
+        /// Only store text-based bodies (HTML, JSON, JS, CSS, XML)
+        #[arg(long)]
+        text_only: bool,
+
+        /// Stop capture after N seconds (omit to capture until Ctrl+C)
+        #[arg(long, value_name = "SECONDS")]
+        duration: Option<u64>,
     },
 
     /// Print the database schema
@@ -452,6 +491,32 @@ fn main() {
                 to,
             };
             run_import(&files, &options).map(|_| ())
+        }
+
+        Commands::Cdp {
+            host,
+            port,
+            target,
+            har,
+            output,
+            bodies,
+            max_body_size,
+            text_only,
+            duration,
+        } => {
+            let max_body_size = size::parse_size_bytes_usize(&max_body_size)?;
+            let options = CdpOptions {
+                host,
+                port,
+                target,
+                output_har: har,
+                output_db: output,
+                store_bodies: bodies,
+                max_body_size,
+                text_only,
+                duration_secs: duration,
+            };
+            run_cdp(&options)
         }
 
         Commands::Schema { database } => run_schema(database),
