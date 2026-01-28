@@ -258,6 +258,14 @@ enum Commands {
         #[arg(long, action = clap::ArgAction::Append)]
         cookie: Vec<String>,
 
+        /// Query parameter name pattern to redact (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        query_param: Vec<String>,
+
+        /// Regex pattern to redact from stored bodies (repeatable)
+        #[arg(long = "body-regex", action = clap::ArgAction::Append)]
+        body_regex: Vec<String>,
+
         /// Pattern matching mode for names
         #[arg(long = "match", value_enum, default_value = "wildcard")]
         match_mode: NameMatchMode,
@@ -466,6 +474,8 @@ fn main() {
             no_defaults,
             header,
             cookie,
+            query_param,
+            body_regex,
             match_mode,
             token,
             database,
@@ -477,6 +487,8 @@ fn main() {
                 no_defaults,
                 headers: header,
                 cookies: cookie,
+                query_params: query_param,
+                body_regexes: body_regex,
                 match_mode,
                 token,
             };

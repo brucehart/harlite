@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS imports (
     id INTEGER PRIMARY KEY,
     source_file TEXT NOT NULL,
     imported_at TEXT NOT NULL,
-    entry_count INTEGER
+    entry_count INTEGER,
+    log_extensions TEXT
 );
 
 -- Page information
@@ -23,6 +24,8 @@ CREATE TABLE IF NOT EXISTS pages (
     title TEXT,
     on_content_load_ms REAL,
     on_load_ms REAL,
+    page_extensions TEXT,
+    page_timings_extensions TEXT,
     PRIMARY KEY (id, import_id)
 );
 
@@ -62,7 +65,15 @@ CREATE TABLE IF NOT EXISTS entries (
     -- Metadata
     is_redirect INTEGER,
     server_ip TEXT,
-    connection_id TEXT
+    connection_id TEXT,
+
+    -- HAR extensions (JSON)
+    entry_extensions TEXT,
+    request_extensions TEXT,
+    response_extensions TEXT,
+    content_extensions TEXT,
+    timings_extensions TEXT,
+    post_data_extensions TEXT
 );
 
 -- Indexes

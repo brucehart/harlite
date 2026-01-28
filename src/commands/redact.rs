@@ -1,11 +1,13 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 
 use clap::ValueEnum;
-use regex::{Regex, RegexBuilder};
-use rusqlite::{params, Connection};
+use regex::{NoExpand, Regex, RegexBuilder};
+use rusqlite::{params, Connection, OptionalExtension};
+use url::Url;
 
+use crate::db::store_blob;
 use crate::error::{HarliteError, Result};
 
 use super::util::resolve_database;
@@ -24,6 +26,8 @@ pub struct RedactOptions {
     pub no_defaults: bool,
     pub headers: Vec<String>,
     pub cookies: Vec<String>,
+    pub query_params: Vec<String>,
+    pub body_regexes: Vec<String>,
     pub match_mode: NameMatchMode,
     pub token: String,
 }
@@ -36,13 +40,23 @@ struct RedactionReport {
     response_headers: u64,
     request_cookies: u64,
     response_cookies: u64,
+    query_params: u64,
+    request_bodies: u64,
+    response_bodies: u64,
+    body_matches: u64,
     matched_header_names: HashSet<String>,
     matched_cookie_names: HashSet<String>,
+    matched_query_param_names: HashSet<String>,
 }
 
 impl RedactionReport {
     fn total(&self) -> u64 {
-        self.request_headers + self.response_headers + self.request_cookies + self.response_cookies
+        self.request_headers
+            + self.response_headers
+            + self.request_cookies
+            + self.response_cookies
+            + self.query_params
+            + self.body_matches
     }
 }
 
@@ -226,15 +240,187 @@ fn redact_cookies_json(
     Ok((serde_json::to_string(&value)?, changed))
 }
 
+fn redact_url_params(
+    url: &str,
+    matcher: &NameMatcher,
+    token: &str,
+    matched_names: &mut HashSet<String>,
+) -> Option<(String, Option<String>, u64)> {
+    let mut parsed = Url::parse(url).ok()?;
+    let pairs: Vec<(String, String)> = parsed
+        .query_pairs()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    if pairs.is_empty() {
+        return None;
+    }
+
+    let mut changed = 0u64;
+    {
+        let mut qp = parsed.query_pairs_mut();
+        qp.clear();
+        for (name, mut value) in pairs {
+            if matcher.matches(&name) {
+                matched_names.insert(name.clone());
+                if value != token {
+                    value = token.to_string();
+                    changed += 1;
+                }
+            }
+            qp.append_pair(&name, &value);
+        }
+    }
+
+    if changed == 0 {
+        return None;
+    }
+
+    let new_query = parsed.query().map(|q| q.to_string());
+    let new_url: String = parsed.into();
+    Some((new_url, new_query, changed))
+}
+
+#[derive(Clone)]
+struct RedactedBlob {
+    new_hash: String,
+    new_size: i64,
+    matches: u64,
+    text: String,
+}
+
+fn redact_body_text(text: &str, regexes: &[Regex], token: &str) -> Option<(String, u64)> {
+    if regexes.is_empty() {
+        return None;
+    }
+
+    let mut out = text.to_string();
+    let mut total_matches = 0u64;
+    for re in regexes {
+        let matches = re.find_iter(&out).count();
+        if matches == 0 {
+            continue;
+        }
+        total_matches += matches as u64;
+        out = re.replace_all(&out, NoExpand(token)).into_owned();
+    }
+
+    if total_matches == 0 || out == text {
+        return None;
+    }
+
+    Some((out, total_matches))
+}
+
+fn load_blob_for_redaction(
+    conn: &Connection,
+    hash: &str,
+) -> Result<Option<(Vec<u8>, Option<String>)>> {
+    let row = conn
+        .query_row(
+            "SELECT content, size, mime_type, external_path FROM blobs WHERE hash = ?1",
+            params![hash],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+
+    let Some((mut content, size, mime_type, external_path)) = row else {
+        return Ok(None);
+    };
+
+    if content.is_empty() && size > 0 {
+        if let Some(path) = external_path {
+            if let Ok(bytes) = std::fs::read(path) {
+                content = bytes;
+            }
+        }
+    }
+
+    if content.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some((content, mime_type)))
+}
+
+fn redact_blob_cached(
+    conn: &Connection,
+    hash: &str,
+    regexes: &[Regex],
+    token: &str,
+    write: bool,
+    cache: &mut HashMap<String, Option<RedactedBlob>>,
+) -> Result<(Option<RedactedBlob>, bool)> {
+    if let Some(existing) = cache.get(hash) {
+        return Ok((existing.clone(), false));
+    }
+
+    let Some((content, mime_type)) = load_blob_for_redaction(conn, hash)? else {
+        cache.insert(hash.to_string(), None);
+        return Ok((None, true));
+    };
+
+    let text = match std::str::from_utf8(&content) {
+        Ok(s) => s,
+        Err(_) => {
+            cache.insert(hash.to_string(), None);
+            return Ok((None, true));
+        }
+    };
+
+    let Some((redacted_text, matches)) = redact_body_text(text, regexes, token) else {
+        cache.insert(hash.to_string(), None);
+        return Ok((None, true));
+    };
+
+    let bytes = redacted_text.as_bytes();
+    let new_hash = if write {
+        let (hash, _) = store_blob(conn, bytes, mime_type.as_deref(), None, true)?;
+        hash
+    } else {
+        hash.to_string()
+    };
+
+    let redacted = RedactedBlob {
+        new_hash,
+        new_size: bytes.len() as i64,
+        matches,
+        text: redacted_text,
+    };
+
+    cache.insert(hash.to_string(), Some(redacted.clone()));
+    Ok((Some(redacted), true))
+}
+
+fn upsert_response_fts(conn: &Connection, hash: &str, text: &str) -> Result<()> {
+    if text.is_empty() {
+        return Ok(());
+    }
+    conn.execute("DELETE FROM response_body_fts WHERE hash = ?1", params![hash])?;
+    conn.execute(
+        "INSERT INTO response_body_fts (hash, body) VALUES (?1, ?2)",
+        params![hash, text],
+    )?;
+    Ok(())
+}
+
 fn redact_entries(
     conn: &Connection,
     header_matcher: &NameMatcher,
     cookie_matcher: &NameMatcher,
+    query_matcher: &NameMatcher,
+    body_regexes: &[Regex],
     token: &str,
     write: bool,
 ) -> Result<RedactionReport> {
     let mut stmt = conn.prepare(
-        "SELECT id, request_headers, response_headers, request_cookies, response_cookies FROM entries ORDER BY id",
+        "SELECT id, url, query_string, request_headers, response_headers, request_cookies, response_cookies, request_body_hash, request_body_size, response_body_hash, response_body_size FROM entries ORDER BY id",
     )?;
 
     let mut report = RedactionReport::default();
@@ -246,22 +432,57 @@ fn redact_entries(
             row.get::<_, Option<String>>(2)?,
             row.get::<_, Option<String>>(3)?,
             row.get::<_, Option<String>>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, Option<String>>(6)?,
+            row.get::<_, Option<String>>(7)?,
+            row.get::<_, Option<i64>>(8)?,
+            row.get::<_, Option<String>>(9)?,
+            row.get::<_, Option<i64>>(10)?,
         ))
     })?;
 
     let mut update = conn.prepare(
-        "UPDATE entries SET request_headers=?1, response_headers=?2, request_cookies=?3, response_cookies=?4 WHERE id=?5",
+        "UPDATE entries SET url=?1, query_string=?2, request_headers=?3, response_headers=?4, request_cookies=?5, response_cookies=?6, request_body_hash=?7, request_body_size=?8, response_body_hash=?9, response_body_size=?10 WHERE id=?11",
     )?;
 
+    let mut blob_cache: HashMap<String, Option<RedactedBlob>> = HashMap::new();
+    let mut changed_response_hashes: HashSet<String> = HashSet::new();
+    let has_fts: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='response_body_fts'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+
     for row in rows {
-        let (id, req_h, resp_h, req_c, resp_c) = row?;
+        let (
+            id,
+            url,
+            query_string,
+            req_h,
+            resp_h,
+            req_c,
+            resp_c,
+            req_body_hash,
+            req_body_size,
+            resp_body_hash,
+            resp_body_size,
+        ) = row?;
         report.entries_scanned += 1;
 
         let mut changed = false;
+        let mut new_url = url.clone();
+        let mut new_query_string = query_string.clone();
         let mut new_req_h = req_h.clone();
         let mut new_resp_h = resp_h.clone();
         let mut new_req_c = req_c.clone();
         let mut new_resp_c = resp_c.clone();
+        let mut new_req_body_hash = req_body_hash.clone();
+        let mut new_req_body_size = req_body_size;
+        let mut new_resp_body_hash = resp_body_hash.clone();
+        let mut new_resp_body_size = resp_body_size;
 
         if let Some(json) = req_h.as_deref() {
             let (out, n) = redact_headers_json(
@@ -315,11 +536,94 @@ fn redact_entries(
                 changed = true;
             }
         }
+        if let Some(url_str) = url.as_deref() {
+            if !query_matcher.is_empty() {
+                if let Some((out, new_query, n)) =
+                    redact_url_params(url_str, query_matcher, token, &mut report.matched_query_param_names)
+                {
+                    new_url = Some(out);
+                    new_query_string = new_query;
+                    report.query_params += n;
+                    changed = true;
+                }
+            }
+        }
+        if !body_regexes.is_empty() {
+            if let Some(hash) = req_body_hash.as_deref() {
+                let (redacted, counted) =
+                    redact_blob_cached(conn, hash, body_regexes, token, write, &mut blob_cache)?;
+                if let Some(redacted) = redacted {
+                    if counted {
+                        report.body_matches += redacted.matches;
+                    }
+                    report.request_bodies += 1;
+                    changed = true;
+                    if write {
+                        new_req_body_hash = Some(redacted.new_hash);
+                        new_req_body_size = Some(redacted.new_size);
+                    }
+                }
+            }
+            if let Some(hash) = resp_body_hash.as_deref() {
+                let (redacted, counted) =
+                    redact_blob_cached(conn, hash, body_regexes, token, write, &mut blob_cache)?;
+                if let Some(redacted) = redacted {
+                    if counted {
+                        report.body_matches += redacted.matches;
+                    }
+                    report.response_bodies += 1;
+                    changed = true;
+                    if write {
+                        new_resp_body_hash = Some(redacted.new_hash.clone());
+                        new_resp_body_size = Some(redacted.new_size);
+                        changed_response_hashes.insert(hash.to_string());
+                        if has_fts {
+                            let has_old_fts = conn
+                                .query_row(
+                                    "SELECT 1 FROM response_body_fts WHERE hash = ?1 LIMIT 1",
+                                    params![hash],
+                                    |row| row.get::<_, i64>(0),
+                                )
+                                .optional()?
+                                .is_some();
+                            if has_old_fts {
+                                upsert_response_fts(conn, &redacted.new_hash, &redacted.text)?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         if changed {
             report.entries_changed += 1;
             if write {
-                update.execute(params![new_req_h, new_resp_h, new_req_c, new_resp_c, id])?;
+                update.execute(params![
+                    new_url,
+                    new_query_string,
+                    new_req_h,
+                    new_resp_h,
+                    new_req_c,
+                    new_resp_c,
+                    new_req_body_hash,
+                    new_req_body_size,
+                    new_resp_body_hash,
+                    new_resp_body_size,
+                    id
+                ])?;
+            }
+        }
+    }
+
+    if write && has_fts && !changed_response_hashes.is_empty() {
+        let mut check_stmt = conn.prepare(
+            "SELECT COUNT(*) FROM entries WHERE response_body_hash = ?1",
+        )?;
+        let mut delete_stmt = conn.prepare("DELETE FROM response_body_fts WHERE hash = ?1")?;
+        for hash in changed_response_hashes {
+            let count: i64 = check_stmt.query_row([hash.as_str()], |row| row.get(0))?;
+            if count == 0 {
+                delete_stmt.execute([hash])?;
             }
         }
     }
@@ -355,6 +659,7 @@ pub fn run_redact(database: Option<PathBuf>, options: &RedactOptions) -> Result<
 
     let mut header_patterns: Vec<String> = Vec::new();
     let mut cookie_patterns: Vec<String> = Vec::new();
+    let mut query_patterns: Vec<String> = Vec::new();
     // Only apply defaults when using wildcard mode, since defaults are wildcard patterns
     if !options.no_defaults && matches!(options.match_mode, NameMatchMode::Wildcard) {
         header_patterns.extend(default_header_patterns());
@@ -362,11 +667,23 @@ pub fn run_redact(database: Option<PathBuf>, options: &RedactOptions) -> Result<
     }
     header_patterns.extend(options.headers.iter().cloned());
     cookie_patterns.extend(options.cookies.iter().cloned());
+    query_patterns.extend(options.query_params.iter().cloned());
 
     let header_matcher = NameMatcher::new(options.match_mode, &header_patterns)?;
     let cookie_matcher = NameMatcher::new(options.match_mode, &cookie_patterns)?;
+    let query_matcher = NameMatcher::new(options.match_mode, &query_patterns)?;
 
-    if header_matcher.is_empty() && cookie_matcher.is_empty() {
+    let body_regexes: Vec<Regex> = options
+        .body_regexes
+        .iter()
+        .map(|p| Regex::new(p))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    if header_matcher.is_empty()
+        && cookie_matcher.is_empty()
+        && query_matcher.is_empty()
+        && body_regexes.is_empty()
+    {
         let hint = if !matches!(options.match_mode, NameMatchMode::Wildcard) {
             " (defaults only available in wildcard mode)"
         } else {
@@ -385,12 +702,22 @@ pub fn run_redact(database: Option<PathBuf>, options: &RedactOptions) -> Result<
             &conn,
             &header_matcher,
             &cookie_matcher,
+            &query_matcher,
+            &body_regexes,
             &options.token,
             false,
         )?
     } else {
         let tx = conn.transaction()?;
-        let report = redact_entries(&tx, &header_matcher, &cookie_matcher, &options.token, true)?;
+        let report = redact_entries(
+            &tx,
+            &header_matcher,
+            &cookie_matcher,
+            &query_matcher,
+            &body_regexes,
+            &options.token,
+            true,
+        )?;
         tx.commit()?;
         report
     };
@@ -417,8 +744,15 @@ pub fn run_redact(database: Option<PathBuf>, options: &RedactOptions) -> Result<
     }
 
     println!(
-        "Breakdown: request_headers={}, response_headers={}, request_cookies={}, response_cookies={}",
-        report.request_headers, report.response_headers, report.request_cookies, report.response_cookies
+        "Breakdown: request_headers={}, response_headers={}, request_cookies={}, response_cookies={}, query_params={}, request_bodies={}, response_bodies={}, body_matches={}",
+        report.request_headers,
+        report.response_headers,
+        report.request_cookies,
+        report.response_cookies,
+        report.query_params,
+        report.request_bodies,
+        report.response_bodies,
+        report.body_matches
     );
 
     if !report.matched_header_names.is_empty() {
@@ -430,6 +764,11 @@ pub fn run_redact(database: Option<PathBuf>, options: &RedactOptions) -> Result<
         let mut names: Vec<String> = report.matched_cookie_names.into_iter().collect();
         names.sort();
         println!("Matched cookies: {}", names.join(", "));
+    }
+    if !report.matched_query_param_names.is_empty() {
+        let mut names: Vec<String> = report.matched_query_param_names.into_iter().collect();
+        names.sort();
+        println!("Matched query params: {}", names.join(", "));
     }
 
     Ok(())

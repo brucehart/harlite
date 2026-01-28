@@ -9,12 +9,15 @@ use regex::Regex;
 use rusqlite::Connection;
 use url::Url;
 
-use crate::db::{load_blobs_by_hashes, load_entries, load_pages_for_imports, BlobRow, EntryQuery};
+use crate::db::{
+    ensure_schema_upgrades, load_blobs_by_hashes, load_entries, load_pages_for_imports, BlobRow,
+    EntryQuery,
+};
 use crate::error::{HarliteError, Result};
 use crate::size;
 use crate::har::{
-    Content, Cookie, Creator, Entry, Har, Header, Log, Page, PageTimings, PostData, QueryParam,
-    Request, Response, Timings,
+    Content, Cookie, Creator, Entry, Extensions, Har, Header, Log, Page, PageTimings, PostData,
+    QueryParam, Request, Response, Timings,
 };
 
 /// Options for exporting a harlite database back to a HAR file.
@@ -132,6 +135,13 @@ fn cookies_from_json(json: Option<&str>) -> Vec<Cookie> {
         return Vec::new();
     };
     serde_json::from_str::<Vec<Cookie>>(json).unwrap_or_default()
+}
+
+fn extensions_from_json(json: Option<&str>) -> Extensions {
+    let Some(json) = json else {
+        return Extensions::new();
+    };
+    serde_json::from_str::<Extensions>(json).unwrap_or_default()
 }
 
 fn query_string_from_url(url: &str) -> Option<Vec<QueryParam>> {
@@ -286,6 +296,7 @@ fn load_import_ids_by_source(
 /// Export a harlite SQLite database back to a HAR file.
 pub fn run_export(database: PathBuf, options: &ExportOptions) -> Result<()> {
     let conn = Connection::open(&database)?;
+    ensure_schema_upgrades(&conn)?;
     let external_root = if options.allow_external_paths {
         let root = options
             .external_path_root
@@ -425,7 +436,9 @@ pub fn run_export(database: PathBuf, options: &ExportOptions) -> Result<()> {
                 page_timings: Some(PageTimings {
                     on_content_load: p.on_content_load_ms,
                     on_load: p.on_load_ms,
+                    extensions: extensions_from_json(p.page_timings_extensions.as_deref()),
                 }),
+                extensions: extensions_from_json(p.page_extensions.as_deref()),
             });
         }
     }
@@ -556,6 +569,7 @@ pub fn run_export(database: PathBuf, options: &ExportOptions) -> Result<()> {
             wait: time_ms,
             receive: 0.0,
             ssl: None,
+            extensions: Extensions::new(),
         });
 
         let post_data = if request_body_text.is_some() {
@@ -563,6 +577,18 @@ pub fn run_export(database: PathBuf, options: &ExportOptions) -> Result<()> {
                 mime_type: request_mime_type(&request_headers),
                 text: request_body_text,
                 params: None,
+                extensions: extensions_from_json(row.post_data_extensions.as_deref()),
+            })
+        } else if row
+            .post_data_extensions
+            .as_deref()
+            .is_some_and(|json| !json.trim().is_empty())
+        {
+            Some(PostData {
+                mime_type: None,
+                text: None,
+                params: None,
+                extensions: extensions_from_json(row.post_data_extensions.as_deref()),
             })
         } else {
             None
@@ -585,6 +611,7 @@ pub fn run_export(database: PathBuf, options: &ExportOptions) -> Result<()> {
                 post_data,
                 headers_size: None,
                 body_size: request_body_size,
+                extensions: extensions_from_json(row.request_extensions.as_deref()),
             },
             response: Response {
                 status: row.status.unwrap_or(0),
@@ -598,17 +625,37 @@ pub fn run_export(database: PathBuf, options: &ExportOptions) -> Result<()> {
                     mime_type: response_mime,
                     text: response_body_text,
                     encoding: response_body_encoding,
+                    extensions: extensions_from_json(row.content_extensions.as_deref()),
                 },
                 redirect_url: None,
                 headers_size: None,
                 body_size: response_body_size_field,
+                extensions: extensions_from_json(row.response_extensions.as_deref()),
             },
             cache: None,
-            timings,
+            timings: timings.map(|t| Timings {
+                extensions: extensions_from_json(row.timings_extensions.as_deref()),
+                ..t
+            }),
             server_ip_address: row.server_ip.clone(),
             connection: row.connection_id.clone(),
+            extensions: extensions_from_json(row.entry_extensions.as_deref()),
         });
     }
+
+    let log_extensions = if !multi_import && import_ids.len() == 1 {
+        conn.query_row(
+            "SELECT log_extensions FROM imports WHERE id = ?1",
+            [import_ids[0]],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten()
+        .map(|s| extensions_from_json(Some(s.as_str())))
+        .unwrap_or_default()
+    } else {
+        Extensions::new()
+    };
 
     let har = Har {
         log: Log {
@@ -624,6 +671,7 @@ pub fn run_export(database: PathBuf, options: &ExportOptions) -> Result<()> {
                 Some(har_pages)
             },
             entries: har_entries,
+            extensions: log_extensions,
         },
     };
 

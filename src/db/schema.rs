@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS imports (
     id INTEGER PRIMARY KEY,
     source_file TEXT NOT NULL,
     imported_at TEXT NOT NULL,
-    entry_count INTEGER
+    entry_count INTEGER,
+    log_extensions TEXT
 );
 
 -- Page information
@@ -28,6 +29,8 @@ CREATE TABLE IF NOT EXISTS pages (
     title TEXT,
     on_content_load_ms REAL,
     on_load_ms REAL,
+    page_extensions TEXT,
+    page_timings_extensions TEXT,
     PRIMARY KEY (id, import_id)
 );
 
@@ -67,7 +70,15 @@ CREATE TABLE IF NOT EXISTS entries (
     -- Metadata
     is_redirect INTEGER,
     server_ip TEXT,
-    connection_id TEXT
+    connection_id TEXT,
+
+    -- HAR extensions (JSON)
+    entry_extensions TEXT,
+    request_extensions TEXT,
+    response_extensions TEXT,
+    content_extensions TEXT,
+    timings_extensions TEXT,
+    post_data_extensions TEXT
 );
 
 -- Indexes
@@ -101,7 +112,8 @@ CREATE TABLE IF NOT EXISTS imports (
     id INTEGER PRIMARY KEY,
     source_file TEXT NOT NULL,
     imported_at TEXT NOT NULL,
-    entry_count INTEGER
+    entry_count INTEGER,
+    log_extensions TEXT
 );
 
 -- Page information
@@ -112,6 +124,8 @@ CREATE TABLE IF NOT EXISTS pages (
     title TEXT,
     on_content_load_ms REAL,
     on_load_ms REAL,
+    page_extensions TEXT,
+    page_timings_extensions TEXT,
     PRIMARY KEY (id, import_id)
 );
 
@@ -151,7 +165,15 @@ CREATE TABLE IF NOT EXISTS entries (
     -- Metadata
     is_redirect INTEGER,
     server_ip TEXT,
-    connection_id TEXT
+    connection_id TEXT,
+
+    -- HAR extensions (JSON)
+    entry_extensions TEXT,
+    request_extensions TEXT,
+    response_extensions TEXT,
+    content_extensions TEXT,
+    timings_extensions TEXT,
+    post_data_extensions TEXT
 );
 
 -- Indexes
@@ -190,6 +212,17 @@ pub fn ensure_schema_upgrades(conn: &Connection) -> Result<()> {
         conn.execute("ALTER TABLE blobs ADD COLUMN external_path TEXT", [])?;
     }
 
+    if !table_has_column(conn, "imports", "log_extensions")? {
+        conn.execute("ALTER TABLE imports ADD COLUMN log_extensions TEXT", [])?;
+    }
+
+    if !table_has_column(conn, "pages", "page_extensions")? {
+        conn.execute("ALTER TABLE pages ADD COLUMN page_extensions TEXT", [])?;
+    }
+    if !table_has_column(conn, "pages", "page_timings_extensions")? {
+        conn.execute("ALTER TABLE pages ADD COLUMN page_timings_extensions TEXT", [])?;
+    }
+
     if !table_has_column(conn, "entries", "response_body_hash_raw")? {
         conn.execute(
             "ALTER TABLE entries ADD COLUMN response_body_hash_raw TEXT",
@@ -201,6 +234,24 @@ pub fn ensure_schema_upgrades(conn: &Connection) -> Result<()> {
             "ALTER TABLE entries ADD COLUMN response_body_size_raw INTEGER",
             [],
         )?;
+    }
+    if !table_has_column(conn, "entries", "entry_extensions")? {
+        conn.execute("ALTER TABLE entries ADD COLUMN entry_extensions TEXT", [])?;
+    }
+    if !table_has_column(conn, "entries", "request_extensions")? {
+        conn.execute("ALTER TABLE entries ADD COLUMN request_extensions TEXT", [])?;
+    }
+    if !table_has_column(conn, "entries", "response_extensions")? {
+        conn.execute("ALTER TABLE entries ADD COLUMN response_extensions TEXT", [])?;
+    }
+    if !table_has_column(conn, "entries", "content_extensions")? {
+        conn.execute("ALTER TABLE entries ADD COLUMN content_extensions TEXT", [])?;
+    }
+    if !table_has_column(conn, "entries", "timings_extensions")? {
+        conn.execute("ALTER TABLE entries ADD COLUMN timings_extensions TEXT", [])?;
+    }
+    if !table_has_column(conn, "entries", "post_data_extensions")? {
+        conn.execute("ALTER TABLE entries ADD COLUMN post_data_extensions TEXT", [])?;
     }
 
     // Ensure FTS table exists for older databases created before the feature.
