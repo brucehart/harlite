@@ -33,6 +33,8 @@ Works great with AI coding agents like Codex and Claude — they already know SQ
 - **Queryable headers** — Headers stored as JSON, queryable with SQLite JSON functions
 - **Safe sharing** — Redact sensitive headers/cookies before sharing a database
 
+Performance note: HAR parsing streams entries from disk using `serde_json::Deserializer` to avoid loading the full JSON blob at once; memory still scales with the number of entries imported.
+
 ## Installation
 
 ### Install with Cargo
