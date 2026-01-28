@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
-use std::io::{self, Write};
+use std::fs::File;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
@@ -105,7 +106,32 @@ pub fn run_diff(left: PathBuf, right: PathBuf, options: &DiffOptions) -> Result<
 }
 
 fn is_db_path(path: &Path) -> bool {
-    path.extension().and_then(|s| s.to_str()) == Some("db")
+    let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
+        return is_sqlite_file(path);
+    };
+
+    let ext = ext.to_ascii_lowercase();
+    if matches!(ext.as_str(), "db" | "db3" | "sqlite" | "sqlite3") {
+        return true;
+    }
+
+    is_sqlite_file(path)
+}
+
+fn is_sqlite_file(path: &Path) -> bool {
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+
+    let mut header = [0u8; 16];
+    let Ok(read_len) = file.read(&mut header) else {
+        return false;
+    };
+    if read_len < 16 {
+        return false;
+    }
+
+    header == *b"SQLite format 3\0"
 }
 
 fn build_filters(options: &DiffOptions) -> Result<Filters> {
