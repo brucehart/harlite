@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use std::path::PathBuf;
 use std::process;
 
@@ -400,6 +400,13 @@ enum Commands {
         #[arg(long, value_name = "DIR")]
         external_path_root: Option<PathBuf>,
     },
+
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
 }
 
 fn main() {
@@ -626,6 +633,12 @@ fn main() {
                 external_path_root,
             )
         }
+        Commands::Completions { shell } => {
+            let mut cmd = Cli::command();
+            clap_complete::generate(shell, &mut cmd, "harlite", &mut std::io::stdout());
+            Ok(())
+        }
+    })();
     })();
 
     if let Err(e) = result {
