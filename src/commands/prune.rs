@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::PathBuf;
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -9,6 +10,10 @@ const HASH_CHUNK: usize = 500;
 /// Remove all records for a specific import and prune orphaned blobs.
 pub fn run_prune(database: PathBuf, import_id: i64) -> Result<()> {
     let conn = Connection::open(&database)?;
+    let external_root = database
+        .parent()
+        .map(|p| p.to_path_buf())
+        .and_then(|p| p.canonicalize().ok());
 
     let import_exists: Option<String> = conn
         .query_row(
@@ -46,6 +51,8 @@ pub fn run_prune(database: PathBuf, import_id: i64) -> Result<()> {
 
     let mut blobs_deleted = 0usize;
     let mut fts_deleted = 0usize;
+    let mut external_deleted = 0usize;
+    let mut external_skipped = 0usize;
 
     if !hashes.is_empty() {
         let has_fts: i64 = tx.query_row(
@@ -96,6 +103,41 @@ pub fn run_prune(database: PathBuf, import_id: i64) -> Result<()> {
                 orphan_params.push(hash);
             }
 
+            let external_paths: Vec<String> = tx
+                .prepare(&format!(
+                    "SELECT external_path FROM blobs WHERE hash IN ({orphan_placeholders}) AND external_path IS NOT NULL"
+                ))?
+                .query_map(orphan_params.as_slice(), |row| row.get(0))?
+                .filter_map(|row| row.ok())
+                .collect();
+
+            for raw_path in external_paths {
+                let candidate = PathBuf::from(&raw_path);
+                let resolved = if candidate.is_absolute() {
+                    candidate.canonicalize().ok()
+                } else if let Some(root) = external_root.as_ref() {
+                    let joined = root.join(&candidate);
+                    let resolved = joined.canonicalize().ok();
+                    if let Some(resolved_path) = resolved.as_ref() {
+                        if !resolved_path.starts_with(root) {
+                            external_skipped += 1;
+                            continue;
+                        }
+                    }
+                    resolved
+                } else {
+                    external_skipped += 1;
+                    continue;
+                };
+
+                let Some(path) = resolved else {
+                    continue;
+                };
+                if path.is_file() && fs::remove_file(&path).is_ok() {
+                    external_deleted += 1;
+                }
+            }
+
             if has_fts > 0 {
                 let fts_sql = format!(
                     "DELETE FROM response_body_fts WHERE hash IN ({orphan_placeholders})"
@@ -111,7 +153,7 @@ pub fn run_prune(database: PathBuf, import_id: i64) -> Result<()> {
     tx.commit()?;
 
     println!(
-        "Pruned import {import_id} ({source_file}). Removed {imports_deleted} import record, {entries_deleted} entries, {pages_deleted} pages, {blobs_deleted} blobs, {fts_deleted} FTS rows."
+        "Pruned import {import_id} ({source_file}). Removed {imports_deleted} import record, {entries_deleted} entries, {pages_deleted} pages, {blobs_deleted} blobs, {fts_deleted} FTS rows, deleted {external_deleted} external files (skipped {external_skipped})."
     );
 
     Ok(())
