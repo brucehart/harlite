@@ -217,40 +217,43 @@ fn write_csv_field(out: &mut impl Write, field: &str) -> Result<()> {
 }
 
 fn write_json(columns: &[String], rows: &mut rusqlite::Rows<'_>) -> Result<()> {
-    let mut out_rows: Vec<serde_json::Value> = Vec::new();
-
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    handle.write_all(b"[")?;
+    let mut first = true;
     while let Some(row) = rows.next()? {
+        if !first {
+            handle.write_all(b",")?;
+        }
+        first = false;
         let mut obj = serde_json::Map::with_capacity(columns.len());
         for (i, name) in columns.iter().enumerate() {
             let val = value_to_json(row.get_ref(i)?);
             obj.insert(name.clone(), val);
         }
-        out_rows.push(serde_json::Value::Object(obj));
+        serde_json::to_writer(&mut handle, &serde_json::Value::Object(obj))?;
     }
-
-    let stdout = io::stdout();
-    let mut handle = stdout.lock();
-    serde_json::to_writer(&mut handle, &out_rows)?;
-    handle.write_all(b"\n")?;
+    handle.write_all(b"]\n")?;
     Ok(())
 }
 
-fn write_table(columns: &[String], rows: &mut rusqlite::Rows<'_>, quiet: bool) -> Result<()> {
-    let mut table_rows: Vec<Vec<String>> = Vec::new();
-    while let Some(row) = rows.next()? {
-        let mut out = Vec::with_capacity(columns.len());
-        for i in 0..columns.len() {
-            out.push(value_to_table(row.get_ref(i)?));
-        }
-        table_rows.push(out);
-    }
+const TABLE_CELL_MAX_WIDTH: usize = 80;
+const TABLE_CELL_MIN_WIDTH: usize = 32;
 
-    let mut widths: Vec<usize> = columns.iter().map(|c| c.len()).collect();
-    for r in &table_rows {
-        for (i, cell) in r.iter().enumerate() {
-            widths[i] = widths[i].max(cell.len());
-        }
-    }
+fn column_widths(columns: &[String]) -> Vec<usize> {
+    columns
+        .iter()
+        .map(|c| {
+            c.chars()
+                .count()
+                .max(TABLE_CELL_MIN_WIDTH)
+                .min(TABLE_CELL_MAX_WIDTH)
+        })
+        .collect()
+}
+
+fn write_table(columns: &[String], rows: &mut rusqlite::Rows<'_>, quiet: bool) -> Result<()> {
+    let widths = column_widths(columns);
 
     let mut out = io::stdout().lock();
 
@@ -258,8 +261,13 @@ fn write_table(columns: &[String], rows: &mut rusqlite::Rows<'_>, quiet: bool) -
     if !quiet {
         write_table_sep(&mut out, &widths)?;
     }
-    for r in &table_rows {
-        write_table_row(&mut out, r.iter().map(|s| s.as_str()), &widths)?;
+    while let Some(row) = rows.next()? {
+        let mut out_fields: Vec<String> = Vec::with_capacity(columns.len());
+        for i in 0..columns.len() {
+            let value = value_to_table(row.get_ref(i)?);
+            out_fields.push(truncate(&value, widths[i]));
+        }
+        write_table_row(&mut out, out_fields.iter().map(|s| s.as_str()), &widths)?;
     }
 
     Ok(())
@@ -275,9 +283,11 @@ where
             out.write_all(b" | ")?;
         }
         let width = widths.get(i).copied().unwrap_or(0);
+        let field = truncate(field, width);
         out.write_all(field.as_bytes())?;
-        if field.len() < width {
-            out.write_all(" ".repeat(width - field.len()).as_bytes())?;
+        let field_len = field.chars().count();
+        if field_len < width {
+            out.write_all(" ".repeat(width - field_len).as_bytes())?;
         }
         i += 1;
     }

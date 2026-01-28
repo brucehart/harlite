@@ -132,30 +132,32 @@ fn write_table_sep(out: &mut impl Write, widths: &[usize]) -> Result<()> {
 }
 
 fn write_table(columns: &[&str], rows: &mut rusqlite::Rows<'_>, quiet: bool) -> Result<()> {
-    let mut table_rows: Vec<Vec<String>> = Vec::new();
-    while let Some(row) = rows.next()? {
-        let mut out = Vec::with_capacity(columns.len());
-        for i in 0..columns.len() {
-            out.push(value_to_table(row.get_ref(i)?));
-        }
-        table_rows.push(out);
-    }
-
-    let mut widths: Vec<usize> = columns.iter().map(|c| c.len()).collect();
-    for r in &table_rows {
-        for (i, cell) in r.iter().enumerate() {
-            widths[i] = widths[i].max(cell.len());
-        }
-    }
+    const TABLE_CELL_MAX_WIDTH: usize = 200;
+    const TABLE_CELL_MIN_WIDTH: usize = 32;
+    let widths: Vec<usize> = columns
+        .iter()
+        .map(|c| {
+            let base = c.chars().count().max(TABLE_CELL_MIN_WIDTH);
+            if *c == "snippet" {
+                TABLE_CELL_MAX_WIDTH
+            } else {
+                base.min(TABLE_CELL_MAX_WIDTH)
+            }
+        })
+        .collect();
 
     let mut out = io::stdout().lock();
     write_table_row(&mut out, columns.iter().copied(), &widths)?;
     if !quiet {
         write_table_sep(&mut out, &widths)?;
     }
-    for r in table_rows {
-        let fields: Vec<&str> = r.iter().map(|s| s.as_str()).collect();
-        write_table_row(&mut out, fields, &widths)?;
+    while let Some(row) = rows.next()? {
+        let mut fields: Vec<String> = Vec::with_capacity(columns.len());
+        for i in 0..columns.len() {
+            let value = value_to_table(row.get_ref(i)?);
+            fields.push(truncate(&value, widths[i]));
+        }
+        write_table_row(&mut out, fields.iter().map(|s| s.as_str()), &widths)?;
     }
     Ok(())
 }
@@ -223,18 +225,40 @@ fn value_to_json(v: ValueRef<'_>) -> serde_json::Value {
 }
 
 fn write_json(columns: &[&str], rows: &mut rusqlite::Rows<'_>) -> Result<()> {
-    let mut out_rows: Vec<serde_json::Value> = Vec::new();
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    handle.write_all(b"[")?;
+    let mut first = true;
     while let Some(row) = rows.next()? {
         let mut obj = serde_json::Map::with_capacity(columns.len());
         for (i, name) in columns.iter().enumerate() {
             obj.insert((*name).to_string(), value_to_json(row.get_ref(i)?));
         }
-        out_rows.push(serde_json::Value::Object(obj));
+        if !first {
+            handle.write_all(b",")?;
+        }
+        first = false;
+        serde_json::to_writer(&mut handle, &serde_json::Value::Object(obj))?;
     }
-
-    let stdout = io::stdout();
-    let mut handle = stdout.lock();
-    serde_json::to_writer(&mut handle, &out_rows)?;
-    handle.write_all(b"\n")?;
+    handle.write_all(b"]\n")?;
     Ok(())
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    if max <= 3 {
+        return "...".to_string();
+    }
+    let mut end = 0usize;
+    for (i, ch) in s.char_indices() {
+        if i >= max - 3 {
+            break;
+        }
+        end = i + ch.len_utf8();
+    }
+    let mut out = s[..end].to_string();
+    out.push_str("...");
+    out
 }

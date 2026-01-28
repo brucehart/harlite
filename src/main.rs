@@ -110,6 +110,14 @@ enum Commands {
         #[arg(long)]
         bodies: bool,
 
+        /// Allow reading external blob paths from the database
+        #[arg(long)]
+        allow_external_paths: bool,
+
+        /// Root directory for external blob paths (defaults to database directory)
+        #[arg(long, value_name = "DIR")]
+        external_path_root: Option<PathBuf>,
+
         /// Write compact JSON (disable pretty-printing)
         #[arg(long)]
         compact: bool,
@@ -281,6 +289,14 @@ enum Commands {
         /// Maximum body size to index (e.g., '1MB', '100KB', 'unlimited')
         #[arg(long, default_value = "1MB")]
         max_body_size: String,
+
+        /// Allow reading external blob paths from the database
+        #[arg(long)]
+        allow_external_paths: bool,
+
+        /// Root directory for external blob paths (defaults to database directory)
+        #[arg(long, value_name = "DIR")]
+        external_path_root: Option<PathBuf>,
     },
 }
 
@@ -348,6 +364,8 @@ fn main() {
             database,
             output,
             bodies,
+            allow_external_paths,
+            external_path_root,
             compact,
             url,
             url_contains,
@@ -370,6 +388,8 @@ fn main() {
                 output,
                 pretty: !compact,
                 include_bodies: bodies,
+                allow_external_paths,
+                external_path_root,
                 url,
                 url_contains,
                 url_regex,
@@ -452,7 +472,15 @@ fn main() {
             database,
             tokenizer,
             max_body_size,
-        } => run_fts_rebuild(database, tokenizer, parse_size(&max_body_size)),
+            allow_external_paths,
+            external_path_root,
+        } => run_fts_rebuild(
+            database,
+            tokenizer,
+            parse_size(&max_body_size),
+            allow_external_paths,
+            external_path_root,
+        ),
     };
 
     if let Err(e) = result {
