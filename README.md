@@ -33,6 +33,21 @@ Works great with AI coding agents like Codex and Claude — they already know SQ
 - **Queryable headers** — Headers stored as JSON, queryable with SQLite JSON functions
 - **Safe sharing** — Redact sensitive headers/cookies before sharing a database
 
+## Installation
+
+### Install with Cargo
+
+```bash
+cargo install harlite
+```
+
+Published on crates.io as `harlite`.
+
+### Build and run locally
+- **Multi-file support** — Merge multiple HAR files into one database
+- **Queryable headers** — Headers stored as JSON, queryable with SQLite JSON functions
+- **Safe sharing** — Redact sensitive headers/cookies before sharing a database
+
 Performance note: HAR parsing streams entries from disk using `serde_json::Deserializer` to avoid loading the full JSON blob at once; memory still scales with the number of entries imported.
 
 ## Installation
@@ -134,8 +149,24 @@ harlite import capture.har --bodies --stats
 #   Space saved by deduplication: 127 MB (74%)
 ```
 
-Response bodies are automatically deduplicated using BLAKE3 hashing. If the same JavaScript bundle appears in 50 entries, it's stored only once.
 Size flags accept decimals and short units (e.g., `1.5MB`, `1M`, `100k`, `500B`, `unlimited`).
+
+Response bodies are automatically deduplicated using BLAKE3 hashing. If the same JavaScript bundle appears in 50 entries, it's stored only once.
+
+### Import filters
+
+Filter entries at import time to reduce database size:
+
+```bash
+# Only keep GETs to a host with 200 responses
+harlite import capture.har --host api.example.com --method GET --status 200
+
+# Filter by URL regex (repeatable)
+harlite import capture.har --url-regex 'example\\.com/(api|v1)/'
+
+# Import a specific time range (RFC3339 or YYYY-MM-DD)
+harlite import capture.har --from 2024-01-15 --to 2024-01-16
+```
 
 ### Full-text search (FTS5)
 
