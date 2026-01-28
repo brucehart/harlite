@@ -420,7 +420,7 @@ fn redact_entries(
     write: bool,
 ) -> Result<RedactionReport> {
     let mut stmt = conn.prepare(
-        "SELECT id, url, query_string, request_headers, response_headers, request_cookies, response_cookies, request_body_hash, request_body_size, response_body_hash, response_body_size FROM entries ORDER BY id",
+        "SELECT id, url, query_string, request_headers, response_headers, request_cookies, response_cookies, request_body_hash, request_body_size, response_body_hash, response_body_size, response_body_hash_raw, response_body_size_raw FROM entries ORDER BY id",
     )?;
 
     let mut report = RedactionReport::default();
@@ -438,11 +438,13 @@ fn redact_entries(
             row.get::<_, Option<i64>>(8)?,
             row.get::<_, Option<String>>(9)?,
             row.get::<_, Option<i64>>(10)?,
+            row.get::<_, Option<String>>(11)?,
+            row.get::<_, Option<i64>>(12)?,
         ))
     })?;
 
     let mut update = conn.prepare(
-        "UPDATE entries SET url=?1, query_string=?2, request_headers=?3, response_headers=?4, request_cookies=?5, response_cookies=?6, request_body_hash=?7, request_body_size=?8, response_body_hash=?9, response_body_size=?10 WHERE id=?11",
+        "UPDATE entries SET url=?1, query_string=?2, request_headers=?3, response_headers=?4, request_cookies=?5, response_cookies=?6, request_body_hash=?7, request_body_size=?8, response_body_hash=?9, response_body_size=?10, response_body_hash_raw=?11, response_body_size_raw=?12 WHERE id=?13",
     )?;
 
     let mut blob_cache: HashMap<String, Option<RedactedBlob>> = HashMap::new();
@@ -469,6 +471,8 @@ fn redact_entries(
             req_body_size,
             resp_body_hash,
             resp_body_size,
+            resp_body_hash_raw,
+            resp_body_size_raw,
         ) = row?;
         report.entries_scanned += 1;
 
@@ -483,6 +487,8 @@ fn redact_entries(
         let mut new_req_body_size = req_body_size;
         let mut new_resp_body_hash = resp_body_hash.clone();
         let mut new_resp_body_size = resp_body_size;
+        let mut new_resp_body_hash_raw = resp_body_hash_raw.clone();
+        let mut new_resp_body_size_raw = resp_body_size_raw;
 
         if let Some(json) = req_h.as_deref() {
             let (out, n) = redact_headers_json(
@@ -576,6 +582,8 @@ fn redact_entries(
                     if write {
                         new_resp_body_hash = Some(redacted.new_hash.clone());
                         new_resp_body_size = Some(redacted.new_size);
+                        new_resp_body_hash_raw = None;
+                        new_resp_body_size_raw = None;
                         changed_response_hashes.insert(hash.to_string());
                         if has_fts {
                             let has_old_fts = conn
@@ -609,6 +617,8 @@ fn redact_entries(
                     new_req_body_size,
                     new_resp_body_hash,
                     new_resp_body_size,
+                    new_resp_body_hash_raw,
+                    new_resp_body_size_raw,
                     id
                 ])?;
             }
