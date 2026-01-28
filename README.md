@@ -41,44 +41,7 @@ Works great with AI coding agents like Codex and Claude — they already know SQ
 cargo install harlite
 ```
 
-### Build and run locally
-
-```bash
-git clone https://github.com/brucehart/harlite
-cd harlite
-
-# Requires Rust/Cargo >= 1.85
-# Recommended: use rustup to manage toolchains
-curl https://sh.rustup.rs -sSf | sh -s -- -y
-source "$HOME/.cargo/env"
-rustup update stable
-
-# Run without installing
-cargo run -- --help
-
-# Or install locally
-cargo install --path .
-
-# Or build a release binary
-cargo build --release
-./target/release/harlite --help
-```
-## Features
-
-- **Fast imports** — Rust-native performance
-- **Smart deduplication** — Response bodies stored once using content-addressable hashing (BLAKE3)
-- **Flexible body storage** — Metadata-only by default, opt-in to store bodies
-- **Multi-file support** — Merge multiple HAR files into one database
-- **Queryable headers** — Headers stored as JSON, queryable with SQLite JSON functions
-- **Safe sharing** — Redact sensitive headers/cookies before sharing a database
-
-## Installation
-
-### Install with Cargo
-
-```bash
-cargo install harlite
-```
+Published on crates.io as `harlite`.
 
 ### Build and run locally
 
@@ -102,7 +65,6 @@ cargo install --path .
 cargo build --release
 ./target/release/harlite --help
 ```
-
 ## Quick Start
 
 ```bash
