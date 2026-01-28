@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
@@ -38,13 +38,30 @@ fn is_text_mime_type(mime: Option<&str>) -> bool {
     }
 }
 
-fn hydrate_blob_content(mut blob: BlobRow) -> Result<BlobRow> {
+fn load_external_blob_content(mut blob: BlobRow, external_root: Option<&Path>) -> Result<BlobRow> {
     if !blob.content.is_empty() || blob.size <= 0 {
         return Ok(blob);
     }
-    if let Some(path) = &blob.external_path {
-        blob.content = std::fs::read(path)?;
+    let Some(path) = &blob.external_path else {
+        return Ok(blob);
+    };
+    let Some(root) = external_root else {
+        return Ok(blob);
+    };
+    let candidate = PathBuf::from(path);
+    let candidate = if candidate.is_absolute() {
+        candidate
+    } else {
+        root.join(candidate)
+    };
+    let resolved = match candidate.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return Ok(blob),
+    };
+    if !resolved.starts_with(root) {
+        return Ok(blob);
     }
+    blob.content = std::fs::read(resolved)?;
     Ok(blob)
 }
 
@@ -52,9 +69,23 @@ pub fn run_fts_rebuild(
     database: PathBuf,
     tokenizer: FtsTokenizer,
     max_body_size: Option<usize>,
+    allow_external_paths: bool,
+    external_path_root: Option<PathBuf>,
 ) -> Result<()> {
     let conn = Connection::open(&database)?;
     create_schema(&conn)?;
+    let external_root = if allow_external_paths {
+        let root = external_path_root
+            .or_else(|| database.parent().map(|p| p.to_path_buf()))
+            .ok_or_else(|| {
+                crate::error::HarliteError::InvalidArgs(
+                    "Cannot resolve external path root; pass --external-path-root".to_string(),
+                )
+            })?;
+        Some(root.canonicalize()?)
+    } else {
+        None
+    };
 
     let tokenizer = tokenizer.as_sql();
     conn.execute_batch("DROP TABLE IF EXISTS response_body_fts;")?;
@@ -85,7 +116,7 @@ pub fn run_fts_rebuild(
         let blobs = load_blobs_by_hashes(&tx, chunk)?;
         for blob in blobs
             .into_iter()
-            .map(hydrate_blob_content)
+            .map(|b| load_external_blob_content(b, external_root.as_deref()))
             .collect::<Result<Vec<_>>>()?
         {
             if blob.content.is_empty() {

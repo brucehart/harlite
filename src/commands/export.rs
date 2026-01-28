@@ -21,6 +21,8 @@ pub struct ExportOptions {
     pub output: Option<PathBuf>,
     pub pretty: bool,
     pub include_bodies: bool,
+    pub allow_external_paths: bool,
+    pub external_path_root: Option<PathBuf>,
 
     pub url: Vec<String>,
     pub url_contains: Vec<String>,
@@ -49,6 +51,8 @@ impl Default for ExportOptions {
             output: None,
             pretty: true,
             include_bodies: false,
+            allow_external_paths: false,
+            external_path_root: None,
             url: Vec::new(),
             url_contains: Vec::new(),
             url_regex: Vec::new(),
@@ -204,13 +208,34 @@ fn body_text_and_encoding(content: &[u8]) -> (Option<String>, Option<String>) {
     }
 }
 
-fn hydrate_blob_content(mut blob: BlobRow) -> Result<BlobRow> {
+fn load_external_blob_content(
+    mut blob: BlobRow,
+    external_root: Option<&Path>,
+) -> Result<BlobRow> {
     if !blob.content.is_empty() || blob.size <= 0 {
         return Ok(blob);
     }
-    if let Some(path) = &blob.external_path {
-        blob.content = std::fs::read(path)?;
+    let Some(path) = &blob.external_path else {
+        return Ok(blob);
+    };
+    let Some(root) = external_root else {
+        return Ok(blob);
+    };
+
+    let candidate = PathBuf::from(path);
+    let candidate = if candidate.is_absolute() {
+        candidate
+    } else {
+        root.join(candidate)
+    };
+    let resolved = match candidate.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return Ok(blob),
+    };
+    if !resolved.starts_with(root) {
+        return Ok(blob);
     }
+    blob.content = std::fs::read(resolved)?;
     Ok(blob)
 }
 
@@ -280,6 +305,20 @@ fn load_import_ids_by_source(
 /// Export a harlite SQLite database back to a HAR file.
 pub fn run_export(database: PathBuf, options: &ExportOptions) -> Result<()> {
     let conn = Connection::open(&database)?;
+    let external_root = if options.allow_external_paths {
+        let root = options
+            .external_path_root
+            .clone()
+            .or_else(|| database.parent().map(|p| p.to_path_buf()))
+            .ok_or_else(|| {
+                HarliteError::InvalidArgs(
+                    "Cannot resolve external path root; pass --external-path-root".to_string(),
+                )
+            })?;
+        Some(root.canonicalize()?)
+    } else {
+        None
+    };
 
     let output_path = match &options.output {
         Some(p) => p.clone(),
@@ -427,7 +466,7 @@ pub fn run_export(database: PathBuf, options: &ExportOptions) -> Result<()> {
         let blobs = load_blobs_by_hashes(&conn, &hashes)?;
         let hydrated: Vec<BlobRow> = blobs
             .into_iter()
-            .map(hydrate_blob_content)
+            .map(|b| load_external_blob_content(b, external_root.as_deref()))
             .collect::<Result<Vec<_>>>()?;
         blob_map = hydrated.into_iter().map(|b| (b.hash.clone(), b)).collect();
     }

@@ -325,6 +325,8 @@ fn maybe_index_response_body_fts(
     Ok(())
 }
 
+const DEFAULT_MAX_DECOMPRESSED_BYTES: usize = 50 * 1024 * 1024;
+
 /// Insert an entry into the database and optionally store bodies.
 pub fn insert_entry(
     conn: &Connection,
@@ -372,8 +374,10 @@ pub fn insert_entry(
             if type_ok && !body.is_empty() {
                 if options.decompress_bodies {
                     if let Some(enc) = header_value(&entry.response.headers, "content-encoding") {
+                        let decompress_limit =
+                            options.max_body_size.unwrap_or(DEFAULT_MAX_DECOMPRESSED_BYTES);
                         if let Some(decompressed) =
-                            decompress_body(&body, &enc, options.max_body_size)
+                            decompress_body(&body, &enc, Some(decompress_limit))
                         {
                             if options.keep_compressed {
                                 let raw_size_ok =
