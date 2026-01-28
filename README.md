@@ -149,6 +149,8 @@ harlite import capture.har --bodies --stats
 #   Space saved by deduplication: 127 MB (74%)
 ```
 
+Size flags accept decimals and short units (e.g., `1.5MB`, `1M`, `100k`, `500B`, `unlimited`).
+
 Response bodies are automatically deduplicated using BLAKE3 hashing. If the same JavaScript bundle appears in 50 entries, it's stored only once.
 
 ### Import filters
@@ -165,9 +167,6 @@ harlite import capture.har --url-regex 'example\\.com/(api|v1)/'
 # Import a specific time range (RFC3339 or YYYY-MM-DD)
 harlite import capture.har --from 2024-01-15 --to 2024-01-16
 ```
-
-### Full-text search (FTS5)
-Size flags accept decimals and short units (e.g., `1.5MB`, `1M`, `100k`, `500B`, `unlimited`).
 
 ### Full-text search (FTS5)
 
