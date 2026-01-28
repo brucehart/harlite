@@ -34,6 +34,7 @@ fn is_text_mime_type(mime: Option<&str>) -> bool {
                 || m.contains("javascript")
                 || m.contains("css")
                 || m.contains("html")
+                || m.contains("x-www-form-urlencoded")
         }
     }
 }

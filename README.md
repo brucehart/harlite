@@ -106,8 +106,8 @@ By default, `harlite` imports metadata only (URLs, headers, timing, status codes
 # Include text bodies under 100KB (HTML, JSON, JS, CSS, XML)
 harlite import capture.har --bodies --text-only
 
-# Include all bodies under 500KB  
-harlite import capture.har --bodies --max-body-size 500KB
+# Include all bodies under 1.5MB  
+harlite import capture.har --bodies --max-body-size 1.5MB
 
 # Decompress response bodies based on Content-Encoding (gzip, br)
 harlite import capture.har --bodies --decompress-bodies
@@ -148,6 +148,9 @@ harlite import capture.har --url-regex 'example\\.com/(api|v1)/'
 # Import a specific time range (RFC3339 or YYYY-MM-DD)
 harlite import capture.har --from 2024-01-15 --to 2024-01-16
 ```
+
+### Full-text search (FTS5)
+Size flags accept decimals and short units (e.g., `1.5MB`, `1M`, `100k`, `500B`, `unlimited`).
 
 ### Full-text search (FTS5)
 
@@ -241,7 +244,7 @@ harlite export traffic.db --url-regex 'example\\.com/(api|v1)/' -o filtered.har
 harlite export traffic.db --from 2024-01-15 --to 2024-01-16 -o day1.har
 harlite export traffic.db --ext js,css -o assets.har
 harlite export traffic.db --source session1.har --source-contains chrome -o sources.har
-harlite export traffic.db --mime json --min-response-size 1KB --max-response-size 200KB -o api-responses.har
+harlite export traffic.db --mime json --min-response-size 1KB --max-response-size 200k -o api-responses.har
 ```
 
 Common filters:
