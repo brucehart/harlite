@@ -374,14 +374,22 @@ fn handle_message(
             let params = value
                 .get("params")
                 .ok_or_else(|| HarliteError::InvalidArgs("Missing request params".to_string()))?;
-            let event: RequestWillBeSent = serde_json::from_value(params.clone())?;
+            let mut event: RequestWillBeSent = serde_json::from_value(params.clone())?;
             let started_ts = event.timestamp;
             state.first_event_ts.get_or_insert(started_ts);
+            if let Some(redirect_response) = event.redirect_response.take() {
+                if let Some(record) = state.requests.get_mut(&event.request_id) {
+                    record.response = Some(redirect_response);
+                    record.response_received_ts = Some(event.timestamp);
+                    record.end_ts = Some(event.timestamp);
+                }
+                finalize_request(state, &event.request_id, options)?;
+            }
             let record = RequestRecord {
                 request: event.request,
                 started_wall_time: event.wall_time,
                 started_ts,
-                response: event.redirect_response,
+                response: None,
                 response_received_ts: None,
                 end_ts: None,
                 encoded_data_len: None,
