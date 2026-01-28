@@ -194,10 +194,21 @@ fn decode_body(content: &crate::har::Content) -> Option<Vec<u8>> {
     }
 }
 
+fn is_urlencoded_mime_type(mime: &str) -> bool {
+    let media_type = mime.split(';').next().unwrap_or(mime).trim();
+    media_type.eq_ignore_ascii_case("application/x-www-form-urlencoded")
+}
+
 fn synthesize_post_params(post_data: &crate::har::PostData) -> Option<(Vec<u8>, Option<String>)> {
     let params = post_data.params.as_ref()?;
     if params.is_empty() {
         return None;
+    }
+
+    if let Some(mime) = post_data.mime_type.as_deref() {
+        if !is_urlencoded_mime_type(mime) {
+            return None;
+        }
     }
 
     let mut serializer = url::form_urlencoded::Serializer::new(String::new());
@@ -714,6 +725,71 @@ mod tests {
 
         assert!(!hash.is_empty());
         assert_eq!(String::from_utf8(body).expect("utf8"), "a=1&b=two+words");
+    }
+
+    #[test]
+    fn params_only_request_body_skips_multipart() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        create_schema(&conn).expect("schema created");
+
+        let json = r#"
+        {
+          "log": {
+            "entries": [
+              {
+                "startedDateTime": "2024-01-15T10:30:00.000Z",
+                "time": 45.0,
+                "request": {
+                  "method": "POST",
+                  "url": "https://example.com/upload",
+                  "httpVersion": "HTTP/1.1",
+                  "headers": [{"name": "Content-Type", "value": "multipart/form-data"}],
+                  "postData": {
+                    "mimeType": "multipart/form-data",
+                    "params": [
+                      {"name": "file", "value": "ignored.bin"}
+                    ]
+                  }
+                },
+                "response": {
+                  "status": 204,
+                  "statusText": "No Content",
+                  "httpVersion": "HTTP/1.1",
+                  "headers": [],
+                  "content": {
+                    "size": 0
+                  }
+                }
+              }
+            ]
+          }
+        }
+        "#;
+
+        let har: Har = serde_json::from_str(json).expect("parse har");
+        let entry = &har.log.entries[0];
+
+        let options = InsertEntryOptions {
+            store_bodies: true,
+            max_body_size: None,
+            text_only: false,
+            ..Default::default()
+        };
+
+        let import_id = 1i64;
+        conn.execute(
+            "INSERT INTO imports (id, source_file, imported_at, entry_count) VALUES (?1, ?2, ?3, ?4)",
+            params![import_id, "test.har", "2024-01-01T00:00:00Z", 0],
+        )
+        .expect("insert import");
+
+        insert_entry(&conn, import_id, entry, &options).expect("insert entry");
+
+        let request_body_hash: Option<String> = conn
+            .query_row("SELECT request_body_hash FROM entries", [], |r| r.get(0))
+            .expect("request body hash");
+
+        assert!(request_body_hash.is_none());
     }
 
     #[test]
