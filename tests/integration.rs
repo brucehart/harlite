@@ -216,6 +216,43 @@ fn test_import_with_bodies() {
 }
 
 #[test]
+fn test_merge_dedup_identical_db() {
+    let tmp = TempDir::new().unwrap();
+    let db1 = tmp.path().join("first.db");
+    let db2 = tmp.path().join("second.db");
+    let merged = tmp.path().join("merged.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "-o"])
+        .arg(&db1)
+        .assert()
+        .success();
+
+    fs::copy(&db1, &db2).unwrap();
+
+    harlite()
+        .args(["merge"])
+        .arg(&db1)
+        .arg(&db2)
+        .args(["-o"])
+        .arg(&merged)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Merged 2 databases"));
+
+    let conn = rusqlite::Connection::open(&merged).unwrap();
+    let entry_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))
+        .unwrap();
+    let import_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM imports", [], |r| r.get(0))
+        .unwrap();
+
+    assert_eq!(entry_count, 2);
+    assert_eq!(import_count, 1);
+}
+
+#[test]
 fn test_import_filters_method_status_regex() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("filtered.db");

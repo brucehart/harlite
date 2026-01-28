@@ -30,6 +30,7 @@ Works great with AI coding agents like Codex and Claude — they already know SQ
 - **External body extraction** — Store body blobs as hashed files on disk (`--extract-bodies`)
 - **Full-text search** — SQLite FTS5 over response bodies (`harlite search`)
 - **Multi-file support** — Merge multiple HAR files into one database
+- **Database merge** — Combine multiple harlite databases with deduplication (`harlite merge`)
 - **Queryable headers** — Headers stored as JSON, queryable with SQLite JSON functions
 - **Safe sharing** — Redact sensitive headers/cookies before sharing a database
 - **Diffing** — Compare two HAR files or two databases (`harlite diff`)
@@ -100,6 +101,19 @@ harlite import capture.har -o mydata.db
 
 # Import multiple files (merges into one database)
 harlite import *.har -o all-traffic.db
+```
+
+### Merge databases
+
+```bash
+# Merge multiple databases into one (default: <first-input>-merged.db)
+harlite merge day1.db day2.db
+
+# Choose output path and dedup strategy
+harlite merge day1.db day2.db -o traffic.db --dedup exact
+
+# Dry run to see merge stats without writing
+harlite merge day1.db day2.db --dry-run
 ```
 
 ### Import with response bodies

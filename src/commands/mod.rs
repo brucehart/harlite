@@ -1,9 +1,10 @@
+mod diff;
 mod export;
 mod fts;
-mod diff;
 mod import;
 mod imports;
 mod info;
+mod merge;
 mod prune;
 mod query;
 mod redact;
@@ -12,12 +13,13 @@ mod search;
 mod stats;
 mod util;
 
+pub use diff::{run_diff, DiffOptions};
 pub use export::{run_export, ExportOptions};
 pub use fts::{run_fts_rebuild, FtsTokenizer};
-pub use diff::{run_diff, DiffOptions};
 pub use import::{run_import, ImportOptions};
 pub use imports::run_imports;
 pub use info::run_info;
+pub use merge::{run_merge, DedupStrategy, MergeOptions};
 pub use prune::run_prune;
 pub use query::{run_query, OutputFormat, QueryOptions};
 pub use redact::{run_redact, NameMatchMode, RedactOptions};

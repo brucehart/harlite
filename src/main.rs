@@ -11,12 +11,12 @@ mod size;
 use crate::db::ExtractBodiesKind;
 use commands::StatsOptions;
 use commands::{
-    run_diff, run_export, run_fts_rebuild, run_import, run_imports, run_info, run_prune,
+    run_diff, run_export, run_fts_rebuild, run_import, run_imports, run_info, run_merge, run_prune,
     run_query, run_redact, run_schema, run_search, run_stats,
 };
 use commands::{
-    DiffOptions, ExportOptions, ImportOptions, NameMatchMode, OutputFormat, QueryOptions,
-    RedactOptions,
+    DedupStrategy, DiffOptions, ExportOptions, ImportOptions, MergeOptions, NameMatchMode,
+    OutputFormat, QueryOptions, RedactOptions,
 };
 
 #[derive(Parser)]
@@ -308,6 +308,25 @@ enum Commands {
         url_regex: Vec<String>,
     },
 
+    /// Merge multiple harlite databases into one
+    Merge {
+        /// Database files to merge
+        #[arg(required = true)]
+        databases: Vec<PathBuf>,
+
+        /// Output database file (default: <first-input>-merged.db)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Only report stats, do not write output
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Deduplication strategy for entries
+        #[arg(long, value_enum, default_value = "hash")]
+        dedup: DedupStrategy,
+    },
+
     /// Run a SQL query against a harlite SQLite database
     Query {
         /// SQL string to execute (read-only)
@@ -386,8 +405,7 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
 
-    let result = (|| {
-        match cli.command {
+    let result = (|| match cli.command {
         Commands::Import {
             files,
             output,
@@ -544,6 +562,20 @@ fn main() {
             run_diff(left, right, &options)
         }
 
+        Commands::Merge {
+            databases,
+            output,
+            dry_run,
+            dedup,
+        } => {
+            let options = MergeOptions {
+                output,
+                dry_run,
+                dedup,
+            };
+            run_merge(databases, &options)
+        }
+
         Commands::Query {
             sql,
             database,
@@ -594,7 +626,6 @@ fn main() {
                 external_path_root,
             )
         }
-    }
     })();
 
     if let Err(e) = result {
