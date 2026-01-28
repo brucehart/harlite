@@ -32,6 +32,7 @@ Works great with AI coding agents like Codex and Claude — they already know SQ
 - **Multi-file support** — Merge multiple HAR files into one database
 - **Queryable headers** — Headers stored as JSON, queryable with SQLite JSON functions
 - **Safe sharing** — Redact sensitive headers/cookies before sharing a database
+- **HAR extensions preserved** — Store and round-trip HAR 1.3 extension fields as JSON
 
 ## Installation
 
@@ -289,6 +290,8 @@ Notes / gaps:
 - HAR `timings` are reconstructed from the stored total duration (`time_ms`), so the breakdown is best-effort.
 - Some HAR fields are not stored in the DB (e.g. `headersSize`, response `httpVersion`), so they may be omitted or approximated on export.
 - `--bodies-raw` uses the raw/compressed response body (if stored), sets `content.encoding` when base64-encoded, and fills `content.compression` when the uncompressed size is known.
+- Extension fields (including underscore-prefixed fields) on log/page/entry/request/response/content/timings/postData are preserved as JSON for round-trip export. Example extensions seen in Chromium HARs include `_resourceType`, `_priority`, `_transferSize`, `_initiator`, `_fromDiskCache`, and `_fromServiceWorker`.
+- Schema upgrades automatically add extension columns (`log_extensions`, `page_extensions`, `entry_extensions`, etc.) when opening older databases.
 
 ### Redact sensitive data
 
@@ -310,6 +313,12 @@ harlite redact traffic.db --no-defaults --match exact --header authorization --c
 # Wildcard / regex name matching
 harlite redact traffic.db --match wildcard --header '*token*'
 harlite redact traffic.db --match regex --header '^(authorization|x-api-key)$'
+
+# Redact URL query parameters by name
+harlite redact traffic.db --query-param token --query-param session --match wildcard
+
+# Redact matching patterns in stored bodies (UTF-8 only)
+harlite redact traffic.db --body-regex '(?i)\"password\"\\s*:\\s*\"[^\"]+\"'
 ```
 
 ### Query with harlite
@@ -364,6 +373,12 @@ The main table containing one row per HTTP request/response pair.
 | `is_redirect` | INTEGER | 1 if 3xx redirect, 0 otherwise |
 | `server_ip` | TEXT | Server IP address (if available) |
 | `connection_id` | TEXT | Connection ID (if available) |
+| `entry_extensions` | TEXT | Entry extension fields (JSON) |
+| `request_extensions` | TEXT | Request extension fields (JSON) |
+| `response_extensions` | TEXT | Response extension fields (JSON) |
+| `content_extensions` | TEXT | Content extension fields (JSON) |
+| `timings_extensions` | TEXT | Timings extension fields (JSON) |
+| `post_data_extensions` | TEXT | PostData extension fields (JSON) |
 
 ### `blobs` table
 
@@ -388,6 +403,8 @@ Page/document information from the HAR (if present).
 | `title` | TEXT | Page title |
 | `on_content_load_ms` | REAL | DOMContentLoaded timing |
 | `on_load_ms` | REAL | Window load timing |
+| `page_extensions` | TEXT | Page extension fields (JSON) |
+| `page_timings_extensions` | TEXT | Page timings extension fields (JSON) |
 
 ### `imports` table
 
@@ -400,6 +417,7 @@ Use `harlite imports` to list these records and `harlite prune --import-id <id>`
 | `source_file` | TEXT | Original HAR filename |
 | `imported_at` | TEXT | Import timestamp |
 | `entry_count` | INTEGER | Number of entries imported |
+| `log_extensions` | TEXT | Log extension fields (JSON) |
 
 ### Indexes
 

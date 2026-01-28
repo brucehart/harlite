@@ -52,11 +52,16 @@ pub struct EntryBlobStats {
 }
 
 /// Create an import record and return its row id.
-pub fn create_import(conn: &Connection, source_file: &str) -> Result<i64> {
+pub fn create_import(
+    conn: &Connection,
+    source_file: &str,
+    log_extensions: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Result<i64> {
     let now = chrono::Utc::now().to_rfc3339();
+    let log_extensions_json = log_extensions.and_then(extensions_to_json);
     conn.execute(
-        "INSERT INTO imports (source_file, imported_at, entry_count) VALUES (?1, ?2, 0)",
-        params![source_file, now],
+        "INSERT INTO imports (source_file, imported_at, entry_count, log_extensions) VALUES (?1, ?2, 0, ?3)",
+        params![source_file, now, log_extensions_json],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -72,9 +77,14 @@ pub fn update_import_count(conn: &Connection, import_id: i64, count: usize) -> R
 
 /// Insert a page record.
 pub fn insert_page(conn: &Connection, import_id: i64, page: &Page) -> Result<()> {
+    let page_extensions_json = extensions_to_json(&page.extensions);
+    let timings_extensions_json = page
+        .page_timings
+        .as_ref()
+        .and_then(|t| extensions_to_json(&t.extensions));
     conn.execute(
-        "INSERT OR IGNORE INTO pages (id, import_id, started_at, title, on_content_load_ms, on_load_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT OR IGNORE INTO pages (id, import_id, started_at, title, on_content_load_ms, on_load_ms, page_extensions, page_timings_extensions)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             page.id,
             import_id,
@@ -82,6 +92,8 @@ pub fn insert_page(conn: &Connection, import_id: i64, page: &Page) -> Result<()>
             page.title,
             page.page_timings.as_ref().and_then(|t| t.on_content_load),
             page.page_timings.as_ref().and_then(|t| t.on_load),
+            page_extensions_json,
+            timings_extensions_json,
         ],
     )?;
     Ok(())
@@ -130,6 +142,16 @@ fn headers_to_json(headers: &[Header]) -> String {
         })
         .collect();
     serde_json::to_string(&map).unwrap_or_else(|_| "{}".to_string())
+}
+
+fn extensions_to_json(
+    extensions: &serde_json::Map<String, serde_json::Value>,
+) -> Option<String> {
+    if extensions.is_empty() {
+        None
+    } else {
+        serde_json::to_string(extensions).ok()
+    }
 }
 
 fn cookies_to_json(cookies: &Option<Vec<Cookie>>) -> String {
@@ -410,6 +432,19 @@ pub fn insert_entry(
     let response_headers_json = headers_to_json(&entry.response.headers);
     let request_cookies_json = cookies_to_json(&entry.request.cookies);
     let response_cookies_json = cookies_to_json(&entry.response.cookies);
+    let entry_extensions_json = extensions_to_json(&entry.extensions);
+    let request_extensions_json = extensions_to_json(&entry.request.extensions);
+    let response_extensions_json = extensions_to_json(&entry.response.extensions);
+    let content_extensions_json = extensions_to_json(&entry.response.content.extensions);
+    let timings_extensions_json = entry
+        .timings
+        .as_ref()
+        .and_then(|timings| extensions_to_json(&timings.extensions));
+    let post_data_extensions_json = entry
+        .request
+        .post_data
+        .as_ref()
+        .and_then(|post| extensions_to_json(&post.extensions));
 
     let is_redirect = if (300..400).contains(&entry.response.status) {
         1
@@ -503,10 +538,7 @@ pub fn insert_entry(
                 if size_ok && type_ok && !body.is_empty() {
                     let (hash, is_new) = store_request_blob(conn, &body, mime, options)?;
                     request_body_hash = Some(hash);
-                    if is_new {
-                        blob_created = true;
-                    }
-                    bytes_accounted = body.len();
+                    entry_stats.request.record(is_new, body.len());
                 }
             }
         }
@@ -519,11 +551,13 @@ pub fn insert_entry(
             request_headers, request_cookies, request_body_hash, request_body_size,
             status, status_text, response_headers, response_cookies,
             response_body_hash, response_body_size, response_body_hash_raw, response_body_size_raw, response_mime_type,
-            is_redirect, server_ip, connection_id
+            is_redirect, server_ip, connection_id,
+            entry_extensions, request_extensions, response_extensions, content_extensions, timings_extensions, post_data_extensions
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-            ?21, ?22, ?23, ?24, ?25, ?26
+            ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
+            ?31, ?32
         )",
         params![
             import_id,
@@ -552,6 +586,12 @@ pub fn insert_entry(
             is_redirect,
             entry.server_ip_address,
             entry.connection,
+            entry_extensions_json,
+            request_extensions_json,
+            response_extensions_json,
+            content_extensions_json,
+            timings_extensions_json,
+            post_data_extensions_json,
         ],
     )?;
 

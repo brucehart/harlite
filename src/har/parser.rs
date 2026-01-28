@@ -8,6 +8,12 @@ use std::path::Path;
 
 use crate::error::Result;
 
+pub type Extensions = serde_json::Map<String, serde_json::Value>;
+
+fn extensions_is_empty(ext: &Extensions) -> bool {
+    ext.is_empty()
+}
+
 #[derive(Debug, Serialize)]
 pub struct Har {
     pub log: Log,
@@ -20,6 +26,8 @@ pub struct Log {
     pub browser: Option<Browser>,
     pub pages: Option<Vec<Page>>,
     pub entries: Vec<Entry>,
+    #[serde(flatten, default, skip_serializing_if = "extensions_is_empty")]
+    pub extensions: Extensions,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -41,6 +49,8 @@ pub struct Page {
     pub id: String,
     pub title: Option<String>,
     pub page_timings: Option<PageTimings>,
+    #[serde(flatten, default, skip_serializing_if = "extensions_is_empty")]
+    pub extensions: Extensions,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -48,6 +58,8 @@ pub struct Page {
 pub struct PageTimings {
     pub on_content_load: Option<f64>,
     pub on_load: Option<f64>,
+    #[serde(flatten, default, skip_serializing_if = "extensions_is_empty")]
+    pub extensions: Extensions,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -63,6 +75,8 @@ pub struct Entry {
     #[serde(rename = "serverIPAddress", alias = "serverIpAddress")]
     pub server_ip_address: Option<String>,
     pub connection: Option<String>,
+    #[serde(flatten, default, skip_serializing_if = "extensions_is_empty")]
+    pub extensions: Extensions,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -77,6 +91,8 @@ pub struct Request {
     pub post_data: Option<PostData>,
     pub headers_size: Option<i64>,
     pub body_size: Option<i64>,
+    #[serde(flatten, default, skip_serializing_if = "extensions_is_empty")]
+    pub extensions: Extensions,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -92,6 +108,8 @@ pub struct Response {
     pub redirect_url: Option<String>,
     pub headers_size: Option<i64>,
     pub body_size: Option<i64>,
+    #[serde(flatten, default, skip_serializing_if = "extensions_is_empty")]
+    pub extensions: Extensions,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -102,6 +120,8 @@ pub struct Content {
     pub mime_type: Option<String>,
     pub text: Option<String>,
     pub encoding: Option<String>,
+    #[serde(flatten, default, skip_serializing_if = "extensions_is_empty")]
+    pub extensions: Extensions,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -134,6 +154,8 @@ pub struct PostData {
     pub mime_type: Option<String>,
     pub text: Option<String>,
     pub params: Option<Vec<PostParam>>,
+    #[serde(flatten, default, skip_serializing_if = "extensions_is_empty")]
+    pub extensions: Extensions,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -154,6 +176,8 @@ pub struct Timings {
     pub wait: f64,
     pub receive: f64,
     pub ssl: Option<f64>,
+    #[serde(flatten, default, skip_serializing_if = "extensions_is_empty")]
+    pub extensions: Extensions,
 }
 
 /// Parse a HAR file from disk into strongly typed structures.
@@ -277,6 +301,7 @@ impl<'de> Deserialize<'de> for Log {
                 let mut seen_browser = false;
                 let mut seen_pages = false;
                 let mut entries: Option<Vec<Entry>> = None;
+                let mut extensions: Extensions = Extensions::new();
 
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
@@ -315,7 +340,8 @@ impl<'de> Deserialize<'de> for Log {
                             entries = Some(map.next_value_seed(EntriesSeed)?);
                         }
                         _ => {
-                            let _: IgnoredAny = map.next_value()?;
+                            let value: serde_json::Value = map.next_value()?;
+                            extensions.insert(key, value);
                         }
                     }
                 }
@@ -328,6 +354,7 @@ impl<'de> Deserialize<'de> for Log {
                     browser,
                     pages,
                     entries,
+                    extensions,
                 })
             }
         }
@@ -407,5 +434,73 @@ mod tests {
         let har: Har = serde_json::from_str(json).expect("HAR should parse");
         assert_eq!(har.log.entries.len(), 1);
         assert_eq!(har.log.entries[0].request.method, "GET");
+    }
+
+    #[test]
+    fn preserves_extensions() {
+        let json = r#"
+        {
+          "log": {
+            "_logExt": "keep",
+            "entries": [
+              {
+                "_entryExt": 42,
+                "startedDateTime": "2024-01-15T10:30:00.000Z",
+                "time": 150.5,
+                "request": {
+                  "_reqExt": true,
+                  "method": "GET",
+                  "url": "https://example.com/",
+                  "httpVersion": "HTTP/1.1",
+                  "headers": []
+                },
+                "response": {
+                  "status": 200,
+                  "statusText": "OK",
+                  "httpVersion": "HTTP/1.1",
+                  "headers": [],
+                  "content": {
+                    "size": 0,
+                    "_contentExt": "x"
+                  }
+                }
+              }
+            ]
+          }
+        }
+        "#;
+
+        let har: Har = serde_json::from_str(json).expect("HAR should parse");
+        assert_eq!(
+            har.log
+                .extensions
+                .get("_logExt")
+                .and_then(|v| v.as_str()),
+            Some("keep")
+        );
+        assert_eq!(
+            har.log.entries[0]
+                .extensions
+                .get("_entryExt")
+                .and_then(|v| v.as_i64()),
+            Some(42)
+        );
+        assert_eq!(
+            har.log.entries[0]
+                .request
+                .extensions
+                .get("_reqExt")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            har.log.entries[0]
+                .response
+                .content
+                .extensions
+                .get("_contentExt")
+                .and_then(|v| v.as_str()),
+            Some("x")
+        );
     }
 }

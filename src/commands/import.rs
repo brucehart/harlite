@@ -156,7 +156,7 @@ fn import_single_file(
     println!("Importing {}...", file_name);
 
     let har = parse_har_file(path)?;
-    let import_id = create_import(conn, file_name)?;
+    let import_id = create_import(conn, file_name, Some(&har.log.extensions))?;
 
     if let Some(pages) = &har.log.pages {
         for page in pages {

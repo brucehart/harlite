@@ -27,6 +27,12 @@ pub struct EntryRow {
     pub response_mime_type: Option<String>,
     pub server_ip: Option<String>,
     pub connection_id: Option<String>,
+    pub entry_extensions: Option<String>,
+    pub request_extensions: Option<String>,
+    pub response_extensions: Option<String>,
+    pub content_extensions: Option<String>,
+    pub timings_extensions: Option<String>,
+    pub post_data_extensions: Option<String>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -195,7 +201,13 @@ pub fn load_entries(conn: &Connection, query: &EntryQuery) -> Result<Vec<EntryRo
             response_body_size_raw,
             response_mime_type,
             server_ip,
-            connection_id
+            connection_id,
+            entry_extensions,
+            request_extensions,
+            response_extensions,
+            content_extensions,
+            timings_extensions,
+            post_data_extensions
         FROM entries
     "#
     .to_string();
@@ -231,6 +243,12 @@ pub fn load_entries(conn: &Connection, query: &EntryQuery) -> Result<Vec<EntryRo
             response_mime_type: row.get(19)?,
             server_ip: row.get(20)?,
             connection_id: row.get(21)?,
+            entry_extensions: row.get(22)?,
+            request_extensions: row.get(23)?,
+            response_extensions: row.get(24)?,
+            content_extensions: row.get(25)?,
+            timings_extensions: row.get(26)?,
+            post_data_extensions: row.get(27)?,
         })
     })?;
 
@@ -245,6 +263,8 @@ pub struct PageRow {
     pub title: Option<String>,
     pub on_content_load_ms: Option<f64>,
     pub on_load_ms: Option<f64>,
+    pub page_extensions: Option<String>,
+    pub page_timings_extensions: Option<String>,
 }
 
 pub fn load_pages_for_imports(conn: &Connection, import_ids: &[i64]) -> Result<Vec<PageRow>> {
@@ -258,7 +278,7 @@ pub fn load_pages_for_imports(conn: &Connection, import_ids: &[i64]) -> Result<V
         .join(", ");
 
     let sql = format!(
-        "SELECT import_id, id, started_at, title, on_content_load_ms, on_load_ms FROM pages WHERE import_id IN ({placeholders})"
+        "SELECT import_id, id, started_at, title, on_content_load_ms, on_load_ms, page_extensions, page_timings_extensions FROM pages WHERE import_id IN ({placeholders})"
     );
 
     let params: Vec<Value> = import_ids
@@ -276,6 +296,8 @@ pub fn load_pages_for_imports(conn: &Connection, import_ids: &[i64]) -> Result<V
             title: row.get(3)?,
             on_content_load_ms: row.get(4)?,
             on_load_ms: row.get(5)?,
+            page_extensions: row.get(6)?,
+            page_timings_extensions: row.get(7)?,
         })
     })?;
 
