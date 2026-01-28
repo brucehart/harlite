@@ -67,6 +67,56 @@ fn test_import_simple() {
 }
 
 #[test]
+fn test_imports_list_and_prune() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "--bodies", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args(["imports"])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Source"))
+        .stdout(predicate::str::contains("simple.har"));
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let import_id: i64 = conn
+        .query_row("SELECT id FROM imports LIMIT 1", [], |r| r.get(0))
+        .unwrap();
+
+    harlite()
+        .args(["prune", "--import-id", &import_id.to_string()])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let entry_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))
+        .unwrap();
+    let import_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM imports", [], |r| r.get(0))
+        .unwrap();
+    let page_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM pages", [], |r| r.get(0))
+        .unwrap();
+    let blob_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM blobs", [], |r| r.get(0))
+        .unwrap();
+
+    assert_eq!(entry_count, 0);
+    assert_eq!(import_count, 0);
+    assert_eq!(page_count, 0);
+    assert_eq!(blob_count, 0);
+}
+
+#[test]
 fn test_import_with_pages() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("test.db");
