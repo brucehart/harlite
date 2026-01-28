@@ -1,6 +1,6 @@
 [package]
 name = "harlite"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.85"
 description = "Import HAR files into SQLite. Query your web traffic with SQL."
