@@ -162,6 +162,7 @@ pub fn parse_har_file(path: &Path) -> Result<Har> {
     let reader = BufReader::new(file);
     let mut deserializer = serde_json::Deserializer::from_reader(reader);
     let har = Har::deserialize(&mut deserializer)?;
+    deserializer.end()?;
     Ok(har)
 }
 
