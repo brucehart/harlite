@@ -28,6 +28,7 @@ Use the `harlite` binary to import HAR files into SQLite databases, then query/e
 - `prune` — remove a specific import by id
 - `export` — export a database back to HAR
 - `redact` — redact sensitive headers/cookies/params/bodies
+- `diff` — compare two HAR files or two databases
 
 ## Flags by command
 ### `import`
@@ -98,6 +99,14 @@ Use the `harlite` binary to import HAR files into SQLite databases, then query/e
 - `--body-regex <REGEX>`: body regex pattern (repeatable)
 - `--match <exact|wildcard|regex>`: pattern match mode
 - `--token <TOKEN>`: replacement token (default: `REDACTED`)
+
+### `diff`
+- `<LEFT> <RIGHT>`: two HAR files or two databases to compare
+- `-f, --format <table|csv|json>`: output format (table/JSON required)
+- `--host <HOST>`: hostname filter (repeatable)
+- `--method <METHOD>`: HTTP method filter (repeatable)
+- `--status <STATUS>`: HTTP status filter (repeatable)
+- `--url-regex <REGEX>`: URL regex filter (repeatable)
 
 ### `query`
 - `-f, --format <table|csv|json>`: output format

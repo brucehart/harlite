@@ -282,6 +282,54 @@ fn test_import_filters_date_range() {
 }
 
 #[test]
+fn test_diff_har_json() {
+    harlite()
+        .args([
+            "diff",
+            "tests/fixtures/simple.har",
+            "tests/fixtures/simple_changed.har",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"change\":\"changed\""))
+        .stdout(predicate::str::contains("\"change\":\"removed\""))
+        .stdout(predicate::str::contains("\"change\":\"added\""));
+}
+
+#[test]
+fn test_diff_sqlite_extension_detection() {
+    let tmp = TempDir::new().unwrap();
+    let db_left = tmp.path().join("left.sqlite3");
+    let db_right = tmp.path().join("right.sqlite3");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "-o"])
+        .arg(&db_left)
+        .assert()
+        .success();
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "-o"])
+        .arg(&db_right)
+        .assert()
+        .success();
+
+    harlite()
+        .args([
+            "diff",
+            db_left.to_str().unwrap(),
+            db_right.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[]"));
+}
+
+#[test]
 fn test_import_stats_counts_request_and_response_bodies() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("test.db");

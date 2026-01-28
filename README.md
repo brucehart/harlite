@@ -32,6 +32,7 @@ Works great with AI coding agents like Codex and Claude — they already know SQ
 - **Multi-file support** — Merge multiple HAR files into one database
 - **Queryable headers** — Headers stored as JSON, queryable with SQLite JSON functions
 - **Safe sharing** — Redact sensitive headers/cookies before sharing a database
+- **Diffing** — Compare two HAR files or two databases (`harlite diff`)
 - **HAR extensions preserved** — Store and round-trip HAR 1.3 extension fields as JSON
 
 ## Installation
@@ -296,6 +297,23 @@ Notes / gaps:
 - `--bodies-raw` uses the raw/compressed response body (if stored), sets `content.encoding` when base64-encoded, and fills `content.compression` when the uncompressed size is known.
 - Extension fields (including underscore-prefixed fields) on log/page/entry/request/response/content/timings/postData are preserved as JSON for round-trip export. Example extensions seen in Chromium HARs include `_resourceType`, `_priority`, `_transferSize`, `_initiator`, `_fromDiskCache`, and `_fromServiceWorker`.
 - Schema upgrades automatically add extension columns (`log_extensions`, `page_extensions`, `entry_extensions`, etc.) when opening older databases.
+
+### Diff HAR or databases
+
+Compare two HAR files or two harlite databases to find added/removed requests, timing deltas, and header/body size changes:
+
+```bash
+# Compare two HAR files
+harlite diff before.har after.har
+
+# Compare two databases
+harlite diff before.db after.db --format json
+
+# Filter to specific hosts/paths/statuses
+harlite diff before.har after.har --host api.example.com --method GET --status 200 --url-regex 'example\\.com/api/'
+```
+
+Matching is done by `(method, url)` with a stable ordinal match per pair: if the same method+URL appears multiple times, the first occurrence in the left file is matched with the first in the right, the second with the second, and so on (ordered by HAR entry order or `started_at` for databases).
 
 ### Redact sensitive data
 
