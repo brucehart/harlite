@@ -112,4 +112,18 @@ mod tests {
         assert!(parse_size_bytes_u64("abc").is_err());
         assert!(parse_size_bytes_u64("1xb").is_err());
     }
+
+    #[test]
+    fn parses_edge_case_numbers() {
+        assert_eq!(parse_size_bytes_u64(".5MB").unwrap(), Some(524_288));
+        assert_eq!(parse_size_bytes_u64("0.5mb").unwrap(), Some(524_288));
+        assert_eq!(parse_size_bytes_u64("1.0").unwrap(), Some(1));
+    }
+
+    #[test]
+    fn accepts_unit_variants() {
+        assert_eq!(parse_size_bytes_u64("1 kib").unwrap(), Some(1024));
+        assert_eq!(parse_size_bytes_u64("2MiB").unwrap(), Some(2_097_152));
+        assert_eq!(parse_size_bytes_u64("3GiB").unwrap(), Some(3_221_225_472));
+    }
 }
