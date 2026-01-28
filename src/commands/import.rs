@@ -64,6 +64,7 @@ struct ImportFilters {
     url_regexes: Vec<Regex>,
     from: Option<DateTime<Utc>>,
     to: Option<DateTime<Utc>>,
+    to_is_exclusive: bool,
 }
 
 /// Import one or more HAR files into a SQLite database.
@@ -209,12 +210,15 @@ fn build_import_filters(options: &ImportOptions) -> Result<ImportFilters> {
     let hosts = options.host.iter().map(|h| h.to_lowercase()).collect();
     let methods = options.method.iter().map(|m| m.to_lowercase()).collect();
     let from = match options.from.as_deref() {
-        Some(value) => Some(parse_started_at_bound(value, false)?),
+        Some(value) => Some(parse_started_at_bound(value, false)?.0),
         None => None,
     };
-    let to = match options.to.as_deref() {
-        Some(value) => Some(parse_started_at_bound(value, true)?),
-        None => None,
+    let (to, to_is_exclusive) = match options.to.as_deref() {
+        Some(value) => {
+            let (dt, exclusive) = parse_started_at_bound(value, true)?;
+            (Some(dt), exclusive)
+        }
+        None => (None, false),
     };
 
     Ok(ImportFilters {
@@ -224,6 +228,7 @@ fn build_import_filters(options: &ImportOptions) -> Result<ImportFilters> {
         url_regexes,
         from,
         to,
+        to_is_exclusive,
     })
 }
 
@@ -269,15 +274,21 @@ fn entry_matches_filters(entry: &Entry, filters: &ImportFilters) -> Result<bool>
         if filters.from.is_some_and(|from| entry_dt < from) {
             return Ok(false);
         }
-        if filters.to.is_some_and(|to| entry_dt > to) {
-            return Ok(false);
+        if let Some(to) = filters.to {
+            if filters.to_is_exclusive {
+                if entry_dt >= to {
+                    return Ok(false);
+                }
+            } else if entry_dt > to {
+                return Ok(false);
+            }
         }
     }
 
     Ok(true)
 }
 
-fn parse_started_at_bound(s: &str, is_end: bool) -> Result<DateTime<Utc>> {
+fn parse_started_at_bound(s: &str, is_end: bool) -> Result<(DateTime<Utc>, bool)> {
     let s = s.trim();
     if s.is_empty() {
         return Err(HarliteError::InvalidHar(
@@ -286,21 +297,28 @@ fn parse_started_at_bound(s: &str, is_end: bool) -> Result<DateTime<Utc>> {
     }
 
     if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
-        return Ok(dt.with_timezone(&Utc));
+        return Ok((dt.with_timezone(&Utc), false));
     }
 
     let date = NaiveDate::parse_from_str(s, "%Y-%m-%d")?;
-    let dt = if is_end {
-        date.and_hms_opt(23, 59, 59)
+    let (dt, exclusive) = if is_end {
+        let next_day = date
+            .succ_opt()
+            .ok_or_else(|| HarliteError::InvalidHar("Invalid end date".to_string()))?;
+        let dt = next_day
+            .and_hms_opt(0, 0, 0)
             .and_then(|d| d.and_local_timezone(Utc).single())
-            .ok_or_else(|| HarliteError::InvalidHar("Invalid end date".to_string()))?
+            .ok_or_else(|| HarliteError::InvalidHar("Invalid end date".to_string()))?;
+        (dt, true)
     } else {
-        date.and_hms_opt(0, 0, 0)
+        let dt = date
+            .and_hms_opt(0, 0, 0)
             .and_then(|d| d.and_local_timezone(Utc).single())
-            .ok_or_else(|| HarliteError::InvalidHar("Invalid start date".to_string()))?
+            .ok_or_else(|| HarliteError::InvalidHar("Invalid start date".to_string()))?;
+        (dt, false)
     };
 
-    Ok(dt)
+    Ok((dt, exclusive))
 }
 
 fn print_stats(stats: &ImportStats) {
