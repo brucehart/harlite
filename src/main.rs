@@ -6,12 +6,13 @@ mod commands;
 mod db;
 mod error;
 mod har;
+mod size;
 
 use crate::db::ExtractBodiesKind;
 use commands::StatsOptions;
 use commands::{
-    run_export, run_fts_rebuild, run_import, run_info, run_query, run_redact, run_schema,
-    run_search, run_stats,
+    run_export, run_fts_rebuild, run_import, run_imports, run_info, run_prune, run_query,
+    run_redact, run_schema, run_search, run_stats,
 };
 use commands::{
     ExportOptions, ImportOptions, NameMatchMode, OutputFormat, QueryOptions, RedactOptions,
@@ -42,7 +43,7 @@ enum Commands {
         #[arg(long)]
         bodies: bool,
 
-        /// Maximum body size to store (e.g., "100KB", "1MB", "unlimited")
+        /// Maximum body size to store (e.g., "100KB", "1.5MB", "1M", "100k", "unlimited")
         #[arg(long, default_value = "100KB")]
         max_body_size: String,
 
@@ -73,6 +74,30 @@ enum Commands {
         /// Optional sharding depth for extracted bodies (each level uses 2 hex chars of the hash)
         #[arg(long, default_value_t = 0)]
         extract_bodies_shard_depth: u8,
+
+        /// Hostname filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        host: Vec<String>,
+
+        /// HTTP method filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        method: Vec<String>,
+
+        /// HTTP status filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        status: Vec<i32>,
+
+        /// URL regex match (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        url_regex: Vec<String>,
+
+        /// Only import entries on/after this timestamp (RFC3339) or date (YYYY-MM-DD)
+        #[arg(long)]
+        from: Option<String>,
+
+        /// Only import entries on/before this timestamp (RFC3339) or date (YYYY-MM-DD)
+        #[arg(long)]
+        to: Option<String>,
     },
 
     /// Print the database schema
@@ -85,6 +110,22 @@ enum Commands {
     Info {
         /// Database file to inspect
         database: PathBuf,
+    },
+
+    /// List import metadata for a database
+    Imports {
+        /// Database file to inspect
+        database: PathBuf,
+    },
+
+    /// Remove entries for a specific import id
+    Prune {
+        /// Database file to modify
+        database: PathBuf,
+
+        /// Import id to remove
+        #[arg(long)]
+        import_id: i64,
     },
 
     /// Show lightweight database stats (script-friendly)
@@ -174,19 +215,19 @@ enum Commands {
         #[arg(long)]
         to: Option<String>,
 
-        /// Minimum request body size (e.g., '1KB', '500B')
+        /// Minimum request body size (e.g., '1KB', '1.5MB', '1M', '100k', '500B')
         #[arg(long)]
         min_request_size: Option<String>,
 
-        /// Maximum request body size (e.g., '100KB', 'unlimited')
+        /// Maximum request body size (e.g., '100KB', '1.5MB', '1M', '100k', 'unlimited')
         #[arg(long)]
         max_request_size: Option<String>,
 
-        /// Minimum response body size (e.g., '1KB', '500B')
+        /// Minimum response body size (e.g., '1KB', '1.5MB', '1M', '100k', '500B')
         #[arg(long)]
         min_response_size: Option<String>,
 
-        /// Maximum response body size (e.g., '100KB', 'unlimited')
+        /// Maximum response body size (e.g., '100KB', '1.5MB', '1M', '100k', 'unlimited')
         #[arg(long)]
         max_response_size: Option<String>,
     },
@@ -290,7 +331,7 @@ enum Commands {
         #[arg(long, value_enum, default_value = "unicode61")]
         tokenizer: commands::FtsTokenizer,
 
-        /// Maximum body size to index (e.g., '1MB', '100KB', 'unlimited')
+        /// Maximum body size to index (e.g., '1MB', '1.5MB', '1M', '100k', 'unlimited')
         #[arg(long, default_value = "1MB")]
         max_body_size: String,
 
@@ -304,29 +345,11 @@ enum Commands {
     },
 }
 
-fn parse_size(s: &str) -> Option<usize> {
-    let s = s.trim().to_lowercase();
-    if s == "unlimited" {
-        return None;
-    }
-
-    let (num, mult) = if s.ends_with("kb") {
-        (s.trim_end_matches("kb").trim(), 1024)
-    } else if s.ends_with("mb") {
-        (s.trim_end_matches("mb").trim(), 1024 * 1024)
-    } else if s.ends_with("gb") {
-        (s.trim_end_matches("gb").trim(), 1024 * 1024 * 1024)
-    } else {
-        (s.as_str(), 1)
-    };
-
-    num.parse::<usize>().ok().map(|n| n * mult)
-}
-
 fn main() {
     let cli = Cli::parse();
 
-    let result = match cli.command {
+    let result = (|| {
+        match cli.command {
         Commands::Import {
             files,
             output,
@@ -339,11 +362,18 @@ fn main() {
             extract_bodies,
             extract_bodies_kind,
             extract_bodies_shard_depth,
+            host,
+            method,
+            status,
+            url_regex,
+            from,
+            to,
         } => {
+            let max_body_size = size::parse_size_bytes_usize(&max_body_size)?;
             let options = ImportOptions {
                 output,
                 store_bodies: bodies,
-                max_body_size: parse_size(&max_body_size),
+                max_body_size,
                 text_only,
                 show_stats: stats,
                 decompress_bodies,
@@ -351,6 +381,12 @@ fn main() {
                 extract_bodies_dir: extract_bodies,
                 extract_bodies_kind,
                 extract_bodies_shard_depth,
+                host,
+                method,
+                status,
+                url_regex,
+                from,
+                to,
             };
             run_import(&files, &options).map(|_| ())
         }
@@ -358,6 +394,13 @@ fn main() {
         Commands::Schema { database } => run_schema(database),
 
         Commands::Info { database } => run_info(database),
+
+        Commands::Imports { database } => run_imports(database),
+
+        Commands::Prune {
+            database,
+            import_id,
+        } => run_prune(database, import_id),
 
         Commands::Stats { database, json } => {
             let options = StatsOptions { json };
@@ -480,14 +523,18 @@ fn main() {
             max_body_size,
             allow_external_paths,
             external_path_root,
-        } => run_fts_rebuild(
-            database,
-            tokenizer,
-            parse_size(&max_body_size),
-            allow_external_paths,
-            external_path_root,
-        ),
-    };
+        } => {
+            let max_body_size = size::parse_size_bytes_usize(&max_body_size)?;
+            run_fts_rebuild(
+                database,
+                tokenizer,
+                max_body_size,
+                allow_external_paths,
+                external_path_root,
+            )
+        }
+    }
+    })();
 
     if let Err(e) = result {
         eprintln!("Error: {}", e);

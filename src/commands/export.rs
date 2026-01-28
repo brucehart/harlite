@@ -11,6 +11,7 @@ use url::Url;
 
 use crate::db::{load_blobs_by_hashes, load_entries, load_pages_for_imports, BlobRow, EntryQuery};
 use crate::error::{HarliteError, Result};
+use crate::size;
 use crate::har::{
     Content, Cookie, Creator, Entry, Har, Header, Log, Page, PageTimings, PostData, QueryParam,
     Request, Response, Timings,
@@ -73,28 +74,6 @@ impl Default for ExportOptions {
             max_response_size: None,
         }
     }
-}
-
-fn parse_size_bytes(s: &str) -> Option<i64> {
-    let s = s.trim().to_lowercase();
-    if s.is_empty() {
-        return None;
-    }
-    if s == "unlimited" {
-        return None;
-    }
-
-    let (num, mult) = if s.ends_with("kb") {
-        (s.trim_end_matches("kb").trim(), 1024i64)
-    } else if s.ends_with("mb") {
-        (s.trim_end_matches("mb").trim(), 1024i64 * 1024)
-    } else if s.ends_with("gb") {
-        (s.trim_end_matches("gb").trim(), 1024i64 * 1024 * 1024)
-    } else {
-        (s.as_str(), 1i64)
-    };
-
-    num.parse::<i64>().ok().map(|n| n.saturating_mul(mult))
 }
 
 fn parse_started_at_bound(s: &str, is_end: bool) -> Result<String> {
@@ -357,22 +336,22 @@ pub fn run_export(database: PathBuf, options: &ExportOptions) -> Result<()> {
     query.methods = options.method.clone();
     query.statuses = options.status.clone();
     query.mime_contains = options.mime_contains.clone();
-    query.min_request_size = options
-        .min_request_size
-        .as_deref()
-        .and_then(parse_size_bytes);
-    query.max_request_size = options
-        .max_request_size
-        .as_deref()
-        .and_then(parse_size_bytes);
-    query.min_response_size = options
-        .min_response_size
-        .as_deref()
-        .and_then(parse_size_bytes);
-    query.max_response_size = options
-        .max_response_size
-        .as_deref()
-        .and_then(parse_size_bytes);
+    query.min_request_size = match options.min_request_size.as_deref() {
+        Some(value) => size::parse_size_bytes_i64(value)?,
+        None => None,
+    };
+    query.max_request_size = match options.max_request_size.as_deref() {
+        Some(value) => size::parse_size_bytes_i64(value)?,
+        None => None,
+    };
+    query.min_response_size = match options.min_response_size.as_deref() {
+        Some(value) => size::parse_size_bytes_i64(value)?,
+        None => None,
+    };
+    query.max_response_size = match options.max_response_size.as_deref() {
+        Some(value) => size::parse_size_bytes_i64(value)?,
+        None => None,
+    };
 
     let mut entries = load_entries(&conn, &query)?;
 

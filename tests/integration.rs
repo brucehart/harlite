@@ -109,6 +109,56 @@ fn test_import_simple_brotli() {
 }
 
 #[test]
+fn test_imports_list_and_prune() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "--bodies", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args(["imports"])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Source"))
+        .stdout(predicate::str::contains("simple.har"));
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let import_id: i64 = conn
+        .query_row("SELECT id FROM imports LIMIT 1", [], |r| r.get(0))
+        .unwrap();
+
+    harlite()
+        .args(["prune", "--import-id", &import_id.to_string()])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let entry_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))
+        .unwrap();
+    let import_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM imports", [], |r| r.get(0))
+        .unwrap();
+    let page_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM pages", [], |r| r.get(0))
+        .unwrap();
+    let blob_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM blobs", [], |r| r.get(0))
+        .unwrap();
+
+    assert_eq!(entry_count, 0);
+    assert_eq!(import_count, 0);
+    assert_eq!(page_count, 0);
+    assert_eq!(blob_count, 0);
+}
+
+#[test]
 fn test_import_with_pages() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("test.db");
@@ -163,6 +213,72 @@ fn test_import_with_bodies() {
         .unwrap();
     let content_str = String::from_utf8(content).unwrap();
     assert!(content_str.contains("Alice"));
+}
+
+#[test]
+fn test_import_filters_method_status_regex() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("filtered.db");
+
+    harlite()
+        .args([
+            "import",
+            "tests/fixtures/simple.har",
+            "--method",
+            "GET",
+            "--status",
+            "200",
+            "--url-regex",
+            "example\\.com/users$",
+            "-o",
+        ])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Imported 1 entries"));
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 1);
+
+    let method: String = conn
+        .query_row("SELECT method FROM entries", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(method, "GET");
+}
+
+#[test]
+fn test_import_filters_date_range() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("filtered-date.db");
+
+    harlite()
+        .args([
+            "import",
+            "tests/fixtures/simple.har",
+            "--from",
+            "2024-01-15T10:30:01Z",
+            "--to",
+            "2024-01-15T10:30:01Z",
+            "-o",
+        ])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Imported 1 entries"));
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 1);
+
+    let method: String = conn
+        .query_row("SELECT method FROM entries", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(method, "POST");
 }
 
 #[test]

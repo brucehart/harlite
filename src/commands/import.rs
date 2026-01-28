@@ -1,15 +1,18 @@
 use std::path::{Path, PathBuf};
 use std::{fs, path};
 
+use chrono::{DateTime, NaiveDate, Utc};
 use indicatif::ProgressBar;
+use regex::Regex;
 use rusqlite::Connection;
+use url::Url;
 
 use crate::db::{
     create_import, create_schema, insert_entry, insert_page, update_import_count, BlobStats,
     ExtractBodiesKind, ImportStats, InsertEntryOptions,
 };
 use crate::error::{HarliteError, Result};
-use crate::har::parse_har_file;
+use crate::har::{parse_har_file, Entry};
 
 /// Options for importing HAR files.
 pub struct ImportOptions {
@@ -23,6 +26,12 @@ pub struct ImportOptions {
     pub extract_bodies_dir: Option<PathBuf>,
     pub extract_bodies_kind: ExtractBodiesKind,
     pub extract_bodies_shard_depth: u8,
+    pub host: Vec<String>,
+    pub method: Vec<String>,
+    pub status: Vec<i32>,
+    pub url_regex: Vec<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
 }
 
 impl Default for ImportOptions {
@@ -38,8 +47,24 @@ impl Default for ImportOptions {
             extract_bodies_dir: None,
             extract_bodies_kind: ExtractBodiesKind::Both,
             extract_bodies_shard_depth: 0,
+            host: Vec::new(),
+            method: Vec::new(),
+            status: Vec::new(),
+            url_regex: Vec::new(),
+            from: None,
+            to: None,
         }
     }
+}
+
+struct ImportFilters {
+    hosts: Vec<String>,
+    methods: Vec<String>,
+    statuses: Vec<i32>,
+    url_regexes: Vec<Regex>,
+    from: Option<DateTime<Utc>>,
+    to: Option<DateTime<Utc>>,
+    to_is_exclusive: bool,
 }
 
 /// Import one or more HAR files into a SQLite database.
@@ -89,6 +114,7 @@ pub fn run_import(files: &[PathBuf], options: &ImportOptions) -> Result<ImportSt
         extract_bodies_kind: options.extract_bodies_kind,
         extract_bodies_shard_depth: options.extract_bodies_shard_depth,
     };
+    let filters = build_import_filters(options)?;
 
     let mut total_stats = ImportStats {
         entries_imported: 0,
@@ -97,7 +123,7 @@ pub fn run_import(files: &[PathBuf], options: &ImportOptions) -> Result<ImportSt
     };
 
     for file_path in files {
-        let stats = import_single_file(&conn, file_path, &entry_options)?;
+        let stats = import_single_file(&conn, file_path, &entry_options, &filters)?;
         total_stats.entries_imported += stats.entries_imported;
         total_stats.request.add_assign(stats.request);
         total_stats.response.add_assign(stats.response);
@@ -120,6 +146,7 @@ fn import_single_file(
     conn: &Connection,
     path: &Path,
     options: &InsertEntryOptions,
+    filters: &ImportFilters,
 ) -> Result<ImportStats> {
     let file_name = path
         .file_name()
@@ -149,6 +176,10 @@ fn import_single_file(
     let tx = conn.unchecked_transaction()?;
 
     for entry in entries {
+        if !entry_matches_filters(entry, filters)? {
+            pb.inc(1);
+            continue;
+        }
         let entry_stats = insert_entry(&tx, import_id, entry, options)?;
         stats.entries_imported += 1;
 
@@ -164,6 +195,130 @@ fn import_single_file(
     update_import_count(conn, import_id, stats.entries_imported)?;
 
     Ok(stats)
+}
+
+fn build_import_filters(options: &ImportOptions) -> Result<ImportFilters> {
+    let url_regexes = options
+        .url_regex
+        .iter()
+        .map(|value| {
+            Regex::new(value).map_err(|err| {
+                HarliteError::InvalidArgs(format!("Invalid URL regex '{value}': {err}"))
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let hosts = options.host.iter().map(|h| h.to_lowercase()).collect();
+    let methods = options.method.iter().map(|m| m.to_lowercase()).collect();
+    let from = match options.from.as_deref() {
+        Some(value) => Some(parse_started_at_bound(value, false)?.0),
+        None => None,
+    };
+    let (to, to_is_exclusive) = match options.to.as_deref() {
+        Some(value) => {
+            let (dt, exclusive) = parse_started_at_bound(value, true)?;
+            (Some(dt), exclusive)
+        }
+        None => (None, false),
+    };
+
+    Ok(ImportFilters {
+        hosts,
+        methods,
+        statuses: options.status.clone(),
+        url_regexes,
+        from,
+        to,
+        to_is_exclusive,
+    })
+}
+
+fn entry_matches_filters(entry: &Entry, filters: &ImportFilters) -> Result<bool> {
+    if !filters.hosts.is_empty() {
+        let host = Url::parse(&entry.request.url)
+            .ok()
+            .and_then(|url| url.host_str().map(|h| h.to_lowercase()));
+        let matches = host
+            .as_deref()
+            .is_some_and(|value| filters.hosts.iter().any(|h| h == value));
+        if !matches {
+            return Ok(false);
+        }
+    }
+
+    if !filters.methods.is_empty()
+        && !filters
+            .methods
+            .iter()
+            .any(|method| method.eq_ignore_ascii_case(&entry.request.method))
+    {
+        return Ok(false);
+    }
+
+    if !filters.statuses.is_empty() && !filters.statuses.contains(&entry.response.status) {
+        return Ok(false);
+    }
+
+    if !filters.url_regexes.is_empty()
+        && !filters
+            .url_regexes
+            .iter()
+            .any(|re| re.is_match(&entry.request.url))
+    {
+        return Ok(false);
+    }
+
+    if filters.from.is_some() || filters.to.is_some() {
+        let entry_dt = DateTime::parse_from_rfc3339(&entry.started_date_time)
+            .map_err(|err| HarliteError::InvalidHar(format!("Invalid entry time: {err}")))?
+            .with_timezone(&Utc);
+        if filters.from.is_some_and(|from| entry_dt < from) {
+            return Ok(false);
+        }
+        if let Some(to) = filters.to {
+            if filters.to_is_exclusive {
+                if entry_dt >= to {
+                    return Ok(false);
+                }
+            } else if entry_dt > to {
+                return Ok(false);
+            }
+        }
+    }
+
+    Ok(true)
+}
+
+fn parse_started_at_bound(s: &str, is_end: bool) -> Result<(DateTime<Utc>, bool)> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Err(HarliteError::InvalidHar(
+            "Empty timestamp bound".to_string(),
+        ));
+    }
+
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        return Ok((dt.with_timezone(&Utc), false));
+    }
+
+    let date = NaiveDate::parse_from_str(s, "%Y-%m-%d")?;
+    let (dt, exclusive) = if is_end {
+        let next_day = date
+            .succ_opt()
+            .ok_or_else(|| HarliteError::InvalidHar("Invalid end date".to_string()))?;
+        let dt = next_day
+            .and_hms_opt(0, 0, 0)
+            .and_then(|d| d.and_local_timezone(Utc).single())
+            .ok_or_else(|| HarliteError::InvalidHar("Invalid end date".to_string()))?;
+        (dt, true)
+    } else {
+        let dt = date
+            .and_hms_opt(0, 0, 0)
+            .and_then(|d| d.and_local_timezone(Utc).single())
+            .ok_or_else(|| HarliteError::InvalidHar("Invalid start date".to_string()))?;
+        (dt, false)
+    };
+
+    Ok((dt, exclusive))
 }
 
 fn print_stats(stats: &ImportStats) {

@@ -33,6 +33,21 @@ Works great with AI coding agents like Codex and Claude — they already know SQ
 - **Queryable headers** — Headers stored as JSON, queryable with SQLite JSON functions
 - **Safe sharing** — Redact sensitive headers/cookies before sharing a database
 
+## Installation
+
+### Install with Cargo
+
+```bash
+cargo install harlite
+```
+
+Published on crates.io as `harlite`.
+
+### Build and run locally
+- **Multi-file support** — Merge multiple HAR files into one database
+- **Queryable headers** — Headers stored as JSON, queryable with SQLite JSON functions
+- **Safe sharing** — Redact sensitive headers/cookies before sharing a database
+
 Performance note: HAR parsing streams entries from disk using `serde_json::Deserializer` to avoid loading the full JSON blob at once; memory still scales with the number of entries imported.
 
 ## Installation
@@ -108,8 +123,8 @@ By default, `harlite` imports metadata only (URLs, headers, timing, status codes
 # Include text bodies under 100KB (HTML, JSON, JS, CSS, XML)
 harlite import capture.har --bodies --text-only
 
-# Include all bodies under 500KB  
-harlite import capture.har --bodies --max-body-size 500KB
+# Include all bodies under 1.5MB  
+harlite import capture.har --bodies --max-body-size 1.5MB
 
 # Decompress response bodies based on Content-Encoding (gzip, br)
 harlite import capture.har --bodies --decompress-bodies
@@ -134,7 +149,24 @@ harlite import capture.har --bodies --stats
 #   Space saved by deduplication: 127 MB (74%)
 ```
 
+Size flags accept decimals and short units (e.g., `1.5MB`, `1M`, `100k`, `500B`, `unlimited`).
+
 Response bodies are automatically deduplicated using BLAKE3 hashing. If the same JavaScript bundle appears in 50 entries, it's stored only once.
+
+### Import filters
+
+Filter entries at import time to reduce database size:
+
+```bash
+# Only keep GETs to a host with 200 responses
+harlite import capture.har --host api.example.com --method GET --status 200
+
+# Filter by URL regex (repeatable)
+harlite import capture.har --url-regex 'example\\.com/(api|v1)/'
+
+# Import a specific time range (RFC3339 or YYYY-MM-DD)
+harlite import capture.har --from 2024-01-15 --to 2024-01-16
+```
 
 ### Full-text search (FTS5)
 
@@ -199,6 +231,20 @@ harlite stats traffic.db
 harlite stats traffic.db --json
 ```
 
+### Imports list and prune
+
+List import metadata (id, source, date range, entry count):
+
+```bash
+harlite imports traffic.db
+```
+
+Remove a specific import and its entries/pages/blobs:
+
+```bash
+harlite prune traffic.db --import-id 2
+```
+
 ### Export HAR files
 
 Export a `harlite` SQLite database back to HAR format (optionally with bodies if they were stored during import):
@@ -228,7 +274,7 @@ harlite export traffic.db --url-regex 'example\\.com/(api|v1)/' -o filtered.har
 harlite export traffic.db --from 2024-01-15 --to 2024-01-16 -o day1.har
 harlite export traffic.db --ext js,css -o assets.har
 harlite export traffic.db --source session1.har --source-contains chrome -o sources.har
-harlite export traffic.db --mime json --min-response-size 1KB --max-response-size 200KB -o api-responses.har
+harlite export traffic.db --mime json --min-response-size 1KB --max-response-size 200k -o api-responses.har
 ```
 
 Common filters:
@@ -346,6 +392,7 @@ Page/document information from the HAR (if present).
 ### `imports` table
 
 Tracks import history for auditing and multi-file management.
+Use `harlite imports` to list these records and `harlite prune --import-id <id>` to remove a specific import.
 
 | Column | Type | Description |
 |--------|------|-------------|
