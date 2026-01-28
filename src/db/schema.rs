@@ -237,6 +237,7 @@ fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool
 mod tests {
     use super::create_schema;
     use rusqlite::Connection;
+    use std::fs;
 
     #[test]
     fn creates_tables() {
@@ -257,5 +258,14 @@ mod tests {
         assert!(tables.contains(&"pages".to_string()));
         assert!(tables.contains(&"entries".to_string()));
         assert!(tables.contains(&"response_body_fts".to_string()));
+    }
+
+    #[test]
+    fn schema_sql_matches_runtime_schema() {
+        let on_disk = fs::read_to_string("schema.sql").expect("read schema.sql");
+        let normalized_on_disk = on_disk.replace("\r\n", "\n").trim().to_string();
+        let normalized_runtime = super::SCHEMA.trim().to_string();
+
+        assert_eq!(normalized_on_disk, normalized_runtime);
     }
 }
