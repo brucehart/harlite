@@ -27,6 +27,7 @@ Use the `harlite` binary to import HAR files into SQLite databases, then query/e
 - `imports` — list import metadata
 - `prune` — remove a specific import by id
 - `export` — export a database back to HAR
+- `merge` — merge multiple databases into one
 - `redact` — redact sensitive headers/cookies/params/bodies
 - `diff` — compare two HAR files or two databases
 
@@ -87,6 +88,11 @@ Use the `harlite` binary to import HAR files into SQLite databases, then query/e
 - `--to <RFC3339|YYYY-MM-DD>`: only export on/before timestamp/date
 - `--min-request-size <SIZE>` / `--max-request-size <SIZE>`: request size filters
 - `--min-response-size <SIZE>` / `--max-response-size <SIZE>`: response size filters
+
+### `merge`
+- `-o, --output <OUTPUT>`: output database file (default: `<first-input>-merged.db`)
+- `--dry-run`: report stats only, no writes
+- `--dedup <hash|exact>`: entry deduplication strategy
 
 ### `redact`
 - `-o, --output <OUTPUT>`: output database (default: in-place)
