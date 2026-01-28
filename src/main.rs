@@ -639,7 +639,6 @@ fn main() {
             Ok(())
         }
     })();
-    })();
 
     if let Err(e) = result {
         eprintln!("Error: {}", e);
