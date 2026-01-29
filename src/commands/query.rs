@@ -116,7 +116,7 @@ fn normalize_single_statement(sql: &str) -> Result<String> {
     let mut in_double = false;
     let mut in_line_comment = false;
     let mut in_block_comment = false;
-    let mut prev = '\0';
+    let mut last_was_star = false;
 
     let mut it = sql.chars().peekable();
     while let Some(ch) = it.next() {
@@ -124,15 +124,14 @@ fn normalize_single_statement(sql: &str) -> Result<String> {
             if ch == '\n' {
                 in_line_comment = false;
             }
-            prev = ch;
             continue;
         }
 
         if in_block_comment {
-            if prev == '*' && ch == '/' {
+            if last_was_star && ch == '/' {
                 in_block_comment = false;
             }
-            prev = ch;
+            last_was_star = ch == '*';
             continue;
         }
 
@@ -144,7 +143,6 @@ fn normalize_single_statement(sql: &str) -> Result<String> {
                     in_single = false;
                 }
             }
-            prev = ch;
             continue;
         }
 
@@ -156,7 +154,6 @@ fn normalize_single_statement(sql: &str) -> Result<String> {
                     in_double = false;
                 }
             }
-            prev = ch;
             continue;
         }
 
@@ -170,6 +167,7 @@ fn normalize_single_statement(sql: &str) -> Result<String> {
             '/' if it.peek() == Some(&'*') => {
                 it.next();
                 in_block_comment = true;
+                last_was_star = false;
             }
             ';' => {
                 return Err(HarliteError::InvalidArgs(
@@ -178,8 +176,6 @@ fn normalize_single_statement(sql: &str) -> Result<String> {
             }
             _ => {}
         }
-
-        prev = ch;
     }
 
     Ok(sql.to_string())
@@ -253,6 +249,62 @@ fn write_json(columns: &[String], rows: &mut rusqlite::Rows<'_>) -> Result<()> {
     }
     handle.write_all(b"]\n")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_single_statement, wrap_query};
+    use crate::error::HarliteError;
+    use rusqlite::types::Value;
+
+    #[test]
+    fn normalize_single_statement_allows_semicolons_in_strings() {
+        let sql = "SELECT ';' AS semi, 'a'';''b' AS escaped";
+        assert_eq!(normalize_single_statement(sql).unwrap(), sql);
+    }
+
+    #[test]
+    fn normalize_single_statement_allows_semicolons_in_comments() {
+        let sql = "SELECT 1 -- trailing; comment\n";
+        assert_eq!(normalize_single_statement(sql).unwrap(), sql);
+
+        let block = "SELECT 1 /* block; comment */";
+        assert_eq!(normalize_single_statement(block).unwrap(), block);
+    }
+
+    #[test]
+    fn normalize_single_statement_rejects_multiple_statements() {
+        let err = normalize_single_statement("SELECT 1; SELECT 2").unwrap_err();
+        match err {
+            HarliteError::InvalidArgs(msg) => {
+                assert!(msg.contains("single SQL statement"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wrap_query_adds_limits() {
+        let (sql, params) = wrap_query("SELECT * FROM entries", Some(10), Some(5));
+        assert_eq!(
+            sql,
+            "SELECT * FROM (SELECT * FROM entries) LIMIT ?1 OFFSET ?2"
+        );
+        assert_eq!(
+            params,
+            vec![Value::Integer(10), Value::Integer(5)]
+        );
+    }
+
+    #[test]
+    fn wrap_query_handles_offset_only() {
+        let (sql, params) = wrap_query("SELECT * FROM entries", None, Some(5));
+        assert_eq!(
+            sql,
+            "SELECT * FROM (SELECT * FROM entries) LIMIT -1 OFFSET ?1"
+        );
+        assert_eq!(params, vec![Value::Integer(5)]);
+    }
 }
 
 const TABLE_CELL_MAX_WIDTH: usize = 80;
