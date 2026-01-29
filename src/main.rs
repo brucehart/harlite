@@ -14,11 +14,11 @@ use crate::db::ExtractBodiesKind;
 use commands::StatsOptions;
 use commands::{
     run_cdp, run_diff, run_export, run_fts_rebuild, run_import, run_imports, run_info, run_merge,
-    run_prune, run_query, run_redact, run_repl, run_schema, run_search, run_stats,
+    run_prune, run_query, run_redact, run_repl, run_schema, run_search, run_stats, run_watch,
 };
 use commands::{
     CdpOptions, DedupStrategy, DiffOptions, ExportOptions, ImportOptions, MergeOptions,
-    NameMatchMode, OutputFormat, QueryOptions, RedactOptions, ReplOptions,
+    NameMatchMode, OutputFormat, QueryOptions, RedactOptions, ReplOptions, WatchOptions,
 };
 
 #[derive(Parser)]
@@ -156,6 +156,117 @@ enum Commands {
         /// Stop capture after N seconds (omit to capture until Ctrl+C)
         #[arg(long, value_name = "SECONDS")]
         duration: Option<u64>,
+    },
+
+    /// Watch a directory for new HAR files and auto-import
+    Watch {
+        /// Directory to watch for HAR files
+        directory: PathBuf,
+
+        /// Output database file (default: <directory-name>.db)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Watch subdirectories recursively
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        #[arg(long = "no-recursive", action = clap::ArgAction::SetFalse)]
+        recursive: Option<bool>,
+
+        /// Debounce window in milliseconds before considering a file ready
+        #[arg(long, value_name = "MS")]
+        debounce_ms: Option<u64>,
+
+        /// Minimum stable time in milliseconds with no changes
+        #[arg(long, value_name = "MS")]
+        stable_ms: Option<u64>,
+
+        /// Import existing HAR files on startup
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        import_existing: Option<bool>,
+
+        /// Print `harlite info` after each import
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        post_info: Option<bool>,
+
+        /// Print `harlite stats` after each import
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        post_stats: Option<bool>,
+
+        /// Emit JSON when running post-import stats
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        post_stats_json: Option<bool>,
+
+        /// Store response bodies in the database
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        bodies: Option<bool>,
+
+        /// Maximum body size to store (e.g., "100KB", "1.5MB", "1M", "100k", "unlimited")
+        #[arg(long)]
+        max_body_size: Option<String>,
+
+        /// Only store text-based bodies (HTML, JSON, JS, CSS, XML)
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        text_only: Option<bool>,
+
+        /// Show deduplication statistics after import
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        stats: Option<bool>,
+
+        /// Skip entries already imported (by content hash)
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        incremental: Option<bool>,
+
+        /// Resume an incomplete import for the same source file (implies --incremental)
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        resume: Option<bool>,
+
+        /// Read HAR files using a background reader thread (useful for large files)
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        async_read: Option<bool>,
+
+        /// Decompress response bodies based on Content-Encoding (gzip, br)
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        decompress_bodies: Option<bool>,
+
+        /// When decompressing, also store the original (compressed) response body
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        keep_compressed: Option<bool>,
+
+        /// Write bodies to external files under DIR (stored by hash); implies --bodies
+        #[arg(long, value_name = "DIR")]
+        extract_bodies: Option<PathBuf>,
+
+        /// Which bodies to extract to files
+        #[arg(long, value_enum)]
+        extract_bodies_kind: Option<ExtractBodiesKind>,
+
+        /// Optional sharding depth for extracted bodies (each level uses 2 hex chars of the hash)
+        #[arg(long)]
+        extract_bodies_shard_depth: Option<u8>,
+
+        /// Hostname filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        host: Option<Vec<String>>,
+
+        /// HTTP method filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        method: Option<Vec<String>>,
+
+        /// HTTP status filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        status: Option<Vec<i32>>,
+
+        /// URL regex match (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        url_regex: Option<Vec<String>>,
+
+        /// Only import entries on/after this timestamp (RFC3339) or date (YYYY-MM-DD)
+        #[arg(long)]
+        from: Option<String>,
+
+        /// Only import entries on/before this timestamp (RFC3339) or date (YYYY-MM-DD)
+        #[arg(long)]
+        to: Option<String>,
     },
 
     /// Print the database schema
@@ -570,6 +681,80 @@ fn main() {
                     duration_secs: duration.or(defaults.duration),
                 };
                 run_cdp(&options)
+            }
+
+            Commands::Watch {
+                directory,
+                output,
+                recursive,
+                debounce_ms,
+                stable_ms,
+                import_existing,
+                post_info,
+                post_stats,
+                post_stats_json,
+                bodies,
+                max_body_size,
+                text_only,
+                stats,
+                incremental,
+                resume,
+                async_read,
+                decompress_bodies,
+                keep_compressed,
+                extract_bodies,
+                extract_bodies_kind,
+                extract_bodies_shard_depth,
+                host,
+                method,
+                status,
+                url_regex,
+                from,
+                to,
+            } => {
+                let defaults = &resolved.import;
+                let output_override = output.clone();
+                let max_body_size = size::parse_size_bytes_usize(
+                    &max_body_size.unwrap_or_else(|| defaults.max_body_size.clone()),
+                )?;
+                let import_options = ImportOptions {
+                    output: output_override.clone().or_else(|| defaults.output.clone()),
+                    store_bodies: bodies.unwrap_or(defaults.bodies),
+                    max_body_size,
+                    text_only: text_only.unwrap_or(defaults.text_only),
+                    show_stats: stats.unwrap_or(defaults.stats),
+                    incremental: incremental.unwrap_or(defaults.incremental),
+                    resume: resume.unwrap_or(defaults.resume),
+                    jobs: 1,
+                    async_read: async_read.unwrap_or(defaults.async_read),
+                    decompress_bodies: decompress_bodies.unwrap_or(defaults.decompress_bodies),
+                    keep_compressed: keep_compressed.unwrap_or(defaults.keep_compressed),
+                    extract_bodies_dir: extract_bodies.or_else(|| defaults.extract_bodies.clone()),
+                    extract_bodies_kind: extract_bodies_kind
+                        .unwrap_or(defaults.extract_bodies_kind),
+                    extract_bodies_shard_depth: extract_bodies_shard_depth
+                        .unwrap_or(defaults.extract_bodies_shard_depth),
+                    host: host.unwrap_or_else(|| defaults.host.clone()),
+                    method: method.unwrap_or_else(|| defaults.method.clone()),
+                    status: status.unwrap_or_else(|| defaults.status.clone()),
+                    url_regex: url_regex.unwrap_or_else(|| defaults.url_regex.clone()),
+                    from: from.or_else(|| defaults.from.clone()),
+                    to: to.or_else(|| defaults.to.clone()),
+                };
+
+                let watch_options = WatchOptions {
+                    output: output_override.or_else(|| defaults.output.clone()),
+                    recursive: recursive.unwrap_or(true),
+                    debounce_ms: debounce_ms.unwrap_or(750),
+                    stable_ms: stable_ms.unwrap_or(1000),
+                    import_existing: import_existing.unwrap_or(false),
+                    post_info: post_info.unwrap_or(false),
+                    post_stats: post_stats.unwrap_or(false) || post_stats_json.unwrap_or(false),
+                    post_stats_json: post_stats_json.unwrap_or(false),
+                    import_options,
+                };
+
+                run_watch(directory, &watch_options)
             }
 
             Commands::Config => {
