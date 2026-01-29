@@ -19,6 +19,7 @@ use crate::error::{HarliteError, Result};
 use crate::har::{parse_har_file, parse_har_file_async, Entry};
 
 /// Options for importing HAR files.
+#[derive(Clone)]
 pub struct ImportOptions {
     pub output: Option<PathBuf>,
     pub store_bodies: bool,

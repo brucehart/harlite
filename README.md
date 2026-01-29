@@ -37,6 +37,7 @@ Works great with AI coding agents like Codex and Claude — they already know SQ
 - **Diffing** — Compare two HAR files or two databases (`harlite diff`)
 - **HAR extensions preserved** — Store and round-trip HAR 1.3 extension fields as JSON
 - **CDP capture** — Capture from Chrome and write directly to HAR or SQLite
+- **Watch mode** — Monitor a directory and auto-import new HAR files (`harlite watch`)
 
 ## Installation
 
@@ -197,6 +198,16 @@ harlite import capture.har -o mydata.db
 
 # Import multiple files (merges into one database)
 harlite import *.har -o all-traffic.db
+```
+
+### Watch a directory
+
+```bash
+# Watch a folder for new HAR files (imports into traffic.db by default)
+harlite watch ./captures -o traffic.db
+
+# Watch recursively and import existing files on startup
+harlite watch ./captures --recursive --import-existing -o traffic.db
 ```
 
 ### Merge databases

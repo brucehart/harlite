@@ -13,6 +13,7 @@ mod schema;
 mod search;
 mod stats;
 mod util;
+mod watch;
 
 pub use diff::{run_diff, DiffOptions};
 pub use export::{run_export, ExportOptions};
@@ -30,3 +31,4 @@ pub use search::run_search;
 pub use stats::{run_stats, StatsOptions};
 mod cdp;
 pub use cdp::{run_cdp, CdpOptions};
+pub use watch::{run_watch, WatchOptions};
