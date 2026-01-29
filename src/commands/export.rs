@@ -14,11 +14,11 @@ use crate::db::{
     EntryQuery,
 };
 use crate::error::{HarliteError, Result};
-use crate::size;
 use crate::har::{
     Content, Cookie, Creator, Entry, Extensions, Har, Header, Log, Page, PageTimings, PostData,
     QueryParam, Request, Response, Timings,
 };
+use crate::size;
 
 /// Options for exporting a harlite database back to a HAR file.
 pub struct ExportOptions {
@@ -199,10 +199,7 @@ fn body_text_and_encoding(content: &[u8]) -> (Option<String>, Option<String>) {
     }
 }
 
-fn load_external_blob_content(
-    mut blob: BlobRow,
-    external_root: Option<&Path>,
-) -> Result<BlobRow> {
+fn load_external_blob_content(mut blob: BlobRow, external_root: Option<&Path>) -> Result<BlobRow> {
     if !blob.content.is_empty() || blob.size <= 0 {
         return Ok(blob);
     }
@@ -454,8 +451,8 @@ pub fn run_export(database: PathBuf, options: &ExportOptions) -> Result<()> {
                     e.response_body_hash.as_ref(),
                     e.response_body_hash_raw.as_ref(),
                 ]
-                    .into_iter()
-                    .flatten()
+                .into_iter()
+                .flatten()
             })
             .cloned()
             .collect();

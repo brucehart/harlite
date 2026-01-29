@@ -1,5 +1,5 @@
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::ValueEnum;
 use rusqlite::types::{Value, ValueRef};
@@ -16,6 +16,16 @@ pub enum OutputFormat {
     Json,
 }
 
+impl OutputFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OutputFormat::Table => "table",
+            OutputFormat::Csv => "csv",
+            OutputFormat::Json => "json",
+        }
+    }
+}
+
 pub struct QueryOptions {
     pub format: OutputFormat,
     pub limit: Option<u64>,
@@ -23,7 +33,23 @@ pub struct QueryOptions {
     pub quiet: bool,
 }
 
+pub fn open_readonly_connection(database: &Path) -> Result<Connection> {
+    let conn = Connection::open_with_flags(
+        database,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    // Defense in depth: even on a read-only handle, enforce query-only mode.
+    conn.execute_batch("PRAGMA query_only=ON;")?;
+    Ok(conn)
+}
+
 pub fn run_query(sql: String, database: Option<PathBuf>, options: &QueryOptions) -> Result<()> {
+    let database = resolve_database(database)?;
+    let conn = open_readonly_connection(&database)?;
+    execute_query(&conn, &sql, options)
+}
+
+pub fn execute_query(conn: &Connection, sql: &str, options: &QueryOptions) -> Result<()> {
     let trimmed = sql.trim().trim_end_matches(';').trim();
     if trimmed.is_empty() {
         return Err(HarliteError::InvalidArgs(
@@ -31,15 +57,6 @@ pub fn run_query(sql: String, database: Option<PathBuf>, options: &QueryOptions)
         ));
     }
     let base = normalize_single_statement(trimmed)?;
-
-    let database = resolve_database(database)?;
-    let conn = Connection::open_with_flags(
-        &database,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
-
-    // Defense in depth: even on a read-only handle, enforce query-only mode.
-    conn.execute_batch("PRAGMA query_only=ON;")?;
 
     let (sql, params) = wrap_query(&base, options.limit, options.offset);
     let mut stmt = conn.prepare(&sql)?;

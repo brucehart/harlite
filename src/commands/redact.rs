@@ -402,7 +402,10 @@ fn upsert_response_fts(conn: &Connection, hash: &str, text: &str) -> Result<()> 
     if text.is_empty() {
         return Ok(());
     }
-    conn.execute("DELETE FROM response_body_fts WHERE hash = ?1", params![hash])?;
+    conn.execute(
+        "DELETE FROM response_body_fts WHERE hash = ?1",
+        params![hash],
+    )?;
     conn.execute(
         "INSERT INTO response_body_fts (hash, body) VALUES (?1, ?2)",
         params![hash, text],
@@ -544,9 +547,12 @@ fn redact_entries(
         }
         if let Some(url_str) = url.as_deref() {
             if !query_matcher.is_empty() {
-                if let Some((out, new_query, n)) =
-                    redact_url_params(url_str, query_matcher, token, &mut report.matched_query_param_names)
-                {
+                if let Some((out, new_query, n)) = redact_url_params(
+                    url_str,
+                    query_matcher,
+                    token,
+                    &mut report.matched_query_param_names,
+                ) {
                     new_url = Some(out);
                     new_query_string = new_query;
                     report.query_params += n;
@@ -626,9 +632,8 @@ fn redact_entries(
     }
 
     if write && has_fts && !changed_response_hashes.is_empty() {
-        let mut check_stmt = conn.prepare(
-            "SELECT COUNT(*) FROM entries WHERE response_body_hash = ?1",
-        )?;
+        let mut check_stmt =
+            conn.prepare("SELECT COUNT(*) FROM entries WHERE response_body_hash = ?1")?;
         let mut delete_stmt = conn.prepare("DELETE FROM response_body_fts WHERE hash = ?1")?;
         for hash in changed_response_hashes {
             let count: i64 = check_stmt.query_row([hash.as_str()], |row| row.get(0))?;
@@ -699,9 +704,10 @@ pub fn run_redact(database: Option<PathBuf>, options: &RedactOptions) -> Result<
         } else {
             ""
         };
-        return Err(HarliteError::InvalidArgs(
-            format!("No redaction patterns provided{}", hint),
-        ));
+        return Err(HarliteError::InvalidArgs(format!(
+            "No redaction patterns provided{}",
+            hint
+        )));
     }
 
     let mut conn = Connection::open(&target_db)?;

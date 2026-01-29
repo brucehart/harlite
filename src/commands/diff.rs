@@ -221,12 +221,7 @@ fn entry_matches_filters(entry: &EntrySnapshot, filters: &Filters) -> bool {
     }
 
     if !filters.url_regexes.is_empty() {
-        if entry.url.is_empty()
-            || !filters
-                .url_regexes
-                .iter()
-                .any(|re| re.is_match(&entry.url))
-        {
+        if entry.url.is_empty() || !filters.url_regexes.iter().any(|re| re.is_match(&entry.url)) {
             return false;
         }
     }
@@ -268,11 +263,7 @@ impl EntrySnapshot {
             host,
             status: Some(entry.response.status),
             total_ms: Some(entry.time),
-            ttfb_ms: entry
-                .timings
-                .as_ref()
-                .map(|t| t.wait)
-                .filter(|v| *v >= 0.0),
+            ttfb_ms: entry.timings.as_ref().map(|t| t.wait).filter(|v| *v >= 0.0),
             request_headers: headers_from_list(&entry.request.headers),
             response_headers: headers_from_list(&entry.response.headers),
             request_body_size: har_request_body_size(entry),
@@ -282,7 +273,9 @@ impl EntrySnapshot {
 }
 
 fn host_from_url(url: &str) -> Option<String> {
-    Url::parse(url).ok().and_then(|u| u.host_str().map(|s| s.to_string()))
+    Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|s| s.to_string()))
 }
 
 fn normalize_i64(value: Option<i64>) -> Option<i64> {
@@ -367,11 +360,7 @@ fn diff_entries(left: Vec<EntrySnapshot>, right: Vec<EntrySnapshot>) -> Vec<Diff
         right_map.entry(key).or_default().push(entry);
     }
 
-    let mut keys: Vec<EntryKey> = left_map
-        .keys()
-        .chain(right_map.keys())
-        .cloned()
-        .collect();
+    let mut keys: Vec<EntryKey> = left_map.keys().chain(right_map.keys()).cloned().collect();
     keys.sort_by(|a, b| a.method.cmp(&b.method).then(a.url.cmp(&b.url)));
     keys.dedup();
 
@@ -488,10 +477,7 @@ fn diff_entry(left: Option<&EntrySnapshot>, right: Option<&EntrySnapshot>) -> Op
     }
 }
 
-fn count_header_changes(
-    left: &HashMap<String, String>,
-    right: &HashMap<String, String>,
-) -> usize {
+fn count_header_changes(left: &HashMap<String, String>, right: &HashMap<String, String>) -> usize {
     let mut keys: HashSet<&String> = HashSet::new();
     keys.extend(left.keys());
     keys.extend(right.keys());
@@ -610,14 +596,11 @@ fn opt_usize(value: Option<usize>) -> String {
 }
 
 fn opt_i64_signed(value: Option<i64>) -> String {
-    value.map(|v| format!("{v:+}"))
-        .unwrap_or_default()
+    value.map(|v| format!("{v:+}")).unwrap_or_default()
 }
 
 fn opt_f64(value: Option<f64>) -> String {
-    value
-        .map(|v| format!("{v:.2}"))
-        .unwrap_or_default()
+    value.map(|v| format!("{v:.2}")).unwrap_or_default()
 }
 
 fn write_csv_row<'a, I>(out: &mut impl Write, fields: I) -> Result<()>

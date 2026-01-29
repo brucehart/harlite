@@ -45,7 +45,10 @@ pub fn run_prune(database: PathBuf, import_id: i64) -> Result<()> {
         hashes
     };
 
-    let entries_deleted = tx.execute("DELETE FROM entries WHERE import_id = ?1", params![import_id])?;
+    let entries_deleted = tx.execute(
+        "DELETE FROM entries WHERE import_id = ?1",
+        params![import_id],
+    )?;
     let pages_deleted = tx.execute("DELETE FROM pages WHERE import_id = ?1", params![import_id])?;
     let imports_deleted = tx.execute("DELETE FROM imports WHERE id = ?1", params![import_id])?;
 
@@ -139,9 +142,8 @@ pub fn run_prune(database: PathBuf, import_id: i64) -> Result<()> {
             }
 
             if has_fts > 0 {
-                let fts_sql = format!(
-                    "DELETE FROM response_body_fts WHERE hash IN ({orphan_placeholders})"
-                );
+                let fts_sql =
+                    format!("DELETE FROM response_body_fts WHERE hash IN ({orphan_placeholders})");
                 fts_deleted += tx.execute(&fts_sql, orphan_params.as_slice())?;
             }
 

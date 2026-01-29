@@ -32,6 +32,7 @@ Works great with AI coding agents like Codex and Claude — they already know SQ
 - **Multi-file support** — Merge multiple HAR files into one database
 - **Database merge** — Combine multiple harlite databases with deduplication (`harlite merge`)
 - **Queryable headers** — Headers stored as JSON, queryable with SQLite JSON functions
+- **Interactive REPL** — Explore databases with history, completions, and shortcuts (`harlite repl`)
 - **Safe sharing** — Redact sensitive headers/cookies before sharing a database
 - **Diffing** — Compare two HAR files or two databases (`harlite diff`)
 - **HAR extensions preserved** — Store and round-trip HAR 1.3 extension fields as JSON
@@ -411,6 +412,29 @@ harlite query "SELECT * FROM entries ORDER BY started_at" traffic.db --limit 100
 
 # If you omit the database path, harlite will use the only *.db in the current directory (if exactly one exists)
 harlite query "SELECT COUNT(*) AS entries FROM entries" --format json
+```
+
+### Interactive REPL
+
+Start an interactive SQL shell with readline history, tab completion, and shortcut commands:
+
+```bash
+# Start a REPL (defaults to table output)
+harlite repl traffic.db
+
+# Start in JSON mode
+harlite repl traffic.db --format json
+```
+
+Inside the REPL:
+
+```text
+.help                 Show commands
+.mode csv             Switch output mode (table/csv/json)
+.slow 20              Top 20 slowest requests
+.status               Status code counts
+.tables               List tables
+.exit                 Quit
 ```
 
 ## Database Schema

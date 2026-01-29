@@ -144,9 +144,7 @@ fn headers_to_json(headers: &[Header]) -> String {
     serde_json::to_string(&map).unwrap_or_else(|_| "{}".to_string())
 }
 
-fn extensions_to_json(
-    extensions: &serde_json::Map<String, serde_json::Value>,
-) -> Option<String> {
+fn extensions_to_json(extensions: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
     if extensions.is_empty() {
         None
     } else {
@@ -478,8 +476,9 @@ pub fn insert_entry(
             if type_ok && !body.is_empty() {
                 if options.decompress_bodies {
                     if let Some(enc) = header_value(&entry.response.headers, "content-encoding") {
-                        let decompress_limit =
-                            options.max_body_size.unwrap_or(DEFAULT_MAX_DECOMPRESSED_BYTES);
+                        let decompress_limit = options
+                            .max_body_size
+                            .unwrap_or(DEFAULT_MAX_DECOMPRESSED_BYTES);
                         if let Some(decompressed) =
                             decompress_body(&body, &enc, Some(decompress_limit))
                         {
