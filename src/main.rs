@@ -520,9 +520,12 @@ enum Commands {
         offset: Option<u64>,
 
         /// Suppress extra output (for piping)
-        #[arg(long, action = clap::ArgAction::SetTrue)]
-        #[arg(long = "no-quiet", action = clap::ArgAction::SetFalse)]
+        #[arg(long, action = clap::ArgAction::SetTrue, conflicts_with = "no_quiet")]
         quiet: Option<bool>,
+
+        /// Always show headers and row counts (overrides config quiet)
+        #[arg(long = "no-quiet", action = clap::ArgAction::SetTrue, conflicts_with = "quiet")]
+        no_quiet: bool,
     },
 
     /// Start an interactive SQL REPL
@@ -557,9 +560,12 @@ enum Commands {
         offset: Option<u64>,
 
         /// Suppress extra output (for piping)
-        #[arg(long, action = clap::ArgAction::SetTrue)]
-        #[arg(long = "no-quiet", action = clap::ArgAction::SetFalse)]
+        #[arg(long, action = clap::ArgAction::SetTrue, conflicts_with = "no_quiet")]
         quiet: Option<bool>,
+
+        /// Always show headers and row counts (overrides config quiet)
+        #[arg(long = "no-quiet", action = clap::ArgAction::SetTrue, conflicts_with = "quiet")]
+        no_quiet: bool,
     },
 
     /// Rebuild the response body FTS index for an existing database
@@ -916,8 +922,10 @@ fn main() {
                 limit,
                 offset,
                 quiet,
+                no_quiet,
             } => {
                 let defaults = &resolved.query;
+                let quiet = if no_quiet { Some(false) } else { quiet };
                 let options = QueryOptions {
                     format: format.unwrap_or(defaults.format),
                     limit: limit.or(defaults.limit),
@@ -934,8 +942,10 @@ fn main() {
                 limit,
                 offset,
                 quiet,
+                no_quiet,
             } => {
                 let defaults = &resolved.search;
+                let quiet = if no_quiet { Some(false) } else { quiet };
                 let options = QueryOptions {
                     format: format.unwrap_or(defaults.format),
                     limit: limit.or(defaults.limit),
