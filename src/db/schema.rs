@@ -220,7 +220,10 @@ pub fn ensure_schema_upgrades(conn: &Connection) -> Result<()> {
         conn.execute("ALTER TABLE pages ADD COLUMN page_extensions TEXT", [])?;
     }
     if !table_has_column(conn, "pages", "page_timings_extensions")? {
-        conn.execute("ALTER TABLE pages ADD COLUMN page_timings_extensions TEXT", [])?;
+        conn.execute(
+            "ALTER TABLE pages ADD COLUMN page_timings_extensions TEXT",
+            [],
+        )?;
     }
 
     if !table_has_column(conn, "entries", "response_body_hash_raw")? {
@@ -242,7 +245,10 @@ pub fn ensure_schema_upgrades(conn: &Connection) -> Result<()> {
         conn.execute("ALTER TABLE entries ADD COLUMN request_extensions TEXT", [])?;
     }
     if !table_has_column(conn, "entries", "response_extensions")? {
-        conn.execute("ALTER TABLE entries ADD COLUMN response_extensions TEXT", [])?;
+        conn.execute(
+            "ALTER TABLE entries ADD COLUMN response_extensions TEXT",
+            [],
+        )?;
     }
     if !table_has_column(conn, "entries", "content_extensions")? {
         conn.execute("ALTER TABLE entries ADD COLUMN content_extensions TEXT", [])?;
@@ -251,7 +257,10 @@ pub fn ensure_schema_upgrades(conn: &Connection) -> Result<()> {
         conn.execute("ALTER TABLE entries ADD COLUMN timings_extensions TEXT", [])?;
     }
     if !table_has_column(conn, "entries", "post_data_extensions")? {
-        conn.execute("ALTER TABLE entries ADD COLUMN post_data_extensions TEXT", [])?;
+        conn.execute(
+            "ALTER TABLE entries ADD COLUMN post_data_extensions TEXT",
+            [],
+        )?;
     }
 
     // Ensure FTS table exists for older databases created before the feature.

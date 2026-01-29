@@ -36,6 +36,7 @@ brotli = "3"
 ctrlc = "3"
 tungstenite = "0.21"
 ureq = { version = "2", features = ["json"] }
+rustyline = "14"
 
 [dev-dependencies]
 tempfile = "3"

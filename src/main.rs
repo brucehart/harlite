@@ -12,11 +12,11 @@ use crate::db::ExtractBodiesKind;
 use commands::StatsOptions;
 use commands::{
     run_cdp, run_diff, run_export, run_fts_rebuild, run_import, run_imports, run_info, run_merge,
-    run_prune, run_query, run_redact, run_schema, run_search, run_stats,
+    run_prune, run_query, run_redact, run_repl, run_schema, run_search, run_stats,
 };
 use commands::{
     CdpOptions, DedupStrategy, DiffOptions, ExportOptions, ImportOptions, MergeOptions,
-    NameMatchMode, OutputFormat, QueryOptions, RedactOptions,
+    NameMatchMode, OutputFormat, QueryOptions, RedactOptions, ReplOptions,
 };
 
 #[derive(Parser)]
@@ -392,6 +392,16 @@ enum Commands {
         quiet: bool,
     },
 
+    /// Start an interactive SQL REPL
+    Repl {
+        /// Database file to open (default: the only *.db in the current directory)
+        database: Option<PathBuf>,
+
+        /// Output format
+        #[arg(short, long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+
     /// Search response bodies using SQLite full-text search (FTS5)
     Search {
         /// FTS query string (e.g., 'error NEAR/3 timeout')
@@ -680,6 +690,11 @@ fn main() {
                 quiet,
             };
             run_search(query, database, &options)
+        }
+
+        Commands::Repl { database, format } => {
+            let options = ReplOptions { format };
+            run_repl(database, &options)
         }
 
         Commands::FtsRebuild {
