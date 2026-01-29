@@ -410,6 +410,7 @@ enum Commands {
 
         /// Suppress extra output (for piping)
         #[arg(long, action = clap::ArgAction::SetTrue)]
+        #[arg(long = "no-quiet", action = clap::ArgAction::SetFalse)]
         quiet: Option<bool>,
     },
 
@@ -446,6 +447,7 @@ enum Commands {
 
         /// Suppress extra output (for piping)
         #[arg(long, action = clap::ArgAction::SetTrue)]
+        #[arg(long = "no-quiet", action = clap::ArgAction::SetFalse)]
         quiet: Option<bool>,
     },
 
