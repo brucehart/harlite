@@ -11,9 +11,9 @@ use rusqlite::{Connection, TransactionBehavior};
 use url::Url;
 
 use crate::db::{
-    create_import_with_status, create_schema, entry_content_hash, insert_entry_with_hash,
-    insert_page, update_import_metadata, ExtractBodiesKind, ImportStats,
-    InsertEntryOptions,
+    create_import_with_status, create_schema, entry_content_hash, entry_hash_from_fields,
+    insert_entry_with_hash, insert_page, update_import_metadata, EntryHashFields,
+    ExtractBodiesKind, ImportStats, InsertEntryOptions,
 };
 use crate::error::{HarliteError, Result};
 use crate::har::{parse_har_file, parse_har_file_async, Entry};
@@ -81,6 +81,7 @@ struct ImportFilters {
 }
 
 const DEFAULT_BATCH_SIZE: usize = 500;
+const BACKFILL_BATCH_SIZE: usize = 1000;
 
 #[derive(Clone, Copy)]
 struct ImportRunConfig {
@@ -156,6 +157,12 @@ pub fn run_import(files: &[PathBuf], options: &ImportOptions) -> Result<ImportSt
         async_read: options.async_read,
         parallel: jobs > 1,
     };
+    if run_config.incremental {
+        let updated = backfill_entry_hashes(&mut conn)?;
+        if updated > 0 {
+            println!("Backfilled entry hashes for {} existing entries.", updated);
+        }
+    }
     let total_stats = if jobs == 1 {
         let mut stats = ImportStats::default();
         for file_path in files {
@@ -214,6 +221,7 @@ fn import_single_file(
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("unknown");
+    let source_key = source_key(path);
 
     println!("Importing {}...", file_name);
 
@@ -227,7 +235,7 @@ fn import_single_file(
     let mut base_skipped = 0usize;
     let mut resumed = None;
     let import_id = if run_config.resume {
-        if let Some(resume) = find_resume_import(conn, file_name)? {
+        if let Some(resume) = find_resume_import(conn, &source_key)? {
             let import_id = resume.import_id;
             base_imported = resume.entries_imported;
             base_skipped = resume.entries_skipped;
@@ -244,7 +252,7 @@ fn import_single_file(
         } else {
             create_import_with_status(
                 conn,
-                file_name,
+                &source_key,
                 Some(&har.log.extensions),
                 "in_progress",
                 Some(total_entries),
@@ -254,7 +262,7 @@ fn import_single_file(
     } else {
         create_import_with_status(
             conn,
-            file_name,
+            &source_key,
             Some(&har.log.extensions),
             "in_progress",
             Some(total_entries),
@@ -350,6 +358,13 @@ fn setup_connection(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn source_key(path: &Path) -> String {
+    path.canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .to_string()
+}
+
 fn begin_import_tx<'a>(
     conn: &'a mut Connection,
     run_config: &ImportRunConfig,
@@ -431,6 +446,137 @@ fn import_parallel(
     Ok(total)
 }
 
+fn backfill_entry_hashes(conn: &mut Connection) -> Result<usize> {
+    let missing: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM entries WHERE entry_hash IS NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    if missing == 0 {
+        return Ok(0);
+    }
+
+    let mut updated = 0usize;
+    loop {
+        let mut stmt = conn.prepare(
+            "SELECT id, page_id, started_at, time_ms, method, url, host, path, query_string, http_version,\n\
+                    request_headers, request_cookies, request_body_size, status, status_text,\n\
+                    response_headers, response_cookies, response_mime_type, is_redirect,\n\
+                    server_ip, connection_id, entry_extensions, request_extensions, response_extensions,\n\
+                    content_extensions, timings_extensions, post_data_extensions\n\
+             FROM entries WHERE entry_hash IS NULL LIMIT ?1",
+        )?;
+        let rows: Vec<_> = stmt
+            .query_map([BACKFILL_BATCH_SIZE as i64], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<f64>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, Option<String>>(11)?,
+                    row.get::<_, Option<i64>>(12)?,
+                    row.get::<_, Option<i64>>(13)?,
+                    row.get::<_, Option<String>>(14)?,
+                    row.get::<_, Option<String>>(15)?,
+                    row.get::<_, Option<String>>(16)?,
+                    row.get::<_, Option<String>>(17)?,
+                    row.get::<_, Option<i64>>(18)?,
+                    row.get::<_, Option<String>>(19)?,
+                    row.get::<_, Option<String>>(20)?,
+                    row.get::<_, Option<String>>(21)?,
+                    row.get::<_, Option<String>>(22)?,
+                    row.get::<_, Option<String>>(23)?,
+                    row.get::<_, Option<String>>(24)?,
+                    row.get::<_, Option<String>>(25)?,
+                    row.get::<_, Option<String>>(26)?,
+                ))
+            })?
+            .filter_map(|row| row.ok())
+            .collect();
+
+        if rows.is_empty() {
+            break;
+        }
+
+        let tx = conn.unchecked_transaction()?;
+        for row in rows {
+            let (
+                id,
+                page_id,
+                started_at,
+                time_ms,
+                method,
+                url,
+                host,
+                path,
+                query_string,
+                http_version,
+                request_headers,
+                request_cookies,
+                request_body_size,
+                status,
+                status_text,
+                response_headers,
+                response_cookies,
+                response_mime_type,
+                is_redirect,
+                server_ip,
+                connection_id,
+                entry_extensions,
+                request_extensions,
+                response_extensions,
+                content_extensions,
+                timings_extensions,
+                post_data_extensions,
+            ) = row;
+            let fields = EntryHashFields {
+                page_id: page_id.as_deref(),
+                started_at: started_at.as_deref(),
+                time_ms,
+                method: method.as_deref(),
+                url: url.as_deref(),
+                host: host.as_deref(),
+                path: path.as_deref(),
+                query_string: query_string.as_deref(),
+                http_version: http_version.as_deref(),
+                request_headers: request_headers.as_deref(),
+                request_cookies: request_cookies.as_deref(),
+                request_body_size,
+                status,
+                status_text: status_text.as_deref(),
+                response_headers: response_headers.as_deref(),
+                response_cookies: response_cookies.as_deref(),
+                response_mime_type: response_mime_type.as_deref(),
+                is_redirect,
+                server_ip: server_ip.as_deref(),
+                connection_id: connection_id.as_deref(),
+                entry_extensions: entry_extensions.as_deref(),
+                request_extensions: request_extensions.as_deref(),
+                response_extensions: response_extensions.as_deref(),
+                content_extensions: content_extensions.as_deref(),
+                timings_extensions: timings_extensions.as_deref(),
+                post_data_extensions: post_data_extensions.as_deref(),
+            };
+            let hash = entry_hash_from_fields(&fields);
+            tx.execute(
+                "UPDATE entries SET entry_hash = ?1 WHERE id = ?2",
+                rusqlite::params![hash, id],
+            )?;
+            updated += 1;
+        }
+        tx.commit()?;
+    }
+
+    Ok(updated)
+}
+
 fn entry_hash_exists(tx: &rusqlite::Transaction<'_>, hash: &str) -> Result<bool> {
     match tx.query_row(
         "SELECT 1 FROM entries WHERE entry_hash = ?1 LIMIT 1",
@@ -443,7 +589,7 @@ fn entry_hash_exists(tx: &rusqlite::Transaction<'_>, hash: &str) -> Result<bool>
     }
 }
 
-fn find_resume_import(conn: &Connection, source_file: &str) -> Result<Option<ResumeImport>> {
+fn find_resume_import(conn: &Connection, source_key: &str) -> Result<Option<ResumeImport>> {
     let mut stmt = conn.prepare(
         "SELECT id, COALESCE(entries_skipped, 0)\n\
          FROM imports\n\
@@ -451,7 +597,7 @@ fn find_resume_import(conn: &Connection, source_file: &str) -> Result<Option<Res
          ORDER BY id DESC\n\
          LIMIT 1",
     )?;
-    let row = stmt.query_row([source_file], |row| {
+    let row = stmt.query_row([source_key], |row| {
         Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
     });
     let (import_id, entries_skipped) = match row {

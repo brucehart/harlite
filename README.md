@@ -544,7 +544,7 @@ Use `harlite imports` to list these records and `harlite prune --import-id <id>`
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | INTEGER | Primary key |
-| `source_file` | TEXT | Original HAR filename |
+| `source_file` | TEXT | Original HAR path (canonicalized when possible) |
 | `imported_at` | TEXT | Import timestamp |
 | `entry_count` | INTEGER | Number of entries imported |
 | `log_extensions` | TEXT | Log extension fields (JSON) |

@@ -280,149 +280,139 @@ fn encode_opt_i64(buf: &mut Vec<u8>, value: Option<i64>) {
     }
 }
 
-
-fn encode_bool(buf: &mut Vec<u8>, value: Option<bool>) {
+fn encode_opt_f64(buf: &mut Vec<u8>, value: Option<f64>) {
     match value {
         Some(v) => {
             buf.push(1);
-            buf.push(u8::from(v));
+            buf.extend_from_slice(&v.to_le_bytes());
         }
         None => buf.push(0),
     }
-}
-
-fn encode_headers(buf: &mut Vec<u8>, headers: &[Header]) {
-    let mut pairs: Vec<(String, String)> = headers
-        .iter()
-        .map(|h| (h.name.to_lowercase(), h.value.clone()))
-        .collect();
-    pairs.sort();
-    buf.extend_from_slice(&(pairs.len() as u32).to_le_bytes());
-    for (name, value) in pairs {
-        encode_string(buf, &name);
-        encode_string(buf, &value);
-    }
-}
-
-fn encode_cookies(buf: &mut Vec<u8>, cookies: &Option<Vec<Cookie>>) {
-    match cookies {
-        None => buf.extend_from_slice(&0u32.to_le_bytes()),
-        Some(list) => {
-            let mut items: Vec<&Cookie> = list.iter().collect();
-            items.sort_by(|a, b| {
-                a.name
-                    .cmp(&b.name)
-                    .then_with(|| a.value.cmp(&b.value))
-            });
-            buf.extend_from_slice(&(items.len() as u32).to_le_bytes());
-            for cookie in items {
-                encode_string(buf, &cookie.name);
-                encode_string(buf, &cookie.value);
-                encode_opt_string(buf, cookie.path.as_deref());
-                encode_opt_string(buf, cookie.domain.as_deref());
-                encode_opt_string(buf, cookie.expires.as_deref());
-                encode_bool(buf, cookie.http_only);
-                encode_bool(buf, cookie.secure);
-            }
-        }
-    }
-}
-
-fn encode_query_params(buf: &mut Vec<u8>, params: &Option<Vec<crate::har::QueryParam>>) {
-    match params {
-        None => buf.extend_from_slice(&0u32.to_le_bytes()),
-        Some(list) => {
-            let mut items: Vec<&crate::har::QueryParam> = list.iter().collect();
-            items.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.value.cmp(&b.value)));
-            buf.extend_from_slice(&(items.len() as u32).to_le_bytes());
-            for item in items {
-                encode_string(buf, &item.name);
-                encode_string(buf, &item.value);
-            }
-        }
-    }
-}
-
-fn encode_post_data(buf: &mut Vec<u8>, post_data: &Option<crate::har::PostData>) {
-    match post_data {
-        None => buf.push(0),
-        Some(data) => {
-            buf.push(1);
-            encode_opt_string(buf, data.mime_type.as_deref());
-            encode_opt_string(buf, data.text.as_deref());
-            match &data.params {
-                None => buf.extend_from_slice(&0u32.to_le_bytes()),
-                Some(params) => {
-                    let mut items: Vec<&crate::har::PostParam> = params.iter().collect();
-                    items.sort_by(|a, b| {
-                        a.name
-                            .cmp(&b.name)
-                            .then_with(|| a.value.cmp(&b.value))
-                    });
-                    buf.extend_from_slice(&(items.len() as u32).to_le_bytes());
-                    for item in items {
-                        encode_string(buf, &item.name);
-                        encode_opt_string(buf, item.value.as_deref());
-                        encode_opt_string(buf, item.file_name.as_deref());
-                        encode_opt_string(buf, item.content_type.as_deref());
-                    }
-                }
-            }
-            let extensions_json = extensions_to_json(&data.extensions);
-            encode_opt_string(buf, extensions_json.as_deref());
-        }
-    }
-}
-
-fn encode_extensions(buf: &mut Vec<u8>, extensions: &serde_json::Map<String, serde_json::Value>) {
-    let json = extensions_to_json(extensions);
-    encode_opt_string(buf, json.as_deref());
-}
-
-fn encode_content(buf: &mut Vec<u8>, content: &crate::har::Content) {
-    buf.extend_from_slice(&content.size.to_le_bytes());
-    encode_opt_i64(buf, content.compression);
-    encode_opt_string(buf, content.mime_type.as_deref());
-    encode_opt_string(buf, content.text.as_deref());
-    encode_opt_string(buf, content.encoding.as_deref());
-    encode_extensions(buf, &content.extensions);
 }
 
 /// Stable content hash for an entry (v1).
 pub fn entry_content_hash(entry: &Entry) -> String {
-    let mut buf = Vec::new();
-    buf.extend_from_slice(b"harlite:entry:v1");
-    encode_opt_string(&mut buf, entry.pageref.as_deref());
-    encode_string(&mut buf, &entry.started_date_time);
-    buf.extend_from_slice(&entry.time.to_le_bytes());
-
-    encode_string(&mut buf, &entry.request.method);
-    encode_string(&mut buf, &entry.request.url);
-    encode_string(&mut buf, &entry.request.http_version);
-    encode_query_params(&mut buf, &entry.request.query_string);
-    encode_headers(&mut buf, &entry.request.headers);
-    encode_cookies(&mut buf, &entry.request.cookies);
-    encode_post_data(&mut buf, &entry.request.post_data);
-    encode_extensions(&mut buf, &entry.request.extensions);
-
-    buf.extend_from_slice(&entry.response.status.to_le_bytes());
-    encode_string(&mut buf, &entry.response.status_text);
-    encode_string(&mut buf, &entry.response.http_version);
-    encode_headers(&mut buf, &entry.response.headers);
-    encode_cookies(&mut buf, &entry.response.cookies);
-    encode_opt_string(&mut buf, entry.response.redirect_url.as_deref());
-    encode_content(&mut buf, &entry.response.content);
-    encode_extensions(&mut buf, &entry.response.extensions);
-
-    encode_opt_string(&mut buf, entry.server_ip_address.as_deref());
-    encode_opt_string(&mut buf, entry.connection.as_deref());
-    encode_extensions(&mut buf, &entry.extensions);
-    let timings_extensions = entry
+    let (host, path, query_string) = parse_url_parts(&entry.request.url);
+    let request_headers_json = headers_to_json(&entry.request.headers);
+    let response_headers_json = headers_to_json(&entry.response.headers);
+    let request_cookies_json = cookies_to_json(&entry.request.cookies);
+    let response_cookies_json = cookies_to_json(&entry.response.cookies);
+    let entry_extensions_json = extensions_to_json(&entry.extensions);
+    let request_extensions_json = extensions_to_json(&entry.request.extensions);
+    let response_extensions_json = extensions_to_json(&entry.response.extensions);
+    let content_extensions_json = extensions_to_json(&entry.response.content.extensions);
+    let timings_extensions_json = entry
         .timings
         .as_ref()
-        .and_then(|t| extensions_to_json(&t.extensions));
-    encode_opt_string(&mut buf, timings_extensions.as_deref());
+        .and_then(|timings| extensions_to_json(&timings.extensions));
+    let post_data_extensions_json = entry
+        .request
+        .post_data
+        .as_ref()
+        .and_then(|post| extensions_to_json(&post.extensions));
+    let request_body_size = entry.request.body_size.filter(|&s| s >= 0);
+    let response_mime = entry
+        .response
+        .content
+        .mime_type
+        .clone()
+        .or_else(|| header_value(&entry.response.headers, "content-type"))
+        .map(|v| v.split(';').next().unwrap_or(v.as_str()).trim().to_string());
 
+    let fields = EntryHashFields {
+        page_id: entry.pageref.as_deref(),
+        started_at: Some(&entry.started_date_time),
+        time_ms: Some(entry.time),
+        method: Some(&entry.request.method),
+        url: Some(&entry.request.url),
+        host: host.as_deref(),
+        path: path.as_deref(),
+        query_string: query_string.as_deref(),
+        http_version: Some(&entry.request.http_version),
+        request_headers: Some(&request_headers_json),
+        request_cookies: Some(&request_cookies_json),
+        request_body_size,
+        status: Some(i64::from(entry.response.status)),
+        status_text: Some(&entry.response.status_text),
+        response_headers: Some(&response_headers_json),
+        response_cookies: Some(&response_cookies_json),
+        response_mime_type: response_mime.as_deref(),
+        is_redirect: Some(if (300..400).contains(&entry.response.status) {
+            1
+        } else {
+            0
+        }),
+        server_ip: entry.server_ip_address.as_deref(),
+        connection_id: entry.connection.as_deref(),
+        entry_extensions: entry_extensions_json.as_deref(),
+        request_extensions: request_extensions_json.as_deref(),
+        response_extensions: response_extensions_json.as_deref(),
+        content_extensions: content_extensions_json.as_deref(),
+        timings_extensions: timings_extensions_json.as_deref(),
+        post_data_extensions: post_data_extensions_json.as_deref(),
+    };
+
+    entry_hash_from_fields(&fields)
+}
+
+pub struct EntryHashFields<'a> {
+    pub page_id: Option<&'a str>,
+    pub started_at: Option<&'a str>,
+    pub time_ms: Option<f64>,
+    pub method: Option<&'a str>,
+    pub url: Option<&'a str>,
+    pub host: Option<&'a str>,
+    pub path: Option<&'a str>,
+    pub query_string: Option<&'a str>,
+    pub http_version: Option<&'a str>,
+    pub request_headers: Option<&'a str>,
+    pub request_cookies: Option<&'a str>,
+    pub request_body_size: Option<i64>,
+    pub status: Option<i64>,
+    pub status_text: Option<&'a str>,
+    pub response_headers: Option<&'a str>,
+    pub response_cookies: Option<&'a str>,
+    pub response_mime_type: Option<&'a str>,
+    pub is_redirect: Option<i64>,
+    pub server_ip: Option<&'a str>,
+    pub connection_id: Option<&'a str>,
+    pub entry_extensions: Option<&'a str>,
+    pub request_extensions: Option<&'a str>,
+    pub response_extensions: Option<&'a str>,
+    pub content_extensions: Option<&'a str>,
+    pub timings_extensions: Option<&'a str>,
+    pub post_data_extensions: Option<&'a str>,
+}
+
+pub fn entry_hash_from_fields(fields: &EntryHashFields<'_>) -> String {
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"harlite:entry:v1");
+    encode_opt_string(&mut buf, fields.page_id);
+    encode_opt_string(&mut buf, fields.started_at);
+    encode_opt_f64(&mut buf, fields.time_ms);
+    encode_opt_string(&mut buf, fields.method);
+    encode_opt_string(&mut buf, fields.url);
+    encode_opt_string(&mut buf, fields.host);
+    encode_opt_string(&mut buf, fields.path);
+    encode_opt_string(&mut buf, fields.query_string);
+    encode_opt_string(&mut buf, fields.http_version);
+    encode_opt_string(&mut buf, fields.request_headers);
+    encode_opt_string(&mut buf, fields.request_cookies);
+    encode_opt_i64(&mut buf, fields.request_body_size);
+    encode_opt_i64(&mut buf, fields.status);
+    encode_opt_string(&mut buf, fields.status_text);
+    encode_opt_string(&mut buf, fields.response_headers);
+    encode_opt_string(&mut buf, fields.response_cookies);
+    encode_opt_string(&mut buf, fields.response_mime_type);
+    encode_opt_i64(&mut buf, fields.is_redirect);
+    encode_opt_string(&mut buf, fields.server_ip);
+    encode_opt_string(&mut buf, fields.connection_id);
+    encode_opt_string(&mut buf, fields.entry_extensions);
+    encode_opt_string(&mut buf, fields.request_extensions);
+    encode_opt_string(&mut buf, fields.response_extensions);
+    encode_opt_string(&mut buf, fields.content_extensions);
+    encode_opt_string(&mut buf, fields.timings_extensions);
+    encode_opt_string(&mut buf, fields.post_data_extensions);
     blake3::hash(&buf).to_hex().to_string()
 }
 
@@ -680,7 +670,8 @@ pub fn insert_entry(
     entry: &Entry,
     options: &InsertEntryOptions,
 ) -> Result<EntryInsertResult> {
-    insert_entry_with_hash(conn, import_id, entry, options, None, false)
+    let entry_hash = entry_content_hash(entry);
+    insert_entry_with_hash(conn, import_id, entry, options, Some(&entry_hash), false)
 }
 
 /// Insert an entry with an optional content hash (used for incremental imports).
