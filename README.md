@@ -107,7 +107,7 @@ cargo build --release
 ./target/release/harlite --help
 ```
 
-Performance note: HAR parsing streams entries from disk using `serde_json::Deserializer` to avoid loading the full JSON blob at once; memory still scales with the number of entries imported.
+Performance note: HAR parsing streams entries from disk using `serde_json::Deserializer` to avoid loading the full JSON blob at once; memory still scales with the number of entries imported. Use `--jobs` to parallelize across multiple HAR files (auto by default, capped to limit SQLite contention) and `--async-read` to read large files via a background reader thread (trades RAM for smoother throughput).
 
 ### Shell completions
 
@@ -211,6 +211,20 @@ Size flags accept decimals and short units (e.g., `1.5MB`, `1M`, `100k`, `500B`,
 
 Response bodies are automatically deduplicated using BLAKE3 hashing. If the same JavaScript bundle appears in 50 entries, it's stored only once.
 
+### Incremental and resume imports
+
+Use content hashes to skip entries that are already in the database (helpful for repeated captures or resuming interrupted runs):
+
+```bash
+# Skip entries already imported (content-hash dedup)
+harlite import capture.har -o traffic.db --incremental
+
+# Resume the most recent incomplete import for this source file
+harlite import capture.har -o traffic.db --resume
+```
+
+`--resume` reuses the latest non-complete `imports` record for the same source filename and continues inserting entries that are missing. Progress is tracked in `imports.status`, `imports.entries_total`, and `imports.entries_skipped`.
+
 ### Import filters
 
 Filter entries at import time to reduce database size:
@@ -224,6 +238,21 @@ harlite import capture.har --url-regex 'example\\.com/(api|v1)/'
 
 # Import a specific time range (RFC3339 or YYYY-MM-DD)
 harlite import capture.har --from 2024-01-15 --to 2024-01-16
+```
+
+### Parallel imports
+
+Speed up multi-file imports by using multiple workers (SQLite writes are still serialized, so keep concurrency modest):
+
+```bash
+# Auto-select worker count (capped to avoid DB contention)
+harlite import day1.har day2.har day3.har -o traffic.db --jobs 0
+
+# Explicitly set concurrency
+harlite import day1.har day2.har day3.har -o traffic.db --jobs 4
+
+# Use async file reads for very large HARs
+harlite import huge.har -o traffic.db --jobs 2 --async-read
 ```
 
 ### Full-text search (FTS5)
@@ -466,10 +495,13 @@ The main table containing one row per HTTP request/response pair.
 | `response_cookies` | TEXT | Response cookies as JSON array |
 | `response_body_hash` | TEXT | BLAKE3 hash referencing `blobs.hash` |
 | `response_body_size` | INTEGER | Response body size in bytes |
+| `response_body_hash_raw` | TEXT | Raw/compressed body hash (when stored) |
+| `response_body_size_raw` | INTEGER | Raw/compressed body size (when stored) |
 | `response_mime_type` | TEXT | Response MIME type |
 | `is_redirect` | INTEGER | 1 if 3xx redirect, 0 otherwise |
 | `server_ip` | TEXT | Server IP address (if available) |
 | `connection_id` | TEXT | Connection ID (if available) |
+| `entry_hash` | TEXT | Stable content hash (used for incremental imports) |
 | `entry_extensions` | TEXT | Entry extension fields (JSON) |
 | `request_extensions` | TEXT | Request extension fields (JSON) |
 | `response_extensions` | TEXT | Response extension fields (JSON) |
@@ -487,6 +519,7 @@ Content-addressable storage for request/response bodies. Bodies are deduplicated
 | `content` | BLOB | Raw body content |
 | `size` | INTEGER | Content size in bytes |
 | `mime_type` | TEXT | MIME type (if known) |
+| `external_path` | TEXT | External blob path (if extracted) |
 
 ### `pages` table
 
@@ -511,10 +544,13 @@ Use `harlite imports` to list these records and `harlite prune --import-id <id>`
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | INTEGER | Primary key |
-| `source_file` | TEXT | Original HAR filename |
+| `source_file` | TEXT | Original HAR path (canonicalized when possible) |
 | `imported_at` | TEXT | Import timestamp |
 | `entry_count` | INTEGER | Number of entries imported |
 | `log_extensions` | TEXT | Log extension fields (JSON) |
+| `status` | TEXT | Import status (`in_progress` or `complete`) |
+| `entries_total` | INTEGER | Total entries detected in the source |
+| `entries_skipped` | INTEGER | Entries skipped by incremental dedup |
 
 ### Indexes
 
@@ -527,6 +563,7 @@ The following indexes are created for fast queries:
 - `idx_entries_mime` — Filter by content type
 - `idx_entries_started` — Time range queries
 - `idx_entries_import` — Filter by import source
+- `idx_entries_entry_hash` — Incremental import lookups
 
 ## Example Queries
 
@@ -727,6 +764,9 @@ harlite import huge-capture.har
 
 # Or limit body size
 harlite import huge-capture.har --bodies --max-body-size 10KB --text-only
+
+# For very large captures, try async reads with modest parallelism
+harlite import huge-capture.har --async-read --jobs 2
 ```
 
 ## Building from Source

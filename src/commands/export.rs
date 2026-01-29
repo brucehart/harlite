@@ -255,14 +255,17 @@ fn load_import_ids_by_source(
     let mut params: Vec<rusqlite::types::Value> = Vec::new();
 
     if !source.is_empty() {
-        let placeholders = std::iter::repeat("?")
-            .take(source.len())
-            .collect::<Vec<_>>()
-            .join(", ");
-        clauses.push(format!("source_file IN ({placeholders})"));
+        let mut source_clauses = Vec::new();
         for s in source {
+            source_clauses.push(
+                "(source_file = ? OR source_file LIKE '%/' || ? OR source_file LIKE '%\\\\' || ?)"
+                    .to_string(),
+            );
+            params.push(rusqlite::types::Value::Text(s.clone()));
+            params.push(rusqlite::types::Value::Text(s.clone()));
             params.push(rusqlite::types::Value::Text(s.clone()));
         }
+        clauses.push(format!("({})", source_clauses.join(" OR ")));
     }
 
     if !source_contains.is_empty() {
