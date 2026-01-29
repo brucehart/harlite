@@ -352,9 +352,9 @@ fn import_single_file(
 }
 
 fn setup_connection(conn: &Connection) -> Result<()> {
+    conn.busy_timeout(Duration::from_secs(30))?;
     create_schema(conn)?;
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
-    conn.busy_timeout(Duration::from_secs(30))?;
     Ok(())
 }
 
