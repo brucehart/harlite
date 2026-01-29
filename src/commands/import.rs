@@ -166,13 +166,8 @@ pub fn run_import(files: &[PathBuf], options: &ImportOptions) -> Result<ImportSt
     let total_stats = if jobs == 1 {
         let mut stats = ImportStats::default();
         for file_path in files {
-            let file_stats = import_single_file(
-                &mut conn,
-                file_path,
-                &entry_options,
-                &filters,
-                &run_config,
-            )?;
+            let file_stats =
+                import_single_file(&mut conn, file_path, &entry_options, &filters, &run_config)?;
             stats.add_assign(file_stats);
         }
         stats
@@ -310,12 +305,8 @@ fn import_single_file(
             insert_entry_with_hash(&tx, import_id, entry, options, Some(&entry_hash), false)?;
         if entry_result.inserted {
             stats.entries_imported += 1;
-            stats
-                .request
-                .add_assign(entry_result.blob_stats.request);
-            stats
-                .response
-                .add_assign(entry_result.blob_stats.response);
+            stats.request.add_assign(entry_result.blob_stats.request);
+            stats.response.add_assign(entry_result.blob_stats.response);
         }
 
         batch_count += 1;
@@ -399,9 +390,7 @@ fn import_parallel(
     run_config: &ImportRunConfig,
     jobs: usize,
 ) -> Result<ImportStats> {
-    let queue = Arc::new(Mutex::new(
-        files.iter().cloned().collect::<VecDeque<_>>(),
-    ));
+    let queue = Arc::new(Mutex::new(files.iter().cloned().collect::<VecDeque<_>>()));
     let mut handles = Vec::new();
 
     for _ in 0..jobs {
@@ -422,13 +411,8 @@ fn import_parallel(
                 let Some(path) = next else {
                     break;
                 };
-                let file_stats = import_single_file(
-                    &mut conn,
-                    &path,
-                    &entry_options,
-                    &filters,
-                    &run_config,
-                )?;
+                let file_stats =
+                    import_single_file(&mut conn, &path, &entry_options, &filters, &run_config)?;
                 stats.add_assign(file_stats);
             }
             Ok(stats)

@@ -145,6 +145,45 @@ harlite query "SELECT method, url, status, time_ms FROM entries LIMIT 10" traffi
 # Or use any SQLite tool: DBeaver, datasette, Python, etc.
 ```
 
+## Configuration
+
+`harlite` can load default flags and filters from a TOML config file. CLI flags always override config.
+
+Supported filenames:
+- Project-local: `.harliterc` or `harlite.toml` (searched from the filesystem root down to the current directory; later files override earlier ones).
+- User-global: `$XDG_CONFIG_HOME/harlite/harlite.toml` (or `~/.config/harlite/harlite.toml`), plus `~/.harliterc`. On Windows, `%APPDATA%/harlite/harlite.toml` is also checked.
+
+Precedence (lowest to highest):
+1) User-global config
+2) Project-local configs from root → current directory
+3) CLI flags
+
+To see the resolved config (defaults + files), run:
+
+```bash
+harlite config
+```
+
+Example `harlite.toml`:
+
+```toml
+[import]
+bodies = true
+text_only = true
+max_body_size = "200KB"
+host = ["api.example.com"]
+status = [200, 204]
+
+[export]
+compact = true
+mime = ["json"]
+min_response_size = "1KB"
+
+[redact]
+header = ["authorization", "x-api-key"]
+match_mode = "wildcard"
+```
+
 ## Usage
 
 ### Import HAR files

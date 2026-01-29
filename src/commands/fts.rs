@@ -6,7 +6,8 @@ use rusqlite::Connection;
 use crate::db::{create_schema, load_blobs_by_hashes, BlobRow};
 use crate::error::Result;
 
-#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, clap::ValueEnum, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FtsTokenizer {
     Unicode61,
     Porter,

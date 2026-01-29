@@ -9,7 +9,8 @@ use crate::error::{HarliteError, Result};
 
 use super::util::resolve_database;
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
+#[derive(Clone, Copy, Debug, ValueEnum, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum OutputFormat {
     Table,
     Csv,
