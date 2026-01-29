@@ -216,7 +216,8 @@ pub fn run_cdp(options: &CdpOptions) -> Result<()> {
             Ok(msg) => handle_message(&mut socket, &mut next_id, &mut state, options, msg)?,
             Err(tungstenite::Error::Io(err))
                 if err.kind() == std::io::ErrorKind::WouldBlock
-                    || err.kind() == std::io::ErrorKind::TimedOut =>
+                    || err.kind() == std::io::ErrorKind::TimedOut
+                    || err.kind() == std::io::ErrorKind::Interrupted =>
             {
                 continue
             }
