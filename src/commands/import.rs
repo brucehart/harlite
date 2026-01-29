@@ -1,5 +1,8 @@
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::{fs, path};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use std::{fs, path, thread};
 
 use chrono::{DateTime, NaiveDate, Utc};
 use indicatif::ProgressBar;
@@ -8,11 +11,12 @@ use rusqlite::Connection;
 use url::Url;
 
 use crate::db::{
-    create_import, create_schema, insert_entry, insert_page, update_import_count, BlobStats,
-    ExtractBodiesKind, ImportStats, InsertEntryOptions,
+    create_import_with_status, create_schema, entry_content_hash, insert_entry_with_hash,
+    insert_page, update_import_metadata, ExtractBodiesKind, ImportStats,
+    InsertEntryOptions,
 };
 use crate::error::{HarliteError, Result};
-use crate::har::{parse_har_file, Entry};
+use crate::har::{parse_har_file, parse_har_file_async, Entry};
 
 /// Options for importing HAR files.
 pub struct ImportOptions {
@@ -21,6 +25,10 @@ pub struct ImportOptions {
     pub max_body_size: Option<usize>,
     pub text_only: bool,
     pub show_stats: bool,
+    pub incremental: bool,
+    pub resume: bool,
+    pub jobs: usize,
+    pub async_read: bool,
     pub decompress_bodies: bool,
     pub keep_compressed: bool,
     pub extract_bodies_dir: Option<PathBuf>,
@@ -42,6 +50,10 @@ impl Default for ImportOptions {
             max_body_size: Some(100 * 1024),
             text_only: false,
             show_stats: false,
+            incremental: false,
+            resume: false,
+            jobs: 0,
+            async_read: false,
             decompress_bodies: false,
             keep_compressed: false,
             extract_bodies_dir: None,
@@ -57,6 +69,7 @@ impl Default for ImportOptions {
     }
 }
 
+#[derive(Clone)]
 struct ImportFilters {
     hosts: Vec<String>,
     methods: Vec<String>,
@@ -65,6 +78,28 @@ struct ImportFilters {
     from: Option<DateTime<Utc>>,
     to: Option<DateTime<Utc>>,
     to_is_exclusive: bool,
+}
+
+const DEFAULT_BATCH_SIZE: usize = 500;
+
+#[derive(Clone, Copy)]
+struct ImportRunConfig {
+    incremental: bool,
+    resume: bool,
+    async_read: bool,
+    parallel: bool,
+}
+
+impl ImportRunConfig {
+    fn use_progress(&self, total_entries: usize) -> bool {
+        !self.parallel && total_entries > 0
+    }
+}
+
+struct ResumeImport {
+    import_id: i64,
+    entries_imported: usize,
+    entries_skipped: usize,
 }
 
 /// Import one or more HAR files into a SQLite database.
@@ -93,9 +128,7 @@ pub fn run_import(files: &[PathBuf], options: &ImportOptions) -> Result<ImportSt
     };
 
     let conn = Connection::open(&output_path)?;
-    create_schema(&conn)?;
-
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
+    setup_connection(&conn)?;
 
     let extract_dir = if let Some(dir) = &options.extract_bodies_dir {
         fs::create_dir_all(dir)?;
@@ -116,28 +149,56 @@ pub fn run_import(files: &[PathBuf], options: &ImportOptions) -> Result<ImportSt
     };
     let filters = build_import_filters(options)?;
 
-    let mut total_stats = ImportStats {
-        entries_imported: 0,
-        request: BlobStats::default(),
-        response: BlobStats::default(),
+    let jobs = resolve_jobs(files.len(), options.jobs);
+    let run_config = ImportRunConfig {
+        incremental: options.incremental || options.resume,
+        resume: options.resume,
+        async_read: options.async_read,
+        parallel: jobs > 1,
     };
-
-    for file_path in files {
-        let stats = import_single_file(&conn, file_path, &entry_options, &filters)?;
-        total_stats.entries_imported += stats.entries_imported;
-        total_stats.request.add_assign(stats.request);
-        total_stats.response.add_assign(stats.response);
-    }
+    let total_stats = if jobs == 1 {
+        let mut stats = ImportStats::default();
+        for file_path in files {
+            let file_stats = import_single_file(
+                &conn,
+                file_path,
+                &entry_options,
+                &filters,
+                &run_config,
+            )?;
+            stats.add_assign(file_stats);
+        }
+        stats
+    } else {
+        drop(conn);
+        import_parallel(
+            files,
+            &output_path,
+            &entry_options,
+            &filters,
+            &run_config,
+            jobs,
+        )?
+    };
 
     if options.show_stats {
         print_stats(&total_stats);
     }
 
-    println!(
-        "Imported {} entries to {}",
-        total_stats.entries_imported,
-        output_path.display()
-    );
+    if total_stats.entries_skipped > 0 {
+        println!(
+            "Imported {} entries to {} (skipped {} duplicates)",
+            total_stats.entries_imported,
+            output_path.display(),
+            total_stats.entries_skipped
+        );
+    } else {
+        println!(
+            "Imported {} entries to {}",
+            total_stats.entries_imported,
+            output_path.display()
+        );
+    }
 
     Ok(total_stats)
 }
@@ -147,6 +208,7 @@ fn import_single_file(
     path: &Path,
     options: &InsertEntryOptions,
     filters: &ImportFilters,
+    run_config: &ImportRunConfig,
 ) -> Result<ImportStats> {
     let file_name = path
         .file_name()
@@ -155,8 +217,57 @@ fn import_single_file(
 
     println!("Importing {}...", file_name);
 
-    let har = parse_har_file(path)?;
-    let import_id = create_import(conn, file_name, Some(&har.log.extensions))?;
+    let har = if run_config.async_read {
+        parse_har_file_async(path)?
+    } else {
+        parse_har_file(path)?
+    };
+    let total_entries = har.log.entries.len();
+    let mut base_imported = 0usize;
+    let mut base_skipped = 0usize;
+    let mut resumed = None;
+    let import_id = if run_config.resume {
+        if let Some(resume) = find_resume_import(conn, file_name)? {
+            let import_id = resume.import_id;
+            base_imported = resume.entries_imported;
+            base_skipped = resume.entries_skipped;
+            update_import_metadata(
+                conn,
+                import_id,
+                None,
+                Some(total_entries),
+                Some(base_skipped),
+                Some("in_progress"),
+            )?;
+            resumed = Some(resume);
+            import_id
+        } else {
+            create_import_with_status(
+                conn,
+                file_name,
+                Some(&har.log.extensions),
+                "in_progress",
+                Some(total_entries),
+                Some(0),
+            )?
+        }
+    } else {
+        create_import_with_status(
+            conn,
+            file_name,
+            Some(&har.log.extensions),
+            "in_progress",
+            Some(total_entries),
+            Some(0),
+        )?
+    };
+
+    if let Some(resume) = resumed {
+        println!(
+            "Resuming import {} (id {}, {} entries imported, {} skipped)",
+            file_name, resume.import_id, base_imported, base_skipped
+        );
+    }
 
     if let Some(pages) = &har.log.pages {
         for page in pages {
@@ -165,26 +276,64 @@ fn import_single_file(
     }
 
     let entries = &har.log.entries;
-    let pb = ProgressBar::new(entries.len() as u64);
-
-    let mut stats = ImportStats {
-        entries_imported: 0,
-        request: BlobStats::default(),
-        response: BlobStats::default(),
+    let pb = if run_config.use_progress(total_entries) {
+        ProgressBar::new(total_entries as u64)
+    } else {
+        ProgressBar::hidden()
     };
 
-    let tx = conn.unchecked_transaction()?;
+    let mut stats = ImportStats::default();
+    let mut tx = conn.unchecked_transaction()?;
+    let mut batch_count = 0usize;
+
+    let mut hash_stmt = if run_config.incremental {
+        Some(conn.prepare("SELECT 1 FROM entries WHERE entry_hash = ?1 LIMIT 1")?)
+    } else {
+        None
+    };
 
     for entry in entries {
         if !entry_matches_filters(entry, filters)? {
             pb.inc(1);
             continue;
         }
-        let entry_stats = insert_entry(&tx, import_id, entry, options)?;
-        stats.entries_imported += 1;
+        let mut entry_hash = None;
+        if run_config.incremental {
+            let hash = entry_content_hash(entry);
+            if entry_hash_exists(&mut hash_stmt, &hash)? {
+                stats.entries_skipped += 1;
+                pb.inc(1);
+                continue;
+            }
+            entry_hash = Some(hash);
+        }
 
-        stats.request.add_assign(entry_stats.request);
-        stats.response.add_assign(entry_stats.response);
+        let entry_result =
+            insert_entry_with_hash(&tx, import_id, entry, options, entry_hash.as_deref(), false)?;
+        if entry_result.inserted {
+            stats.entries_imported += 1;
+            stats
+                .request
+                .add_assign(entry_result.blob_stats.request);
+            stats
+                .response
+                .add_assign(entry_result.blob_stats.response);
+        }
+
+        batch_count += 1;
+        if batch_count >= DEFAULT_BATCH_SIZE {
+            tx.commit()?;
+            update_import_metadata(
+                conn,
+                import_id,
+                Some(base_imported + stats.entries_imported),
+                Some(total_entries),
+                Some(base_skipped + stats.entries_skipped),
+                Some("in_progress"),
+            )?;
+            tx = conn.unchecked_transaction()?;
+            batch_count = 0;
+        }
 
         pb.inc(1);
     }
@@ -192,9 +341,130 @@ fn import_single_file(
     tx.commit()?;
     pb.finish_and_clear();
 
-    update_import_count(conn, import_id, stats.entries_imported)?;
+    update_import_metadata(
+        conn,
+        import_id,
+        Some(base_imported + stats.entries_imported),
+        Some(total_entries),
+        Some(base_skipped + stats.entries_skipped),
+        Some("complete"),
+    )?;
 
     Ok(stats)
+}
+
+fn setup_connection(conn: &Connection) -> Result<()> {
+    create_schema(conn)?;
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
+    conn.busy_timeout(Duration::from_secs(30))?;
+    Ok(())
+}
+
+fn resolve_jobs(file_count: usize, requested: usize) -> usize {
+    if file_count <= 1 {
+        return 1;
+    }
+    let jobs = if requested > 0 {
+        requested
+    } else {
+        let cpus = thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        cpus.min(4).max(1)
+    };
+    jobs.min(file_count).max(1)
+}
+
+fn import_parallel(
+    files: &[PathBuf],
+    output_path: &Path,
+    entry_options: &InsertEntryOptions,
+    filters: &ImportFilters,
+    run_config: &ImportRunConfig,
+    jobs: usize,
+) -> Result<ImportStats> {
+    let queue = Arc::new(Mutex::new(
+        files.iter().cloned().collect::<VecDeque<_>>(),
+    ));
+    let mut handles = Vec::new();
+
+    for _ in 0..jobs {
+        let queue = Arc::clone(&queue);
+        let output_path = output_path.to_path_buf();
+        let entry_options = entry_options.clone();
+        let filters = filters.clone();
+        let run_config = *run_config;
+        handles.push(thread::spawn(move || -> Result<ImportStats> {
+            let conn = Connection::open(&output_path)?;
+            setup_connection(&conn)?;
+            let mut stats = ImportStats::default();
+            loop {
+                let next = {
+                    let mut guard = queue.lock().expect("import queue");
+                    guard.pop_front()
+                };
+                let Some(path) = next else {
+                    break;
+                };
+                let file_stats =
+                    import_single_file(&conn, &path, &entry_options, &filters, &run_config)?;
+                stats.add_assign(file_stats);
+            }
+            Ok(stats)
+        }));
+    }
+
+    let mut total = ImportStats::default();
+    for handle in handles {
+        let stats = handle
+            .join()
+            .map_err(|_| HarliteError::InvalidHar("Import worker panicked".to_string()))??;
+        total.add_assign(stats);
+    }
+
+    Ok(total)
+}
+
+fn entry_hash_exists(
+    stmt: &mut Option<rusqlite::Statement<'_>>,
+    hash: &str,
+) -> Result<bool> {
+    let Some(stmt) = stmt.as_mut() else {
+        return Ok(false);
+    };
+    match stmt.query_row([hash], |_| Ok(())) {
+        Ok(_) => Ok(true),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn find_resume_import(conn: &Connection, source_file: &str) -> Result<Option<ResumeImport>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, COALESCE(entries_skipped, 0)\n\
+         FROM imports\n\
+         WHERE source_file = ?1 AND (status IS NULL OR status != 'complete')\n\
+         ORDER BY id DESC\n\
+         LIMIT 1",
+    )?;
+    let row = stmt.query_row([source_file], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+    });
+    let (import_id, entries_skipped) = match row {
+        Ok(row) => row,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    let entries_imported: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM entries WHERE import_id = ?1",
+        [import_id],
+        |r| r.get(0),
+    )?;
+    Ok(Some(ResumeImport {
+        import_id,
+        entries_imported: entries_imported as usize,
+        entries_skipped: entries_skipped as usize,
+    }))
 }
 
 fn build_import_filters(options: &ImportOptions) -> Result<ImportFilters> {
@@ -330,6 +600,9 @@ fn print_stats(stats: &ImportStats) {
 
     println!("\nImport Statistics:");
     println!("  Entries imported: {}", stats.entries_imported);
+    if stats.entries_skipped > 0 {
+        println!("  Entries skipped (dedup): {}", stats.entries_skipped);
+    }
     if total_created > 0 || total_deduplicated > 0 {
         println!("  Unique blobs stored: {}", total_created);
         println!("  Duplicate blobs skipped: {}", total_deduplicated);

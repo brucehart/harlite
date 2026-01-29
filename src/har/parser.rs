@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read};
 use std::path::Path;
+use std::sync::mpsc;
+use std::thread;
 
 use crate::error::Result;
 
@@ -199,6 +201,102 @@ pub fn parse_har_file(path: &Path) -> Result<Har> {
     let har = Har::deserialize(&mut deserializer)?;
     deserializer.end()?;
     Ok(har)
+}
+
+/// Parse a HAR file using a background reader thread (async I/O).
+pub fn parse_har_file_async(path: &Path) -> Result<Har> {
+    let mut file = File::open(path)?;
+    let mut prefix = [0u8; 4];
+    let prefix_len = file.read(&mut prefix)?;
+    let prefix_vec = prefix[..prefix_len].to_vec();
+
+    let reader: Box<dyn Read> = match detect_compression(path, &prefix[..prefix_len]) {
+        Compression::Gzip => Box::new(flate2::read::GzDecoder::new(AsyncFileReader::new(
+            file, prefix_vec,
+        ))),
+        Compression::Brotli => Box::new(brotli::Decompressor::new(
+            AsyncFileReader::new(file, prefix_vec),
+            4096,
+        )),
+        Compression::None => Box::new(AsyncFileReader::new(file, prefix_vec)),
+    };
+
+    let reader = BufReader::new(reader);
+    let mut deserializer = serde_json::Deserializer::from_reader(reader);
+    let har = Har::deserialize(&mut deserializer)?;
+    deserializer.end()?;
+    Ok(har)
+}
+
+const ASYNC_READ_CHUNK_BYTES: usize = 128 * 1024;
+
+struct AsyncFileReader {
+    prefix: Cursor<Vec<u8>>,
+    rx: mpsc::Receiver<std::io::Result<Vec<u8>>>,
+    current: Cursor<Vec<u8>>,
+    done: bool,
+}
+
+impl AsyncFileReader {
+    fn new(file: File, prefix: Vec<u8>) -> Self {
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let mut file = file;
+            let mut buf = vec![0u8; ASYNC_READ_CHUNK_BYTES];
+            loop {
+                match file.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if tx.send(Ok(buf[..n].to_vec())).is_err() {
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        let _ = tx.send(Err(err));
+                        break;
+                    }
+                }
+            }
+        });
+        Self {
+            prefix: Cursor::new(prefix),
+            rx,
+            current: Cursor::new(Vec::new()),
+            done: false,
+        }
+    }
+}
+
+impl Read for AsyncFileReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if (self.prefix.position() as usize) < self.prefix.get_ref().len() {
+            return self.prefix.read(buf);
+        }
+
+        loop {
+            if (self.current.position() as usize) < self.current.get_ref().len() {
+                return self.current.read(buf);
+            }
+
+            if self.done {
+                return Ok(0);
+            }
+
+            match self.rx.recv() {
+                Ok(Ok(chunk)) => {
+                    self.current = Cursor::new(chunk);
+                }
+                Ok(Err(err)) => {
+                    self.done = true;
+                    return Err(err);
+                }
+                Err(_) => {
+                    self.done = true;
+                    return Ok(0);
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -10,8 +10,29 @@ use std::path::{Path, PathBuf};
 /// Summary statistics for an import operation.
 pub struct ImportStats {
     pub entries_imported: usize,
+    pub entries_skipped: usize,
     pub request: BlobStats,
     pub response: BlobStats,
+}
+
+impl Default for ImportStats {
+    fn default() -> Self {
+        Self {
+            entries_imported: 0,
+            entries_skipped: 0,
+            request: BlobStats::default(),
+            response: BlobStats::default(),
+        }
+    }
+}
+
+impl ImportStats {
+    pub fn add_assign(&mut self, other: ImportStats) {
+        self.entries_imported += other.entries_imported;
+        self.entries_skipped += other.entries_skipped;
+        self.request.add_assign(other.request);
+        self.response.add_assign(other.response);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -51,17 +72,43 @@ pub struct EntryBlobStats {
     pub response: BlobStats,
 }
 
+pub struct EntryInsertResult {
+    pub inserted: bool,
+    pub blob_stats: EntryBlobStats,
+}
+
+#[allow(dead_code)]
 /// Create an import record and return its row id.
 pub fn create_import(
     conn: &Connection,
     source_file: &str,
     log_extensions: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> Result<i64> {
+    create_import_with_status(conn, source_file, log_extensions, "complete", None, None)
+}
+
+/// Create an import record with explicit status/progress metadata.
+pub fn create_import_with_status(
+    conn: &Connection,
+    source_file: &str,
+    log_extensions: Option<&serde_json::Map<String, serde_json::Value>>,
+    status: &str,
+    entries_total: Option<usize>,
+    entries_skipped: Option<usize>,
+) -> Result<i64> {
     let now = chrono::Utc::now().to_rfc3339();
     let log_extensions_json = log_extensions.and_then(extensions_to_json);
     conn.execute(
-        "INSERT INTO imports (source_file, imported_at, entry_count, log_extensions) VALUES (?1, ?2, 0, ?3)",
-        params![source_file, now, log_extensions_json],
+        "INSERT INTO imports (source_file, imported_at, entry_count, log_extensions, status, entries_total, entries_skipped)
+         VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6)",
+        params![
+            source_file,
+            now,
+            log_extensions_json,
+            status,
+            entries_total.map(|v| v as i64),
+            entries_skipped.map(|v| v as i64)
+        ],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -72,6 +119,42 @@ pub fn update_import_count(conn: &Connection, import_id: i64, count: usize) -> R
         "UPDATE imports SET entry_count = ?1 WHERE id = ?2",
         params![count as i64, import_id],
     )?;
+    Ok(())
+}
+
+/// Update import metadata fields (status/progress).
+pub fn update_import_metadata(
+    conn: &Connection,
+    import_id: i64,
+    entry_count: Option<usize>,
+    entries_total: Option<usize>,
+    entries_skipped: Option<usize>,
+    status: Option<&str>,
+) -> Result<()> {
+    if let Some(count) = entry_count {
+        conn.execute(
+            "UPDATE imports SET entry_count = ?1 WHERE id = ?2",
+            params![count as i64, import_id],
+        )?;
+    }
+    if let Some(total) = entries_total {
+        conn.execute(
+            "UPDATE imports SET entries_total = ?1 WHERE id = ?2",
+            params![total as i64, import_id],
+        )?;
+    }
+    if let Some(skipped) = entries_skipped {
+        conn.execute(
+            "UPDATE imports SET entries_skipped = ?1 WHERE id = ?2",
+            params![skipped as i64, import_id],
+        )?;
+    }
+    if let Some(status) = status {
+        conn.execute(
+            "UPDATE imports SET status = ?1 WHERE id = ?2",
+            params![status, import_id],
+        )?;
+    }
     Ok(())
 }
 
@@ -171,7 +254,180 @@ fn parse_url_parts(url_str: &str) -> (Option<String>, Option<String>, Option<Str
     }
 }
 
+fn encode_string(buf: &mut Vec<u8>, value: &str) {
+    let bytes = value.as_bytes();
+    buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+    buf.extend_from_slice(bytes);
+}
+
+fn encode_opt_string(buf: &mut Vec<u8>, value: Option<&str>) {
+    match value {
+        Some(s) => {
+            buf.push(1);
+            encode_string(buf, s);
+        }
+        None => buf.push(0),
+    }
+}
+
+fn encode_opt_i64(buf: &mut Vec<u8>, value: Option<i64>) {
+    match value {
+        Some(v) => {
+            buf.push(1);
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        None => buf.push(0),
+    }
+}
+
+
+fn encode_bool(buf: &mut Vec<u8>, value: Option<bool>) {
+    match value {
+        Some(v) => {
+            buf.push(1);
+            buf.push(u8::from(v));
+        }
+        None => buf.push(0),
+    }
+}
+
+fn encode_headers(buf: &mut Vec<u8>, headers: &[Header]) {
+    let mut pairs: Vec<(String, String)> = headers
+        .iter()
+        .map(|h| (h.name.to_lowercase(), h.value.clone()))
+        .collect();
+    pairs.sort();
+    buf.extend_from_slice(&(pairs.len() as u32).to_le_bytes());
+    for (name, value) in pairs {
+        encode_string(buf, &name);
+        encode_string(buf, &value);
+    }
+}
+
+fn encode_cookies(buf: &mut Vec<u8>, cookies: &Option<Vec<Cookie>>) {
+    match cookies {
+        None => buf.extend_from_slice(&0u32.to_le_bytes()),
+        Some(list) => {
+            let mut items: Vec<&Cookie> = list.iter().collect();
+            items.sort_by(|a, b| {
+                a.name
+                    .cmp(&b.name)
+                    .then_with(|| a.value.cmp(&b.value))
+            });
+            buf.extend_from_slice(&(items.len() as u32).to_le_bytes());
+            for cookie in items {
+                encode_string(buf, &cookie.name);
+                encode_string(buf, &cookie.value);
+                encode_opt_string(buf, cookie.path.as_deref());
+                encode_opt_string(buf, cookie.domain.as_deref());
+                encode_opt_string(buf, cookie.expires.as_deref());
+                encode_bool(buf, cookie.http_only);
+                encode_bool(buf, cookie.secure);
+            }
+        }
+    }
+}
+
+fn encode_query_params(buf: &mut Vec<u8>, params: &Option<Vec<crate::har::QueryParam>>) {
+    match params {
+        None => buf.extend_from_slice(&0u32.to_le_bytes()),
+        Some(list) => {
+            let mut items: Vec<&crate::har::QueryParam> = list.iter().collect();
+            items.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.value.cmp(&b.value)));
+            buf.extend_from_slice(&(items.len() as u32).to_le_bytes());
+            for item in items {
+                encode_string(buf, &item.name);
+                encode_string(buf, &item.value);
+            }
+        }
+    }
+}
+
+fn encode_post_data(buf: &mut Vec<u8>, post_data: &Option<crate::har::PostData>) {
+    match post_data {
+        None => buf.push(0),
+        Some(data) => {
+            buf.push(1);
+            encode_opt_string(buf, data.mime_type.as_deref());
+            encode_opt_string(buf, data.text.as_deref());
+            match &data.params {
+                None => buf.extend_from_slice(&0u32.to_le_bytes()),
+                Some(params) => {
+                    let mut items: Vec<&crate::har::PostParam> = params.iter().collect();
+                    items.sort_by(|a, b| {
+                        a.name
+                            .cmp(&b.name)
+                            .then_with(|| a.value.cmp(&b.value))
+                    });
+                    buf.extend_from_slice(&(items.len() as u32).to_le_bytes());
+                    for item in items {
+                        encode_string(buf, &item.name);
+                        encode_opt_string(buf, item.value.as_deref());
+                        encode_opt_string(buf, item.file_name.as_deref());
+                        encode_opt_string(buf, item.content_type.as_deref());
+                    }
+                }
+            }
+            let extensions_json = extensions_to_json(&data.extensions);
+            encode_opt_string(buf, extensions_json.as_deref());
+        }
+    }
+}
+
+fn encode_extensions(buf: &mut Vec<u8>, extensions: &serde_json::Map<String, serde_json::Value>) {
+    let json = extensions_to_json(extensions);
+    encode_opt_string(buf, json.as_deref());
+}
+
+fn encode_content(buf: &mut Vec<u8>, content: &crate::har::Content) {
+    buf.extend_from_slice(&content.size.to_le_bytes());
+    encode_opt_i64(buf, content.compression);
+    encode_opt_string(buf, content.mime_type.as_deref());
+    encode_opt_string(buf, content.text.as_deref());
+    encode_opt_string(buf, content.encoding.as_deref());
+    encode_extensions(buf, &content.extensions);
+}
+
+/// Stable content hash for an entry (v1).
+pub fn entry_content_hash(entry: &Entry) -> String {
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"harlite:entry:v1");
+    encode_opt_string(&mut buf, entry.pageref.as_deref());
+    encode_string(&mut buf, &entry.started_date_time);
+    buf.extend_from_slice(&entry.time.to_le_bytes());
+
+    encode_string(&mut buf, &entry.request.method);
+    encode_string(&mut buf, &entry.request.url);
+    encode_string(&mut buf, &entry.request.http_version);
+    encode_query_params(&mut buf, &entry.request.query_string);
+    encode_headers(&mut buf, &entry.request.headers);
+    encode_cookies(&mut buf, &entry.request.cookies);
+    encode_post_data(&mut buf, &entry.request.post_data);
+    encode_extensions(&mut buf, &entry.request.extensions);
+
+    buf.extend_from_slice(&entry.response.status.to_le_bytes());
+    encode_string(&mut buf, &entry.response.status_text);
+    encode_string(&mut buf, &entry.response.http_version);
+    encode_headers(&mut buf, &entry.response.headers);
+    encode_cookies(&mut buf, &entry.response.cookies);
+    encode_opt_string(&mut buf, entry.response.redirect_url.as_deref());
+    encode_content(&mut buf, &entry.response.content);
+    encode_extensions(&mut buf, &entry.response.extensions);
+
+    encode_opt_string(&mut buf, entry.server_ip_address.as_deref());
+    encode_opt_string(&mut buf, entry.connection.as_deref());
+    encode_extensions(&mut buf, &entry.extensions);
+    let timings_extensions = entry
+        .timings
+        .as_ref()
+        .and_then(|t| extensions_to_json(&t.extensions));
+    encode_opt_string(&mut buf, timings_extensions.as_deref());
+
+    blake3::hash(&buf).to_hex().to_string()
+}
+
 /// Options controlling how entry bodies are stored.
+#[derive(Clone)]
 pub struct InsertEntryOptions {
     pub store_bodies: bool,
     pub max_body_size: Option<usize>,
@@ -423,7 +679,19 @@ pub fn insert_entry(
     import_id: i64,
     entry: &Entry,
     options: &InsertEntryOptions,
-) -> Result<EntryBlobStats> {
+) -> Result<EntryInsertResult> {
+    insert_entry_with_hash(conn, import_id, entry, options, None, false)
+}
+
+/// Insert an entry with an optional content hash (used for incremental imports).
+pub fn insert_entry_with_hash(
+    conn: &Connection,
+    import_id: i64,
+    entry: &Entry,
+    options: &InsertEntryOptions,
+    entry_hash: Option<&str>,
+    ignore_duplicates: bool,
+) -> Result<EntryInsertResult> {
     let (host, path, query_string) = parse_url_parts(&entry.request.url);
 
     let request_headers_json = headers_to_json(&entry.request.headers);
@@ -543,21 +811,40 @@ pub fn insert_entry(
         }
     }
 
-    conn.execute(
+    let insert_sql = if ignore_duplicates {
+        "INSERT OR IGNORE INTO entries (
+            import_id, page_id, started_at, time_ms,
+            method, url, host, path, query_string, http_version,
+            request_headers, request_cookies, request_body_hash, request_body_size,
+            status, status_text, response_headers, response_cookies,
+            response_body_hash, response_body_size, response_body_hash_raw, response_body_size_raw, response_mime_type,
+            is_redirect, server_ip, connection_id, entry_hash,
+            entry_extensions, request_extensions, response_extensions, content_extensions, timings_extensions, post_data_extensions
+        ) VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+            ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
+            ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
+            ?31, ?32, ?33
+        )"
+    } else {
         "INSERT INTO entries (
             import_id, page_id, started_at, time_ms,
             method, url, host, path, query_string, http_version,
             request_headers, request_cookies, request_body_hash, request_body_size,
             status, status_text, response_headers, response_cookies,
             response_body_hash, response_body_size, response_body_hash_raw, response_body_size_raw, response_mime_type,
-            is_redirect, server_ip, connection_id,
+            is_redirect, server_ip, connection_id, entry_hash,
             entry_extensions, request_extensions, response_extensions, content_extensions, timings_extensions, post_data_extensions
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
             ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
-            ?31, ?32
-        )",
+            ?31, ?32, ?33
+        )"
+    };
+
+    let inserted = conn.execute(
+        insert_sql,
         params![
             import_id,
             entry.pageref,
@@ -585,6 +872,7 @@ pub fn insert_entry(
             is_redirect,
             entry.server_ip_address,
             entry.connection,
+            entry_hash,
             entry_extensions_json,
             request_extensions_json,
             response_extensions_json,
@@ -594,7 +882,10 @@ pub fn insert_entry(
         ],
     )?;
 
-    Ok(entry_stats)
+    Ok(EntryInsertResult {
+        inserted: inserted > 0,
+        blob_stats: entry_stats,
+    })
 }
 
 fn store_request_blob(
@@ -703,9 +994,10 @@ mod tests {
         )
         .expect("insert import");
 
-        let stats = insert_entry(&conn, import_id, entry, &options).expect("insert entry");
-        assert_eq!(stats.request.created, 0);
-        assert_eq!(stats.response.created, 1);
+        let result = insert_entry(&conn, import_id, entry, &options).expect("insert entry");
+        assert!(result.inserted);
+        assert_eq!(result.blob_stats.request.created, 0);
+        assert_eq!(result.blob_stats.response.created, 1);
 
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))

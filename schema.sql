@@ -13,7 +13,10 @@ CREATE TABLE IF NOT EXISTS imports (
     source_file TEXT NOT NULL,
     imported_at TEXT NOT NULL,
     entry_count INTEGER,
-    log_extensions TEXT
+    log_extensions TEXT,
+    status TEXT NOT NULL DEFAULT 'complete',
+    entries_total INTEGER,
+    entries_skipped INTEGER
 );
 
 -- Page information
@@ -66,6 +69,7 @@ CREATE TABLE IF NOT EXISTS entries (
     is_redirect INTEGER,
     server_ip TEXT,
     connection_id TEXT,
+    entry_hash TEXT,
 
     -- HAR extensions (JSON)
     entry_extensions TEXT,
@@ -84,6 +88,7 @@ CREATE INDEX IF NOT EXISTS idx_entries_method ON entries(method);
 CREATE INDEX IF NOT EXISTS idx_entries_mime ON entries(response_mime_type);
 CREATE INDEX IF NOT EXISTS idx_entries_started ON entries(started_at);
 CREATE INDEX IF NOT EXISTS idx_entries_import ON entries(import_id);
+CREATE INDEX IF NOT EXISTS idx_entries_entry_hash ON entries(entry_hash);
 
 -- Full-text search over response bodies (text-only, deduped by blob hash)
 CREATE VIRTUAL TABLE IF NOT EXISTS response_body_fts

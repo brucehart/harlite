@@ -18,7 +18,10 @@ CREATE TABLE IF NOT EXISTS imports (
     source_file TEXT NOT NULL,
     imported_at TEXT NOT NULL,
     entry_count INTEGER,
-    log_extensions TEXT
+    log_extensions TEXT,
+    status TEXT NOT NULL DEFAULT 'complete',
+    entries_total INTEGER,
+    entries_skipped INTEGER
 );
 
 -- Page information
@@ -71,6 +74,7 @@ CREATE TABLE IF NOT EXISTS entries (
     is_redirect INTEGER,
     server_ip TEXT,
     connection_id TEXT,
+    entry_hash TEXT,
 
     -- HAR extensions (JSON)
     entry_extensions TEXT,
@@ -89,6 +93,7 @@ CREATE INDEX IF NOT EXISTS idx_entries_method ON entries(method);
 CREATE INDEX IF NOT EXISTS idx_entries_mime ON entries(response_mime_type);
 CREATE INDEX IF NOT EXISTS idx_entries_started ON entries(started_at);
 CREATE INDEX IF NOT EXISTS idx_entries_import ON entries(import_id);
+CREATE INDEX IF NOT EXISTS idx_entries_entry_hash ON entries(entry_hash);
 "#;
 
 const SCHEMA_FTS: &str = r#"
@@ -113,7 +118,10 @@ CREATE TABLE IF NOT EXISTS imports (
     source_file TEXT NOT NULL,
     imported_at TEXT NOT NULL,
     entry_count INTEGER,
-    log_extensions TEXT
+    log_extensions TEXT,
+    status TEXT NOT NULL DEFAULT 'complete',
+    entries_total INTEGER,
+    entries_skipped INTEGER
 );
 
 -- Page information
@@ -166,6 +174,7 @@ CREATE TABLE IF NOT EXISTS entries (
     is_redirect INTEGER,
     server_ip TEXT,
     connection_id TEXT,
+    entry_hash TEXT,
 
     -- HAR extensions (JSON)
     entry_extensions TEXT,
@@ -184,6 +193,7 @@ CREATE INDEX IF NOT EXISTS idx_entries_method ON entries(method);
 CREATE INDEX IF NOT EXISTS idx_entries_mime ON entries(response_mime_type);
 CREATE INDEX IF NOT EXISTS idx_entries_started ON entries(started_at);
 CREATE INDEX IF NOT EXISTS idx_entries_import ON entries(import_id);
+CREATE INDEX IF NOT EXISTS idx_entries_entry_hash ON entries(entry_hash);
 
 -- Full-text search over response bodies (text-only, deduped by blob hash)
 CREATE VIRTUAL TABLE IF NOT EXISTS response_body_fts
@@ -214,6 +224,18 @@ pub fn ensure_schema_upgrades(conn: &Connection) -> Result<()> {
 
     if !table_has_column(conn, "imports", "log_extensions")? {
         conn.execute("ALTER TABLE imports ADD COLUMN log_extensions TEXT", [])?;
+    }
+    if !table_has_column(conn, "imports", "status")? {
+        conn.execute(
+            "ALTER TABLE imports ADD COLUMN status TEXT NOT NULL DEFAULT 'complete'",
+            [],
+        )?;
+    }
+    if !table_has_column(conn, "imports", "entries_total")? {
+        conn.execute("ALTER TABLE imports ADD COLUMN entries_total INTEGER", [])?;
+    }
+    if !table_has_column(conn, "imports", "entries_skipped")? {
+        conn.execute("ALTER TABLE imports ADD COLUMN entries_skipped INTEGER", [])?;
     }
 
     if !table_has_column(conn, "pages", "page_extensions")? {
@@ -262,6 +284,9 @@ pub fn ensure_schema_upgrades(conn: &Connection) -> Result<()> {
             [],
         )?;
     }
+    if !table_has_column(conn, "entries", "entry_hash")? {
+        conn.execute("ALTER TABLE entries ADD COLUMN entry_hash TEXT", [])?;
+    }
 
     // Ensure FTS table exists for older databases created before the feature.
     let exists: i64 = conn.query_row(
@@ -280,6 +305,11 @@ pub fn ensure_schema_upgrades(conn: &Connection) -> Result<()> {
             }
         })?;
     }
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_entries_entry_hash ON entries(entry_hash)",
+        [],
+    )?;
 
     Ok(())
 }

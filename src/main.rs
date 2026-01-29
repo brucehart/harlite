@@ -56,6 +56,22 @@ enum Commands {
         #[arg(long)]
         stats: bool,
 
+        /// Skip entries already imported (by content hash)
+        #[arg(long)]
+        incremental: bool,
+
+        /// Resume an incomplete import for the same source file (implies --incremental)
+        #[arg(long)]
+        resume: bool,
+
+        /// Number of parallel import workers (0 = auto)
+        #[arg(long, default_value_t = 0)]
+        jobs: usize,
+
+        /// Read HAR files using a background reader thread (useful for large files)
+        #[arg(long)]
+        async_read: bool,
+
         /// Decompress response bodies based on Content-Encoding (gzip, br)
         #[arg(long)]
         decompress_bodies: bool,
@@ -469,6 +485,10 @@ fn main() {
             max_body_size,
             text_only,
             stats,
+            incremental,
+            resume,
+            jobs,
+            async_read,
             decompress_bodies,
             keep_compressed,
             extract_bodies,
@@ -488,6 +508,10 @@ fn main() {
                 max_body_size,
                 text_only,
                 show_stats: stats,
+                incremental,
+                resume,
+                jobs,
+                async_read,
                 decompress_bodies,
                 keep_compressed,
                 extract_bodies_dir: extract_bodies,
