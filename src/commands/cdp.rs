@@ -765,7 +765,14 @@ fn import_entries(path: &PathBuf, har: &Har, options: &CdpOptions) -> Result<()>
     create_schema(&conn)?;
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
 
-    let import_id = create_import_with_status(&conn, "cdp", Some(&har.log.extensions), "in_progress", None, None)?;
+    let import_id = create_import_with_status(
+        &conn,
+        "cdp",
+        Some(&har.log.extensions),
+        "in_progress",
+        None,
+        None,
+    )?;
 
     let entry_options = InsertEntryOptions {
         store_bodies: options.store_bodies,
@@ -790,18 +797,21 @@ fn import_entries(path: &PathBuf, har: &Har, options: &CdpOptions) -> Result<()>
         let entry_result = insert_entry(&tx, import_id, entry, &entry_options)?;
         if entry_result.inserted {
             stats.entries_imported += 1;
-            stats
-                .request
-                .add_assign(entry_result.blob_stats.request);
-            stats
-                .response
-                .add_assign(entry_result.blob_stats.response);
+            stats.request.add_assign(entry_result.blob_stats.request);
+            stats.response.add_assign(entry_result.blob_stats.response);
         }
     }
     tx.commit()?;
 
     update_import_count(&conn, import_id, stats.entries_imported)?;
-    crate::db::update_import_metadata(&conn, import_id, None, None, Some(stats.entries_skipped), Some("complete"))?;
+    crate::db::update_import_metadata(
+        &conn,
+        import_id,
+        None,
+        None,
+        Some(stats.entries_skipped),
+        Some("complete"),
+    )?;
 
     println!(
         "Imported {} entries to {}",

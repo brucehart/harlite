@@ -6,7 +6,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use crate::db::create_schema;
 use crate::error::{HarliteError, Result};
 
-#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, clap::ValueEnum, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DedupStrategy {
     Hash,
     Exact,
