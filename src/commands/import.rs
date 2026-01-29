@@ -7,7 +7,7 @@ use std::{fs, path, thread};
 use chrono::{DateTime, NaiveDate, Utc};
 use indicatif::ProgressBar;
 use regex::Regex;
-use rusqlite::Connection;
+use rusqlite::{Connection, TransactionBehavior};
 use url::Url;
 
 use crate::db::{
@@ -127,7 +127,7 @@ pub fn run_import(files: &[PathBuf], options: &ImportOptions) -> Result<ImportSt
         }
     };
 
-    let conn = Connection::open(&output_path)?;
+    let mut conn = Connection::open(&output_path)?;
     setup_connection(&conn)?;
 
     let extract_dir = if let Some(dir) = &options.extract_bodies_dir {
@@ -160,7 +160,7 @@ pub fn run_import(files: &[PathBuf], options: &ImportOptions) -> Result<ImportSt
         let mut stats = ImportStats::default();
         for file_path in files {
             let file_stats = import_single_file(
-                &conn,
+                &mut conn,
                 file_path,
                 &entry_options,
                 &filters,
@@ -204,7 +204,7 @@ pub fn run_import(files: &[PathBuf], options: &ImportOptions) -> Result<ImportSt
 }
 
 fn import_single_file(
-    conn: &Connection,
+    conn: &mut Connection,
     path: &Path,
     options: &InsertEntryOptions,
     filters: &ImportFilters,
@@ -283,33 +283,23 @@ fn import_single_file(
     };
 
     let mut stats = ImportStats::default();
-    let mut tx = conn.unchecked_transaction()?;
+    let mut tx = begin_import_tx(conn, run_config)?;
     let mut batch_count = 0usize;
-
-    let mut hash_stmt = if run_config.incremental {
-        Some(conn.prepare("SELECT 1 FROM entries WHERE entry_hash = ?1 LIMIT 1")?)
-    } else {
-        None
-    };
 
     for entry in entries {
         if !entry_matches_filters(entry, filters)? {
             pb.inc(1);
             continue;
         }
-        let mut entry_hash = None;
-        if run_config.incremental {
-            let hash = entry_content_hash(entry);
-            if entry_hash_exists(&mut hash_stmt, &hash)? {
-                stats.entries_skipped += 1;
-                pb.inc(1);
-                continue;
-            }
-            entry_hash = Some(hash);
+        let entry_hash = entry_content_hash(entry);
+        if run_config.incremental && entry_hash_exists(&tx, &entry_hash)? {
+            stats.entries_skipped += 1;
+            pb.inc(1);
+            continue;
         }
 
         let entry_result =
-            insert_entry_with_hash(&tx, import_id, entry, options, entry_hash.as_deref(), false)?;
+            insert_entry_with_hash(&tx, import_id, entry, options, Some(&entry_hash), false)?;
         if entry_result.inserted {
             stats.entries_imported += 1;
             stats
@@ -331,7 +321,7 @@ fn import_single_file(
                 Some(base_skipped + stats.entries_skipped),
                 Some("in_progress"),
             )?;
-            tx = conn.unchecked_transaction()?;
+            tx = begin_import_tx(conn, run_config)?;
             batch_count = 0;
         }
 
@@ -358,6 +348,17 @@ fn setup_connection(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
     conn.busy_timeout(Duration::from_secs(30))?;
     Ok(())
+}
+
+fn begin_import_tx<'a>(
+    conn: &'a mut Connection,
+    run_config: &ImportRunConfig,
+) -> Result<rusqlite::Transaction<'a>> {
+    if run_config.incremental {
+        Ok(conn.transaction_with_behavior(TransactionBehavior::Immediate)?)
+    } else {
+        Ok(conn.unchecked_transaction()?)
+    }
 }
 
 fn resolve_jobs(file_count: usize, requested: usize) -> usize {
@@ -395,7 +396,7 @@ fn import_parallel(
         let filters = filters.clone();
         let run_config = *run_config;
         handles.push(thread::spawn(move || -> Result<ImportStats> {
-            let conn = Connection::open(&output_path)?;
+            let mut conn = Connection::open(&output_path)?;
             setup_connection(&conn)?;
             let mut stats = ImportStats::default();
             loop {
@@ -406,8 +407,13 @@ fn import_parallel(
                 let Some(path) = next else {
                     break;
                 };
-                let file_stats =
-                    import_single_file(&conn, &path, &entry_options, &filters, &run_config)?;
+                let file_stats = import_single_file(
+                    &mut conn,
+                    &path,
+                    &entry_options,
+                    &filters,
+                    &run_config,
+                )?;
                 stats.add_assign(file_stats);
             }
             Ok(stats)
@@ -425,14 +431,12 @@ fn import_parallel(
     Ok(total)
 }
 
-fn entry_hash_exists(
-    stmt: &mut Option<rusqlite::Statement<'_>>,
-    hash: &str,
-) -> Result<bool> {
-    let Some(stmt) = stmt.as_mut() else {
-        return Ok(false);
-    };
-    match stmt.query_row([hash], |_| Ok(())) {
+fn entry_hash_exists(tx: &rusqlite::Transaction<'_>, hash: &str) -> Result<bool> {
+    match tx.query_row(
+        "SELECT 1 FROM entries WHERE entry_hash = ?1 LIMIT 1",
+        [hash],
+        |_| Ok(()),
+    ) {
         Ok(_) => Ok(true),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
         Err(err) => Err(err.into()),
