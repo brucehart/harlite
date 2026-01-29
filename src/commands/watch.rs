@@ -59,22 +59,6 @@ pub fn run_watch(directory: PathBuf, options: &WatchOptions) -> Result<()> {
     import_options.output = Some(output_db.clone());
     import_options.jobs = 1;
 
-    let mut imported_history = load_import_history(&output_db)?;
-    let mut imported_files: HashMap<String, FileFingerprint> = HashMap::new();
-    let mut pending: HashMap<PathBuf, PendingFile> = HashMap::new();
-
-    if options.import_existing {
-        import_existing_files(
-            &directory,
-            options.recursive,
-            &import_options,
-            &imported_history,
-            &mut imported_files,
-            options,
-            &output_db,
-        )?;
-    }
-
     let (tx, rx) = mpsc::channel();
     let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |res| {
         let _ = tx.send(res);
@@ -89,6 +73,23 @@ pub fn run_watch(directory: PathBuf, options: &WatchOptions) -> Result<()> {
     watcher
         .watch(&directory, recursive_mode)
         .map_err(|err| HarliteError::InvalidArgs(format!("Failed to watch directory: {err}")))?;
+
+    let mut imported_history = load_import_history(&output_db)?;
+    let mut imported_files: HashMap<String, FileFingerprint> = HashMap::new();
+    let mut pending: HashMap<PathBuf, PendingFile> = HashMap::new();
+
+    if options.import_existing {
+        import_existing_files(
+            &directory,
+            options.recursive,
+            &import_options,
+            &imported_history,
+            &mut imported_files,
+            options,
+            &output_db,
+        )?;
+        drain_events(&rx, &mut pending);
+    }
 
     let stop = Arc::new(AtomicBool::new(false));
     let stop_handler = Arc::clone(&stop);
@@ -114,20 +115,7 @@ pub fn run_watch(directory: PathBuf, options: &WatchOptions) -> Result<()> {
 
         match rx.recv_timeout(tick) {
             Ok(Ok(event)) => {
-                for path in event.paths {
-                    if !is_har_file(&path) {
-                        continue;
-                    }
-                    pending
-                        .entry(path)
-                        .and_modify(|state| state.last_event = Instant::now())
-                        .or_insert_with(|| PendingFile {
-                            last_event: Instant::now(),
-                            last_size: 0,
-                            last_mtime: SystemTime::UNIX_EPOCH,
-                            last_change: Instant::now(),
-                        });
-                }
+                enqueue_event_paths(event.paths, &mut pending);
             }
             Ok(Err(err)) => {
                 eprintln!("Watch error: {err}");
@@ -258,6 +246,35 @@ fn is_har_file(path: &Path) -> bool {
     path.extension()
         .and_then(|s| s.to_str())
         .is_some_and(|ext| ext.eq_ignore_ascii_case("har"))
+}
+
+fn enqueue_event_paths(paths: Vec<PathBuf>, pending: &mut HashMap<PathBuf, PendingFile>) {
+    for path in paths {
+        if !is_har_file(&path) {
+            continue;
+        }
+        pending
+            .entry(path)
+            .and_modify(|state| state.last_event = Instant::now())
+            .or_insert_with(|| PendingFile {
+                last_event: Instant::now(),
+                last_size: 0,
+                last_mtime: SystemTime::UNIX_EPOCH,
+                last_change: Instant::now(),
+            });
+    }
+}
+
+fn drain_events(
+    rx: &mpsc::Receiver<std::result::Result<notify::Event, notify::Error>>,
+    pending: &mut HashMap<PathBuf, PendingFile>,
+) {
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            Ok(event) => enqueue_event_paths(event.paths, pending),
+            Err(err) => eprintln!("Watch error: {err}"),
+        }
+    }
 }
 
 fn load_import_history(db_path: &Path) -> Result<HashMap<String, SystemTime>> {
