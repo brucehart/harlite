@@ -642,6 +642,12 @@ fn post_data_to_body(
     };
 
     if let Some(text) = &post_data.text {
+        // Set Content-Type from postData.mimeType if present and not already set
+        if let Some(mime_type) = &post_data.mime_type {
+            if !headers.contains_key("content-type") {
+                headers.insert("content-type".to_string(), mime_type.clone());
+            }
+        }
         return Some(text.as_bytes().to_vec());
     }
 
