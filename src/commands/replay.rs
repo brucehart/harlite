@@ -749,7 +749,7 @@ fn parse_header_override(raw: &str) -> Result<HeaderOverrideRule> {
             "override-header must be '<url-regex>:<name>=<value>' or '<name>=<value>'".to_string(),
         ))?;
 
-    let (pattern_raw, name) = match left.split_once(':') {
+    let (pattern_raw, name) = match left.rsplit_once(':') {
         Some((pattern, name)) => (pattern, name),
         None => ("*", left),
     };
