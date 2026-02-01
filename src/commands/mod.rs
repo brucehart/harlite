@@ -14,6 +14,7 @@ mod schema;
 mod search;
 mod stats;
 mod util;
+mod waterfall;
 mod watch;
 
 pub use diff::{run_diff, DiffOptions};
@@ -31,6 +32,7 @@ pub use repl::{run_repl, ReplOptions};
 pub use schema::run_schema;
 pub use search::run_search;
 pub use stats::{run_stats, StatsOptions};
+pub use waterfall::{run_waterfall, WaterfallFormat, WaterfallGroupBy, WaterfallOptions};
 mod cdp;
 pub use cdp::{run_cdp, CdpOptions};
 pub use watch::{run_watch, WatchOptions};

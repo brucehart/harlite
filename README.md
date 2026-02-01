@@ -430,6 +430,22 @@ Notes / gaps:
 - Extension fields (including underscore-prefixed fields) on log/page/entry/request/response/content/timings/postData are preserved as JSON for round-trip export. Example extensions seen in Chromium HARs include `_resourceType`, `_priority`, `_transferSize`, `_initiator`, `_fromDiskCache`, and `_fromServiceWorker`.
 - Schema upgrades automatically add extension columns (`log_extensions`, `page_extensions`, `entry_extensions`, etc.) when opening older databases.
 
+### Export waterfall data
+
+Export request waterfall timing data as either a Chrome/Perfetto trace (machine-readable) or a terminal-friendly ASCII diagram:
+
+```bash
+# Machine-readable trace (JSON)
+harlite waterfall traffic.db --format trace --group-by page -o trace.json
+
+# Terminal-friendly ASCII diagram
+harlite waterfall traffic.db --format text --group-by navigation
+
+# Filter examples
+harlite waterfall traffic.db --host api.example.com --from 2024-01-15 --to 2024-01-16
+harlite waterfall traffic.db --page "Homepage"
+```
+
 ### Diff HAR or databases
 
 Compare two HAR files or two harlite databases to find added/removed requests, timing deltas, and header/body size changes:
