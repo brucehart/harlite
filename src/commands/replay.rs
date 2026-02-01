@@ -974,18 +974,21 @@ fn write_table_sep(out: &mut impl Write, widths: &[usize]) -> Result<()> {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    // Compare using character count, not byte length, to match column widths.
+    if s.chars().count() <= max {
         return s.to_string();
     }
     if max <= 3 {
         return "...".to_string();
     }
     let mut end = 0usize;
+    let mut chars_seen = 0usize;
     for (i, ch) in s.char_indices() {
-        if i >= max - 3 {
+        if chars_seen >= max.saturating_sub(3) {
             break;
         }
         end = i + ch.len_utf8();
+        chars_seen += 1;
     }
     let mut out = s[..end].to_string();
     out.push_str("...");
