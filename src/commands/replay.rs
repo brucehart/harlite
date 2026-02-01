@@ -488,8 +488,13 @@ fn load_entries_from_db(path: &Path, options: &ReplayOptions) -> Result<Vec<Repl
         let root = options
             .external_path_root
             .clone()
-            .or_else(|| path.parent().map(PathBuf::from));
-        root
+            .or_else(|| path.parent().map(|p| p.to_path_buf()))
+            .ok_or_else(|| {
+                HarliteError::InvalidArgs(
+                    "Cannot resolve external path root; pass --external-path-root".to_string(),
+                )
+            })?;
+        Some(root.canonicalize()?)
     } else {
         None
     };
