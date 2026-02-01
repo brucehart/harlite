@@ -571,7 +571,7 @@ fn load_entries_from_har(path: &Path, options: &ReplayOptions) -> Result<Vec<Rep
         let original_headers = headers_from_list(&entry.response.headers);
         let original_body_size = sanitize_size(entry.response.body_size)
             .or_else(|| sanitize_size(Some(entry.response.content.size)));
-        let request_body = post_data_to_body(&entry.request.post_data, &mut request_headers);
+        let request_body = post_data_to_body(&entry.request.post_data, &mut request_headers)?;
 
         out.push(ReplayEntry {
             index: idx,
@@ -636,9 +636,9 @@ fn entry_matches_filters(
 fn post_data_to_body(
     post_data: &Option<PostData>,
     headers: &mut HashMap<String, String>,
-) -> Option<Vec<u8>> {
+) -> Result<Option<Vec<u8>>> {
     let Some(post_data) = post_data else {
-        return None;
+        return Ok(None);
     };
 
     if let Some(text) = &post_data.text {
@@ -648,11 +648,28 @@ fn post_data_to_body(
                 headers.insert("content-type".to_string(), mime_type.clone());
             }
         }
-        return Some(text.as_bytes().to_vec());
+        let encoding = post_data
+            .extensions
+            .get("encoding")
+            .and_then(|value| value.as_str())
+            .map(|value| value.trim().to_ascii_lowercase());
+        return match encoding.as_deref() {
+            None => Ok(Some(text.as_bytes().to_vec())),
+            Some("base64") => {
+                use base64::{engine::general_purpose::STANDARD, Engine as _};
+                let decoded = STANDARD.decode(text).map_err(|err| {
+                    HarliteError::InvalidHar(format!("invalid base64 postData.text: {err}"))
+                })?;
+                Ok(Some(decoded))
+            }
+            Some(other) => Err(HarliteError::InvalidHar(format!(
+                "unsupported postData.text encoding: {other}"
+            ))),
+        };
     }
 
     let Some(params) = &post_data.params else {
-        return None;
+        return Ok(None);
     };
 
     let mut serializer = url::form_urlencoded::Serializer::new(String::new());
@@ -663,7 +680,7 @@ fn post_data_to_body(
     }
     let encoded = serializer.finish();
     if encoded.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     if !headers.contains_key("content-type") {
@@ -673,7 +690,7 @@ fn post_data_to_body(
         );
     }
 
-    Some(encoded.into_bytes())
+    Ok(Some(encoded.into_bytes()))
 }
 
 fn headers_from_json(json: Option<&str>) -> HashMap<String, String> {
