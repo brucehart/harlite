@@ -449,11 +449,20 @@ fn is_sqlite_file(path: &Path) -> bool {
 }
 
 fn load_entries_from_db(path: &Path, options: &ReplayOptions) -> Result<Vec<ReplayEntry>> {
+    // Best-effort schema upgrades: if the database is writable, run upgrades on a
+    // separate read-write connection. If opening in read-write mode fails (e.g.
+    // read-only filesystem), skip upgrades and continue with a read-only connection.
+    if let Ok(upgrade_conn) = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) {
+        ensure_schema_upgrades(&upgrade_conn)?;
+    }
+
     let conn = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
-    ensure_schema_upgrades(&conn)?;
 
     let mut query = EntryQuery::default();
     query.hosts = options.host.clone();
