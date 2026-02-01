@@ -342,8 +342,9 @@ fn read_response_size(response: ureq::Response) -> Result<i64> {
 fn response_headers_map(response: &ureq::Response) -> HashMap<String, String> {
     let mut out = HashMap::new();
     for name in response.headers_names() {
+        let name_lc = name.to_ascii_lowercase();
         if let Some(value) = response.header(&name) {
-            out.insert(name, value.to_string());
+            out.insert(name_lc, value.to_string());
         }
     }
     out
