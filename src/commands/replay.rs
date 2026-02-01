@@ -191,11 +191,6 @@ fn resolve_concurrency(configured: usize, total: usize) -> Result<usize> {
         let available = thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
         return Ok(available.max(1).min(total.max(1)));
     }
-    if configured < 1 {
-        return Err(HarliteError::InvalidArgs(
-            "--concurrency must be >= 0".to_string(),
-        ));
-    }
     Ok(configured.min(total.max(1)))
 }
 
