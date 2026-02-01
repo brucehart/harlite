@@ -35,6 +35,7 @@ Works great with AI coding agents like Codex and Claude — they already know SQ
 - **Interactive REPL** — Explore databases with history, completions, and shortcuts (`harlite repl`)
 - **Safe sharing** — Redact sensitive headers/cookies before sharing a database
 - **Diffing** — Compare two HAR files or two databases (`harlite diff`)
+- **Replay** — Reissue requests against live servers and compare responses (`harlite replay`)
 - **HAR extensions preserved** — Store and round-trip HAR 1.3 extension fields as JSON
 - **CDP capture** — Capture from Chrome and write directly to HAR or SQLite
 - **Watch mode** — Monitor a directory and auto-import new HAR files (`harlite watch`)
@@ -445,6 +446,28 @@ harlite diff before.har after.har --host api.example.com --method GET --status 2
 ```
 
 Matching is done by `(method, url)` with a stable ordinal match per pair: if the same method+URL appears multiple times, the first occurrence in the left file is matched with the first in the right, the second with the second, and so on (ordered by HAR entry order or `started_at` for databases).
+
+### Replay requests
+
+Replay requests from a HAR file or database against live servers, then compare status/headers/body size:
+
+```bash
+# Replay a HAR against live servers (GET/HEAD/OPTIONS/TRACE only by default)
+harlite replay capture.har --method GET --format table
+
+# Replay and allow unsafe methods (POST/PUT/DELETE/PATCH)
+harlite replay capture.har --allow-unsafe
+
+# Replay from a database with filters and concurrency
+harlite replay traffic.db --host api.example.com --status 200 --concurrency 8 --rate-limit 20
+
+# Override host or headers during replay
+harlite replay capture.har --override-host 'example\\.com=staging.example.com:8443'
+harlite replay capture.har --override-header 'Authorization=Bearer token'
+harlite replay capture.har --override-header 'example\\.com:Authorization=Bearer token'
+```
+
+Safety: unsafe methods are skipped unless `--allow-unsafe` is set.
 
 ### Redact sensitive data
 
