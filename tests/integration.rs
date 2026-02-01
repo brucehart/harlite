@@ -2,7 +2,11 @@ use assert_cmd::cargo::cargo_bin_cmd;
 use assert_cmd::Command;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use predicates::prelude::*;
+use serde_json::json;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::thread;
 use tempfile::TempDir;
 
 fn harlite() -> Command {
@@ -195,6 +199,92 @@ fn test_import_with_pages() {
         )
         .unwrap();
     assert_eq!(page_id, "page_1");
+}
+
+#[test]
+fn test_replay_har_with_override() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let handle = thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buf = [0u8; 1024];
+            let mut read_total = 0usize;
+            loop {
+                match stream.read(&mut buf[read_total..]) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        read_total += n;
+                        if read_total >= 4
+                            && buf[..read_total].windows(4).any(|w| w == b"\r\n\r\n")
+                        {
+                            break;
+                        }
+                        if read_total >= buf.len() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            let response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: text/plain\r\n\r\nOK";
+            let _ = stream.write_all(response);
+        }
+    });
+
+    let tmp = TempDir::new().unwrap();
+    let har_path = tmp.path().join("replay.har");
+
+    let har = json!({
+        "log": {
+            "version": "1.2",
+            "creator": { "name": "harlite", "version": "0.0" },
+            "entries": [
+                {
+                    "startedDateTime": "2024-01-01T00:00:00.000Z",
+                    "time": 1.0,
+                    "request": {
+                        "method": "GET",
+                        "url": "http://example.com/test",
+                        "httpVersion": "HTTP/1.1",
+                        "headers": [],
+                        "cookies": [],
+                        "queryString": [],
+                        "headersSize": -1,
+                        "bodySize": -1
+                    },
+                    "response": {
+                        "status": 200,
+                        "statusText": "OK",
+                        "httpVersion": "HTTP/1.1",
+                        "headers": [],
+                        "cookies": [],
+                        "content": { "size": 0, "mimeType": "text/plain" },
+                        "redirectURL": "",
+                        "headersSize": -1,
+                        "bodySize": 0
+                    },
+                    "cache": {},
+                    "timings": { "send": 0, "wait": 1, "receive": 0 }
+                }
+            ]
+        }
+    });
+
+    fs::write(&har_path, serde_json::to_vec(&har).unwrap()).unwrap();
+
+    let override_host = format!(".*=127.0.0.1:{}", addr.port());
+    harlite()
+        .args(["replay", "--format", "json", "--method", "GET", "--concurrency", "1"])
+        .arg(&har_path)
+        .args(["--override-host", &override_host])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"status_replay\":200"))
+        .stdout(predicate::str::contains("\"status_changed\":false"));
+
+    let _ = handle.join();
 }
 
 #[test]

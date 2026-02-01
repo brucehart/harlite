@@ -15,6 +15,8 @@ pub struct Config {
     #[serde(default)]
     pub cdp: Option<CdpConfig>,
     #[serde(default)]
+    pub replay: Option<ReplayConfig>,
+    #[serde(default)]
     pub export: Option<ExportConfig>,
     #[serde(default)]
     pub redact: Option<RedactConfig>,
@@ -69,6 +71,27 @@ pub struct CdpConfig {
     pub max_body_size: Option<String>,
     pub text_only: Option<bool>,
     pub duration: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct ReplayConfig {
+    pub format: Option<OutputFormat>,
+    pub concurrency: Option<usize>,
+    pub rate_limit: Option<f64>,
+    pub timeout_secs: Option<u64>,
+    pub allow_unsafe: Option<bool>,
+    pub allow_external_paths: Option<bool>,
+    pub external_path_root: Option<PathBuf>,
+
+    pub url: Option<Vec<String>>,
+    pub url_contains: Option<Vec<String>>,
+    pub url_regex: Option<Vec<String>>,
+    pub host: Option<Vec<String>>,
+    pub method: Option<Vec<String>>,
+    pub status: Option<Vec<i32>>,
+
+    pub override_host: Option<Vec<String>>,
+    pub override_header: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -167,6 +190,7 @@ pub struct StatsConfig {
 pub struct ResolvedConfig {
     pub import: ResolvedImportConfig,
     pub cdp: ResolvedCdpConfig,
+    pub replay: ResolvedReplayConfig,
     pub export: ResolvedExportConfig,
     pub redact: ResolvedRedactConfig,
     pub diff: ResolvedDiffConfig,
@@ -213,6 +237,27 @@ pub struct ResolvedCdpConfig {
     pub max_body_size: String,
     pub text_only: bool,
     pub duration: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ResolvedReplayConfig {
+    pub format: OutputFormat,
+    pub concurrency: usize,
+    pub rate_limit: Option<f64>,
+    pub timeout_secs: Option<u64>,
+    pub allow_unsafe: bool,
+    pub allow_external_paths: bool,
+    pub external_path_root: Option<PathBuf>,
+
+    pub url: Vec<String>,
+    pub url_contains: Vec<String>,
+    pub url_regex: Vec<String>,
+    pub host: Vec<String>,
+    pub method: Vec<String>,
+    pub status: Vec<i32>,
+
+    pub override_host: Vec<String>,
+    pub override_header: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -312,6 +357,7 @@ impl Default for ResolvedConfig {
         Self {
             import: ResolvedImportConfig::default(),
             cdp: ResolvedCdpConfig::default(),
+            replay: ResolvedReplayConfig::default(),
             export: ResolvedExportConfig::default(),
             redact: ResolvedRedactConfig::default(),
             diff: ResolvedDiffConfig::default(),
@@ -364,6 +410,28 @@ impl Default for ResolvedCdpConfig {
             max_body_size: "100KB".to_string(),
             text_only: false,
             duration: None,
+        }
+    }
+}
+
+impl Default for ResolvedReplayConfig {
+    fn default() -> Self {
+        Self {
+            format: OutputFormat::Table,
+            concurrency: 0,
+            rate_limit: None,
+            timeout_secs: None,
+            allow_unsafe: false,
+            allow_external_paths: false,
+            external_path_root: None,
+            url: Vec::new(),
+            url_contains: Vec::new(),
+            url_regex: Vec::new(),
+            host: Vec::new(),
+            method: Vec::new(),
+            status: Vec::new(),
+            override_host: Vec::new(),
+            override_header: Vec::new(),
         }
     }
 }
@@ -492,6 +560,9 @@ impl ResolvedConfig {
         if let Some(cfg) = &config.cdp {
             resolved.cdp.apply(cfg);
         }
+        if let Some(cfg) = &config.replay {
+            resolved.replay.apply(cfg);
+        }
         if let Some(cfg) = &config.export {
             resolved.export.apply(cfg);
         }
@@ -616,6 +687,56 @@ impl ResolvedCdpConfig {
         }
         if let Some(value) = cfg.duration {
             self.duration = Some(value);
+        }
+    }
+}
+
+impl ResolvedReplayConfig {
+    fn apply(&mut self, cfg: &ReplayConfig) {
+        if let Some(value) = cfg.format {
+            self.format = value;
+        }
+        if let Some(value) = cfg.concurrency {
+            self.concurrency = value;
+        }
+        if let Some(value) = cfg.rate_limit {
+            self.rate_limit = Some(value);
+        }
+        if let Some(value) = cfg.timeout_secs {
+            self.timeout_secs = Some(value);
+        }
+        if let Some(value) = cfg.allow_unsafe {
+            self.allow_unsafe = value;
+        }
+        if let Some(value) = cfg.allow_external_paths {
+            self.allow_external_paths = value;
+        }
+        if let Some(value) = cfg.external_path_root.clone() {
+            self.external_path_root = Some(value);
+        }
+        if let Some(value) = cfg.url.clone() {
+            self.url = value;
+        }
+        if let Some(value) = cfg.url_contains.clone() {
+            self.url_contains = value;
+        }
+        if let Some(value) = cfg.url_regex.clone() {
+            self.url_regex = value;
+        }
+        if let Some(value) = cfg.host.clone() {
+            self.host = value;
+        }
+        if let Some(value) = cfg.method.clone() {
+            self.method = value;
+        }
+        if let Some(value) = cfg.status.clone() {
+            self.status = value;
+        }
+        if let Some(value) = cfg.override_host.clone() {
+            self.override_host = value;
+        }
+        if let Some(value) = cfg.override_header.clone() {
+            self.override_header = value;
         }
     }
 }

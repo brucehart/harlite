@@ -14,11 +14,13 @@ use crate::db::ExtractBodiesKind;
 use commands::StatsOptions;
 use commands::{
     run_cdp, run_diff, run_export, run_fts_rebuild, run_import, run_imports, run_info, run_merge,
-    run_prune, run_query, run_redact, run_repl, run_schema, run_search, run_stats, run_watch,
+    run_prune, run_query, run_redact, run_replay, run_repl, run_schema, run_search, run_stats,
+    run_watch,
 };
 use commands::{
     CdpOptions, DedupStrategy, DiffOptions, ExportOptions, ImportOptions, MergeOptions,
-    NameMatchMode, OutputFormat, QueryOptions, RedactOptions, ReplOptions, WatchOptions,
+    NameMatchMode, OutputFormat, QueryOptions, RedactOptions, ReplayOptions, ReplOptions,
+    WatchOptions,
 };
 
 #[derive(Parser)]
@@ -479,6 +481,72 @@ enum Commands {
         url_regex: Option<Vec<String>>,
     },
 
+    /// Replay requests against live servers and compare responses
+    Replay {
+        /// HAR file or SQLite database to replay
+        input: PathBuf,
+
+        /// Output format
+        #[arg(short, long, value_enum)]
+        format: Option<OutputFormat>,
+
+        /// Number of concurrent requests (0 = auto)
+        #[arg(long)]
+        concurrency: Option<usize>,
+
+        /// Rate limit in requests per second
+        #[arg(long)]
+        rate_limit: Option<f64>,
+
+        /// Request timeout in seconds
+        #[arg(long)]
+        timeout: Option<u64>,
+
+        /// Allow unsafe methods (POST, PUT, DELETE, PATCH)
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        allow_unsafe: Option<bool>,
+
+        /// Allow reading external blob paths from the database
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        allow_external_paths: Option<bool>,
+
+        /// Root directory for external blob paths (defaults to database directory)
+        #[arg(long, value_name = "DIR")]
+        external_path_root: Option<PathBuf>,
+
+        /// Exact URL filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        url: Option<Vec<String>>,
+
+        /// URL substring filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        url_contains: Option<Vec<String>>,
+
+        /// URL regex filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        url_regex: Option<Vec<String>>,
+
+        /// Hostname filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        host: Option<Vec<String>>,
+
+        /// HTTP method filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        method: Option<Vec<String>>,
+
+        /// HTTP status filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        status: Option<Vec<i32>>,
+
+        /// Override host by URL regex (repeatable, format: '<regex>=<host[:port]>' )
+        #[arg(long, action = clap::ArgAction::Append)]
+        override_host: Option<Vec<String>>,
+
+        /// Override header by URL regex (repeatable, format: '<regex>:<name>=<value>' or '<name>=<value>')
+        #[arg(long, action = clap::ArgAction::Append)]
+        override_header: Option<Vec<String>>,
+    },
+
     /// Merge multiple harlite databases into one
     Merge {
         /// Database files to merge
@@ -898,6 +966,48 @@ fn main() {
                     url_regex: url_regex.unwrap_or_else(|| defaults.url_regex.clone()),
                 };
                 run_diff(left, right, &options)
+            }
+
+            Commands::Replay {
+                input,
+                format,
+                concurrency,
+                rate_limit,
+                timeout,
+                allow_unsafe,
+                allow_external_paths,
+                external_path_root,
+                url,
+                url_contains,
+                url_regex,
+                host,
+                method,
+                status,
+                override_host,
+                override_header,
+            } => {
+                let defaults = &resolved.replay;
+                let options = ReplayOptions {
+                    format: format.unwrap_or(defaults.format),
+                    concurrency: concurrency.unwrap_or(defaults.concurrency),
+                    rate_limit: rate_limit.or(defaults.rate_limit),
+                    timeout_secs: timeout.or(defaults.timeout_secs),
+                    allow_unsafe: allow_unsafe.unwrap_or(defaults.allow_unsafe),
+                    allow_external_paths: allow_external_paths
+                        .unwrap_or(defaults.allow_external_paths),
+                    external_path_root: external_path_root
+                        .or_else(|| defaults.external_path_root.clone()),
+                    url: url.unwrap_or_else(|| defaults.url.clone()),
+                    url_contains: url_contains.unwrap_or_else(|| defaults.url_contains.clone()),
+                    url_regex: url_regex.unwrap_or_else(|| defaults.url_regex.clone()),
+                    host: host.unwrap_or_else(|| defaults.host.clone()),
+                    method: method.unwrap_or_else(|| defaults.method.clone()),
+                    status: status.unwrap_or_else(|| defaults.status.clone()),
+                    override_host: override_host.unwrap_or_else(|| defaults.override_host.clone()),
+                    override_header: override_header
+                        .unwrap_or_else(|| defaults.override_header.clone()),
+                };
+                run_replay(input, &options)
             }
 
             Commands::Merge {
