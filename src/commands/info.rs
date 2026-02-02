@@ -79,8 +79,17 @@ pub fn run_info(database: PathBuf, options: &InfoOptions) -> Result<()> {
     }
 
     if let Some(days) = options.cert_expiring_days {
+        // Clamp the number of days to what chrono::Duration can safely represent.
+        // chrono::Duration stores seconds in an i64, so the maximum whole days is i64::MAX / 86_400.
+        const MAX_DAYS_I64: i64 = i64::MAX / 86_400;
+        let clamped_days_i64 = match i64::try_from(days) {
+            Ok(d) if d <= MAX_DAYS_I64 => d,
+            Ok(_) => MAX_DAYS_I64,
+            Err(_) => MAX_DAYS_I64,
+        };
+
         let now = Utc::now();
-        let cutoff = now + Duration::days(days as i64);
+        let cutoff = now + Duration::days(clamped_days_i64);
         let mut stmt = conn.prepare(
             "SELECT DISTINCT host, tls_cert_subject, tls_cert_issuer, tls_cert_expiry, tls_version, tls_cipher_suite \
              FROM entries WHERE tls_cert_expiry IS NOT NULL",
