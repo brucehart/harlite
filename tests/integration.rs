@@ -1546,6 +1546,59 @@ fn test_export_filter_by_source() {
 }
 
 #[test]
+fn test_waterfall_trace_output() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("waterfall.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let output = harlite()
+        .args(["waterfall", "--format", "trace", "--group-by", "none"])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let trace: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(trace["displayTimeUnit"], "ms");
+    let events = trace["traceEvents"].as_array().unwrap();
+    assert!(events.len() >= 3);
+    let has_url = events.iter().any(|event| {
+        event
+            .get("args")
+            .and_then(|args| args.get("url"))
+            .and_then(|url| url.as_str())
+            == Some("https://api.example.com/users")
+    });
+    assert!(has_url);
+}
+
+#[test]
+fn test_waterfall_text_group_by_page() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("waterfall_pages.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/with_pages.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args(["waterfall", "--format", "text", "--group-by", "page"])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Group: Example Homepage"));
+}
+
+#[test]
 fn test_redact_no_defaults_with_regex_mode() {
     // When using regex mode without --no-defaults, no patterns should be applied
     // since defaults are wildcard patterns

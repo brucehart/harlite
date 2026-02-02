@@ -15,12 +15,12 @@ use commands::StatsOptions;
 use commands::{
     run_cdp, run_diff, run_export, run_fts_rebuild, run_import, run_imports, run_info, run_merge,
     run_prune, run_query, run_redact, run_replay, run_repl, run_schema, run_search, run_stats,
-    run_watch,
+    run_waterfall, run_watch,
 };
 use commands::{
     CdpOptions, DedupStrategy, DiffOptions, ExportOptions, ImportOptions, MergeOptions,
     NameMatchMode, OutputFormat, QueryOptions, RedactOptions, ReplayOptions, ReplOptions,
-    WatchOptions,
+    WatchOptions, WaterfallFormat, WaterfallGroupBy, WaterfallOptions,
 };
 
 #[derive(Parser)]
@@ -404,6 +404,44 @@ enum Commands {
         /// Maximum response body size (e.g., '100KB', '1.5MB', '1M', '100k', 'unlimited')
         #[arg(long)]
         max_response_size: Option<String>,
+    },
+
+    /// Export request waterfall timing data
+    Waterfall {
+        /// Database file to inspect
+        database: PathBuf,
+
+        /// Output file (default: stdout). Use '-' for stdout.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Output format
+        #[arg(short, long, value_enum)]
+        format: Option<WaterfallFormat>,
+
+        /// Group requests by page, top-level navigation, or none
+        #[arg(long, value_enum)]
+        group_by: Option<WaterfallGroupBy>,
+
+        /// Hostname filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        host: Option<Vec<String>>,
+
+        /// Page id or title substring filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        page: Option<Vec<String>>,
+
+        /// Only include entries on/after this timestamp (RFC3339) or date (YYYY-MM-DD)
+        #[arg(long)]
+        from: Option<String>,
+
+        /// Only include entries on/before this timestamp (RFC3339) or date (YYYY-MM-DD)
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Width of the ASCII timeline (text format only)
+        #[arg(long)]
+        width: Option<usize>,
     },
 
     /// Redact sensitive headers/cookies in a harlite SQLite database
@@ -917,6 +955,30 @@ fn main() {
                         .or_else(|| defaults.max_response_size.clone()),
                 };
                 run_export(database, &options)
+            }
+
+            Commands::Waterfall {
+                database,
+                output,
+                format,
+                group_by,
+                host,
+                page,
+                from,
+                to,
+                width,
+            } => {
+                let options = WaterfallOptions {
+                    output,
+                    format: format.unwrap_or(WaterfallFormat::Text),
+                    group_by: group_by.unwrap_or(WaterfallGroupBy::Page),
+                    host: host.unwrap_or_default(),
+                    page: page.unwrap_or_default(),
+                    from,
+                    to,
+                    width,
+                };
+                run_waterfall(database, &options)
             }
 
             Commands::Redact {
