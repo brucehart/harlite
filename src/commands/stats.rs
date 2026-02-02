@@ -72,33 +72,60 @@ pub fn run_stats(database: PathBuf, options: &StatsOptions) -> Result<()> {
     let mut certs_expiring_earliest = None;
 
     if let Some(days) = options.cert_expiring_days {
-        let cutoff = Utc::now() + Duration::days(days as i64);
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT tls_cert_subject, tls_cert_issuer, tls_cert_expiry \
-             FROM entries WHERE tls_cert_expiry IS NOT NULL",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, Option<String>>(0)?,
-                row.get::<_, Option<String>>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })?;
-        let mut count: i64 = 0;
-        let mut earliest = None;
-        for row in rows {
-            let (_subject, _issuer, expiry_raw) = row?;
-            if let Some(expiry) = parse_cert_expiry(&expiry_raw) {
-                if expiry <= cutoff {
-                    count += 1;
-                    if earliest.map_or(true, |dt| expiry < dt) {
-                        earliest = Some(expiry);
-                    }
+        // Check whether the TLS certificate columns exist before querying them.
+        let mut has_tls_cert_expiry = false;
+        {
+            let mut pragma_stmt = conn.prepare("PRAGMA table_info(entries)")?;
+            let pragma_rows = pragma_stmt.query_map([], |row| {
+                // Column name is in the second column (index 1).
+                row.get::<_, String>(1)
+            })?;
+            for col_result in pragma_rows {
+                let col_name = col_result?;
+                if col_name == "tls_cert_expiry" {
+                    has_tls_cert_expiry = true;
+                    break;
                 }
             }
         }
-        certs_expiring = Some(count);
-        certs_expiring_earliest = earliest.map(|dt| dt.to_rfc3339());
+
+        if !has_tls_cert_expiry {
+            // Older databases may not have TLS metadata; skip cert-expiry stats.
+            if !options.json {
+                eprintln!(
+                    "TLS certificate metadata not available in this database; \
+                     skipping certificate expiry statistics."
+                );
+            }
+        } else {
+            let cutoff = Utc::now() + Duration::days(days as i64);
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT tls_cert_subject, tls_cert_issuer, tls_cert_expiry \
+                 FROM entries WHERE tls_cert_expiry IS NOT NULL",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+            let mut count: i64 = 0;
+            let mut earliest = None;
+            for row in rows {
+                let (_subject, _issuer, expiry_raw) = row?;
+                if let Some(expiry) = parse_cert_expiry(&expiry_raw) {
+                    if expiry <= cutoff {
+                        count += 1;
+                        if earliest.map_or(true, |dt| expiry < dt) {
+                            earliest = Some(expiry);
+                        }
+                    }
+                }
+            }
+            certs_expiring = Some(count);
+            certs_expiring_earliest = earliest.map(|dt| dt.to_rfc3339());
+        }
     }
 
     let out = StatsOutput {
