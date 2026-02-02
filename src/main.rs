@@ -13,13 +13,13 @@ use crate::config::{load_config, render_config, ResolvedConfig};
 use crate::db::ExtractBodiesKind;
 use commands::{
     run_cdp, run_diff, run_export, run_fts_rebuild, run_import, run_imports, run_info, run_merge,
-    run_prune, run_query, run_redact, run_repl, run_replay, run_schema, run_search, run_stats,
-    run_watch, run_waterfall,
+    run_pii, run_prune, run_query, run_redact, run_repl, run_replay, run_schema, run_search,
+    run_stats, run_watch, run_waterfall,
 };
 use commands::{
     CdpOptions, DedupStrategy, DiffOptions, ExportOptions, ImportOptions, MergeOptions,
-    NameMatchMode, OutputFormat, QueryOptions, RedactOptions, ReplOptions, ReplayOptions,
-    WatchOptions, WaterfallFormat, WaterfallGroupBy, WaterfallOptions,
+    NameMatchMode, OutputFormat, PiiOptions, QueryOptions, RedactOptions, ReplOptions,
+    ReplayOptions, WatchOptions, WaterfallFormat, WaterfallGroupBy, WaterfallOptions,
 };
 use commands::{InfoOptions, StatsOptions};
 
@@ -495,6 +495,72 @@ enum Commands {
         token: Option<String>,
 
         /// Database file to redact (default: the only *.db in the current directory)
+        database: Option<PathBuf>,
+    },
+
+    /// Scan for PII in URLs and bodies
+    Pii {
+        /// Output format
+        #[arg(short, long, value_enum)]
+        format: Option<OutputFormat>,
+
+        /// Automatically redact findings (write changes)
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        redact: Option<bool>,
+
+        /// Output database file (default: modify in-place when --redact)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Overwrite output database if it exists
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        force: Option<bool>,
+
+        /// Only report what would be redacted (no writes)
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        dry_run: Option<bool>,
+
+        /// Disable default PII patterns
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        no_defaults: Option<bool>,
+
+        /// Disable default email detection
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        no_email: Option<bool>,
+
+        /// Disable default phone detection
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        no_phone: Option<bool>,
+
+        /// Disable default SSN detection
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        no_ssn: Option<bool>,
+
+        /// Disable default credit card detection
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        no_credit_card: Option<bool>,
+
+        /// Regex pattern to detect emails (repeatable)
+        #[arg(long = "email-regex", action = clap::ArgAction::Append)]
+        email_regex: Option<Vec<String>>,
+
+        /// Regex pattern to detect phone numbers (repeatable)
+        #[arg(long = "phone-regex", action = clap::ArgAction::Append)]
+        phone_regex: Option<Vec<String>>,
+
+        /// Regex pattern to detect SSNs (repeatable)
+        #[arg(long = "ssn-regex", action = clap::ArgAction::Append)]
+        ssn_regex: Option<Vec<String>>,
+
+        /// Regex pattern to detect credit cards (repeatable)
+        #[arg(long = "credit-card-regex", action = clap::ArgAction::Append)]
+        credit_card_regex: Option<Vec<String>>,
+
+        /// Replacement token to write for redacted values
+        #[arg(long)]
+        token: Option<String>,
+
+        /// Database file to scan (default: the only *.db in the current directory)
         database: Option<PathBuf>,
     },
 
@@ -1027,6 +1093,46 @@ fn main() {
                     token: token.unwrap_or_else(|| defaults.token.clone()),
                 };
                 run_redact(database, &options)
+            }
+
+            Commands::Pii {
+                format,
+                redact,
+                output,
+                force,
+                dry_run,
+                no_defaults,
+                no_email,
+                no_phone,
+                no_ssn,
+                no_credit_card,
+                email_regex,
+                phone_regex,
+                ssn_regex,
+                credit_card_regex,
+                token,
+                database,
+            } => {
+                let defaults = &resolved.pii;
+                let options = PiiOptions {
+                    format: format.unwrap_or(defaults.format),
+                    redact: redact.unwrap_or(defaults.redact),
+                    output: output.or_else(|| defaults.output.clone()),
+                    force: force.unwrap_or(defaults.force),
+                    dry_run: dry_run.unwrap_or(defaults.dry_run),
+                    no_defaults: no_defaults.unwrap_or(defaults.no_defaults),
+                    no_email: no_email.unwrap_or(defaults.no_email),
+                    no_phone: no_phone.unwrap_or(defaults.no_phone),
+                    no_ssn: no_ssn.unwrap_or(defaults.no_ssn),
+                    no_credit_card: no_credit_card.unwrap_or(defaults.no_credit_card),
+                    email_regexes: email_regex.unwrap_or_else(|| defaults.email_regex.clone()),
+                    phone_regexes: phone_regex.unwrap_or_else(|| defaults.phone_regex.clone()),
+                    ssn_regexes: ssn_regex.unwrap_or_else(|| defaults.ssn_regex.clone()),
+                    credit_card_regexes: credit_card_regex
+                        .unwrap_or_else(|| defaults.credit_card_regex.clone()),
+                    token: token.unwrap_or_else(|| defaults.token.clone()),
+                };
+                run_pii(database, &options)
             }
 
             Commands::Diff {
