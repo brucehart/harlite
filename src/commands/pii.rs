@@ -10,7 +10,7 @@ use crate::db::store_blob;
 use crate::error::{HarliteError, Result};
 
 use super::query::OutputFormat;
-use super::util::resolve_database;
+use super::util::{canonicalize_path_for_compare, resolve_database};
 
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -123,7 +123,9 @@ pub fn run_pii(database: Option<PathBuf>, options: &PiiOptions) -> Result<()> {
     let write = options.redact && !options.dry_run;
     let target_db = if write {
         if let Some(out) = &options.output {
-            if out == &input_db {
+            let input_cmp = canonicalize_path_for_compare(&input_db)?;
+            let out_cmp = canonicalize_path_for_compare(out)?;
+            if out_cmp == input_cmp {
                 return Err(HarliteError::InvalidArgs(
                     "Output database must be different from input database".to_string(),
                 ));
