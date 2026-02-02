@@ -537,6 +537,8 @@ harlite pii traffic.db --no-defaults --email-regex '(?i)\\b.+@example\\.com\\b'
 harlite pii traffic.db --redact --output traffic.redacted.db
 ```
 
+Defaults are conservative but may still produce false positives; review results before redacting. Use `--no-defaults` to opt out and supply your own regexes.
+
 ### Query with harlite
 
 Run ad-hoc SQL against a harlite SQLite database and format the results:
