@@ -6,6 +6,7 @@ mod commands;
 mod config;
 mod db;
 mod error;
+mod graphql;
 mod har;
 mod size;
 

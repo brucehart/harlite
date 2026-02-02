@@ -89,7 +89,12 @@ CREATE TABLE IF NOT EXISTS entries (
     response_extensions TEXT,
     content_extensions TEXT,
     timings_extensions TEXT,
-    post_data_extensions TEXT
+    post_data_extensions TEXT,
+
+    -- GraphQL metadata
+    graphql_operation_type TEXT,
+    graphql_operation_name TEXT,
+    graphql_top_level_fields TEXT
 );
 
 -- Indexes
@@ -101,6 +106,17 @@ CREATE INDEX IF NOT EXISTS idx_entries_mime ON entries(response_mime_type);
 CREATE INDEX IF NOT EXISTS idx_entries_started ON entries(started_at);
 CREATE INDEX IF NOT EXISTS idx_entries_import ON entries(import_id);
 CREATE INDEX IF NOT EXISTS idx_entries_entry_hash ON entries(entry_hash);
+CREATE INDEX IF NOT EXISTS idx_entries_graphql_type ON entries(graphql_operation_type);
+CREATE INDEX IF NOT EXISTS idx_entries_graphql_name ON entries(graphql_operation_name);
+
+-- GraphQL top-level fields
+CREATE TABLE IF NOT EXISTS graphql_fields (
+    entry_id INTEGER REFERENCES entries(id),
+    field TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_graphql_fields_entry_field ON graphql_fields(entry_id, field);
+CREATE INDEX IF NOT EXISTS idx_graphql_fields_field ON graphql_fields(field);
+CREATE INDEX IF NOT EXISTS idx_graphql_fields_entry ON graphql_fields(entry_id);
 
 -- Full-text search over response bodies (text-only, deduped by blob hash)
 CREATE VIRTUAL TABLE IF NOT EXISTS response_body_fts

@@ -56,6 +56,9 @@ pub struct EntryRow {
     pub content_extensions: Option<String>,
     pub timings_extensions: Option<String>,
     pub post_data_extensions: Option<String>,
+    pub graphql_operation_type: Option<String>,
+    pub graphql_operation_name: Option<String>,
+    pub graphql_top_level_fields: Option<String>,
 }
 
 const ENTRY_COLUMNS: &[&str] = &[
@@ -104,6 +107,9 @@ const ENTRY_COLUMNS: &[&str] = &[
     "content_extensions",
     "timings_extensions",
     "post_data_extensions",
+    "graphql_operation_type",
+    "graphql_operation_name",
+    "graphql_top_level_fields",
 ];
 
 #[derive(Debug, Default, Clone)]
@@ -312,6 +318,9 @@ pub fn load_entries(conn: &Connection, query: &EntryQuery) -> Result<Vec<EntryRo
             content_extensions: row.get(42)?,
             timings_extensions: row.get(43)?,
             post_data_extensions: row.get(44)?,
+            graphql_operation_type: row.get(45)?,
+            graphql_operation_name: row.get(46)?,
+            graphql_top_level_fields: row.get(47)?,
         })
     })?;
 

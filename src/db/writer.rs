@@ -4,6 +4,7 @@ use url::Url;
 
 use crate::commands::util::{parse_timestamp, parse_timestamp_number};
 use crate::error::Result;
+use crate::graphql::extract_graphql_info;
 use crate::har::{Cookie, Entry, Header, Page};
 use std::fs;
 use std::io::Read;
@@ -1001,6 +1002,21 @@ pub fn insert_entry_with_hash(
         }
     }
 
+    let graphql_info = extract_graphql_info(entry);
+    let graphql_operation_type = graphql_info
+        .as_ref()
+        .and_then(|info| info.operation_type.clone());
+    let graphql_operation_name = graphql_info
+        .as_ref()
+        .and_then(|info| info.operation_name.clone());
+    let graphql_top_level_fields = graphql_info.as_ref().and_then(|info| {
+        if info.top_level_fields.is_empty() {
+            None
+        } else {
+            serde_json::to_string(&info.top_level_fields).ok()
+        }
+    });
+
     let insert_sql = if ignore_duplicates {
         "INSERT OR IGNORE INTO entries (
             import_id, page_id, started_at, time_ms, blocked_ms, dns_ms, connect_ms, send_ms, wait_ms, receive_ms, ssl_ms,
@@ -1009,13 +1025,14 @@ pub fn insert_entry_with_hash(
             status, status_text, response_headers, response_cookies,
             response_body_hash, response_body_size, response_body_hash_raw, response_body_size_raw, response_mime_type,
             is_redirect, server_ip, connection_id, tls_version, tls_cipher_suite, tls_cert_subject, tls_cert_issuer, tls_cert_expiry, entry_hash,
-            entry_extensions, request_extensions, response_extensions, content_extensions, timings_extensions, post_data_extensions
+            entry_extensions, request_extensions, response_extensions, content_extensions, timings_extensions, post_data_extensions,
+            graphql_operation_type, graphql_operation_name, graphql_top_level_fields
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
             ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
             ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40,
-            ?41, ?42, ?43, ?44, ?45
+            ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48
         )"
     } else {
         "INSERT INTO entries (
@@ -1025,13 +1042,14 @@ pub fn insert_entry_with_hash(
             status, status_text, response_headers, response_cookies,
             response_body_hash, response_body_size, response_body_hash_raw, response_body_size_raw, response_mime_type,
             is_redirect, server_ip, connection_id, tls_version, tls_cipher_suite, tls_cert_subject, tls_cert_issuer, tls_cert_expiry, entry_hash,
-            entry_extensions, request_extensions, response_extensions, content_extensions, timings_extensions, post_data_extensions
+            entry_extensions, request_extensions, response_extensions, content_extensions, timings_extensions, post_data_extensions,
+            graphql_operation_type, graphql_operation_name, graphql_top_level_fields
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
             ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
             ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40,
-            ?41, ?42, ?43, ?44, ?45
+            ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48
         )"
     };
 
@@ -1083,8 +1101,25 @@ pub fn insert_entry_with_hash(
             content_extensions_json,
             timings_extensions_json,
             post_data_extensions_json,
+            graphql_operation_type,
+            graphql_operation_name,
+            graphql_top_level_fields,
         ],
     )?;
+
+    if inserted > 0 {
+        if let Some(info) = graphql_info {
+            if !info.top_level_fields.is_empty() {
+                let entry_id = conn.last_insert_rowid();
+                let mut stmt = conn.prepare_cached(
+                    "INSERT OR IGNORE INTO graphql_fields (entry_id, field) VALUES (?1, ?2)",
+                )?;
+                for field in info.top_level_fields {
+                    stmt.execute(params![entry_id, field])?;
+                }
+            }
+        }
+    }
 
     Ok(EntryInsertResult {
         inserted: inserted > 0,
@@ -1217,6 +1252,79 @@ mod tests {
             .query_row("SELECT host FROM entries", [], |r| r.get(0))
             .expect("host");
         assert_eq!(host, "example.com");
+    }
+
+    #[test]
+    fn inserts_graphql_metadata() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        create_schema(&conn).expect("schema created");
+
+        let json = serde_json::json!({
+            "log": {
+                "entries": [
+                    {
+                        "startedDateTime": "2024-01-15T10:30:00.000Z",
+                        "time": 12.0,
+                        "request": {
+                            "method": "POST",
+                            "url": "https://example.com/graphql",
+                            "httpVersion": "HTTP/1.1",
+                            "headers": [{"name": "Content-Type", "value": "application/json"}],
+                            "cookies": [],
+                            "postData": {
+                                "mimeType": "application/json",
+                                "text": "{\"query\":\"query GetUser { viewer { login } }\",\"operationName\":\"GetUser\"}"
+                            }
+                        },
+                        "response": {
+                            "status": 200,
+                            "statusText": "OK",
+                            "httpVersion": "HTTP/1.1",
+                            "headers": [],
+                            "content": {
+                                "size": 0,
+                                "mimeType": "application/json"
+                            }
+                        }
+                    }
+                ]
+            }
+        });
+
+        let har: Har = serde_json::from_value(json).expect("parse har");
+        let entry = &har.log.entries[0];
+
+        conn.execute(
+            "INSERT INTO imports (id, source_file, imported_at, entry_count) VALUES (?1, ?2, ?3, ?4)",
+            params![1i64, "test.har", "2024-01-01T00:00:00Z", 0],
+        )
+        .expect("insert import");
+
+        insert_entry(&conn, 1, entry, &InsertEntryOptions::default()).expect("insert entry");
+
+        let (op_type, op_name, fields_json): (Option<String>, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT graphql_operation_type, graphql_operation_name, graphql_top_level_fields FROM entries",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("load graphql fields");
+
+        assert_eq!(op_type.as_deref(), Some("query"));
+        assert_eq!(op_name.as_deref(), Some("GetUser"));
+        let fields: Vec<String> = fields_json
+            .and_then(|v| serde_json::from_str(&v).ok())
+            .unwrap_or_default();
+        assert_eq!(fields, vec!["viewer".to_string()]);
+
+        let gql_fields: Vec<String> = conn
+            .prepare("SELECT field FROM graphql_fields ORDER BY field")
+            .expect("prepare")
+            .query_map([], |r| r.get(0))
+            .expect("query")
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(gql_fields, vec!["viewer".to_string()]);
     }
 
     #[test]
