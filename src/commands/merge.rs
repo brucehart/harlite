@@ -332,15 +332,15 @@ pub fn run_merge(databases: Vec<PathBuf>, options: &MergeOptions) -> Result<()> 
             });
 
             let key = entry_key(&entry, options.dedup);
-            if let Some(&existing_rowid) = keys.get(&key) {
-                // Entry already exists - enrich with TLS metadata if present
-                update_entry_tls_metadata(&tx, existing_rowid, &entry)?;
+            if let Some(&existing_entry_id) = keys.get(&key) {
+                // Entry already exists. Update TLS fields if they are missing in the existing entry.
+                update_tls_fields(&tx, existing_entry_id, &entry)?;
                 stats.entries_deduped += 1;
                 continue;
             }
 
-            insert_entry(&tx, mapped_import_id, &entry)?;
-            keys.insert(key, tx.last_insert_rowid());
+            let new_entry_id = insert_entry(&tx, mapped_import_id, &entry)?;
+            keys.insert(key, new_entry_id);
             stats.entries_added += 1;
         }
 
@@ -512,16 +512,16 @@ fn load_entry_keys_for_import(
     import_id: i64,
     strategy: DedupStrategy,
 ) -> Result<HashMap<EntryKey, i64>> {
-    let column_list = ENTRY_COLUMNS
-        .iter()
-        .map(|c| select_col(columns, c))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = format!("SELECT rowid, {} FROM entries WHERE import_id = ?1", column_list);
+    let sql = format!("SELECT id, {} FROM entries WHERE import_id = ?1", 
+        ENTRY_COLUMNS.iter()
+            .map(|col| select_col(columns, col))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![import_id], |row| {
         Ok((
-            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(0)?, // entry id
             EntryRow {
                 import_id: row.get(1)?,
                 page_id: row.get(2)?,
@@ -561,14 +561,14 @@ fn load_entry_keys_for_import(
                 content_extensions: row.get(36)?,
                 timings_extensions: row.get(37)?,
                 post_data_extensions: row.get(38)?,
-            }
+            },
         ))
     })?;
 
     let mut keys = HashMap::new();
     for row in rows {
-        let (rowid, entry) = row?;
-        keys.insert(entry_key(&entry, strategy), rowid);
+        let (entry_id, entry) = row?;
+        keys.insert(entry_key(&entry, strategy), entry_id);
     }
     Ok(keys)
 }
@@ -600,9 +600,8 @@ fn entry_key(entry: &EntryRow, strategy: DedupStrategy) -> EntryKey {
     encode_opt_i64(&mut buf, entry.is_redirect);
     encode_opt_string(&mut buf, entry.server_ip.as_deref());
     encode_opt_string(&mut buf, entry.connection_id.as_deref());
-    // TLS fields (tls_version, tls_cipher_suite, tls_cert_subject, tls_cert_issuer, tls_cert_expiry)
-    // are omitted from the dedup key to allow metadata enrichment when duplicates are detected.
-    // entry_hash is derived from the entry contents; also omit from the dedup key.
+    // TLS fields are omitted from the merge dedup key to allow enriching existing entries with TLS metadata.
+    // entry_hash is derived from the entry contents; omit from the merge dedup key.
     encode_opt_string(&mut buf, entry.entry_extensions.as_deref());
     encode_opt_string(&mut buf, entry.request_extensions.as_deref());
     encode_opt_string(&mut buf, entry.response_extensions.as_deref());
@@ -648,7 +647,29 @@ fn encode_opt_f64(buf: &mut Vec<u8>, value: Option<f64>) {
     }
 }
 
-fn insert_entry(conn: &Connection, import_id: i64, entry: &EntryRow) -> Result<()> {
+fn update_tls_fields(conn: &Connection, entry_id: i64, entry: &EntryRow) -> Result<()> {
+    // Update TLS fields using COALESCE to preserve existing values and only fill in missing ones
+    conn.execute(
+        "UPDATE entries SET
+            tls_version = COALESCE(tls_version, ?1),
+            tls_cipher_suite = COALESCE(tls_cipher_suite, ?2),
+            tls_cert_subject = COALESCE(tls_cert_subject, ?3),
+            tls_cert_issuer = COALESCE(tls_cert_issuer, ?4),
+            tls_cert_expiry = COALESCE(tls_cert_expiry, ?5)
+        WHERE id = ?6",
+        params![
+            entry.tls_version.as_deref(),
+            entry.tls_cipher_suite.as_deref(),
+            entry.tls_cert_subject.as_deref(),
+            entry.tls_cert_issuer.as_deref(),
+            entry.tls_cert_expiry.as_deref(),
+            entry_id,
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_entry(conn: &Connection, import_id: i64, entry: &EntryRow) -> Result<i64> {
     conn.execute(
         "INSERT INTO entries (
             import_id, page_id, started_at, time_ms,
@@ -705,7 +726,7 @@ fn insert_entry(conn: &Connection, import_id: i64, entry: &EntryRow) -> Result<(
             entry.post_data_extensions.as_deref(),
         ],
     )?;
-    Ok(())
+    Ok(conn.last_insert_rowid())
 }
 
 fn update_entry_tls_metadata(conn: &Connection, rowid: i64, entry: &EntryRow) -> Result<()> {
