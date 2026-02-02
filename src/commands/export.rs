@@ -95,7 +95,7 @@ fn parse_started_at_bound(s: &str, is_end: bool) -> Result<String> {
 
     let date = NaiveDate::parse_from_str(s, "%Y-%m-%d")?;
     let dt = if is_end {
-        date.and_hms_opt(23, 59, 59)
+        date.and_hms_milli_opt(23, 59, 59, 999)
             .and_then(|d| d.and_local_timezone(Utc).single())
             .ok_or_else(|| HarliteError::InvalidHar("Invalid end date".to_string()))?
     } else {
