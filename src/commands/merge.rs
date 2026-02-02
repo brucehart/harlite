@@ -370,6 +370,7 @@ pub fn run_merge(databases: Vec<PathBuf>, options: &MergeOptions) -> Result<()> 
             if let Some(&existing_entry_id) = keys.get(&key) {
                 // Entry already exists. Update TLS fields if they are missing in the existing entry.
                 update_tls_fields(&tx, existing_entry_id, &entry)?;
+                update_graphql_fields(&tx, existing_entry_id, &entry)?;
                 if let Some(fields) = graphql_fields.get(&entry_id) {
                     insert_graphql_fields(&tx, existing_entry_id, fields)?;
                 }
@@ -727,6 +728,23 @@ fn update_tls_fields(conn: &Connection, entry_id: i64, entry: &EntryRow) -> Resu
     Ok(())
 }
 
+fn update_graphql_fields(conn: &Connection, entry_id: i64, entry: &EntryRow) -> Result<()> {
+    conn.execute(
+        "UPDATE entries SET
+            graphql_operation_type = COALESCE(graphql_operation_type, ?1),
+            graphql_operation_name = COALESCE(graphql_operation_name, ?2),
+            graphql_top_level_fields = COALESCE(graphql_top_level_fields, ?3)
+        WHERE id = ?4",
+        params![
+            entry.graphql_operation_type.as_deref(),
+            entry.graphql_operation_name.as_deref(),
+            entry.graphql_top_level_fields.as_deref(),
+            entry_id,
+        ],
+    )?;
+    Ok(())
+}
+
 fn insert_entry(conn: &Connection, import_id: i64, entry: &EntryRow) -> Result<i64> {
     conn.execute(
         "INSERT INTO entries (
@@ -948,9 +966,14 @@ fn insert_graphql_fields(conn: &Connection, entry_id: i64, fields: &[String]) ->
         return Ok(());
     }
 
-    let mut stmt =
-        conn.prepare_cached("INSERT OR IGNORE INTO graphql_fields (entry_id, field) VALUES (?1, ?2)")?;
+    let mut stmt = conn.prepare_cached(
+        "INSERT OR IGNORE INTO graphql_fields (entry_id, field) VALUES (?1, ?2)",
+    )?;
+    let mut seen = HashSet::new();
     for field in fields {
+        if !seen.insert(field) {
+            continue;
+        }
         stmt.execute(params![entry_id, field])?;
     }
     Ok(())
