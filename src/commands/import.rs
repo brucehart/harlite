@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -12,11 +12,12 @@ use url::Url;
 
 use crate::db::{
     create_import_with_status, create_schema, entry_content_hash, entry_hash_from_fields,
-    insert_entry_with_hash, insert_page, update_import_metadata, EntryHashFields,
+    insert_entry_with_hash, insert_page, update_import_metadata, EntryHashFields, EntryRelations,
     ExtractBodiesKind, ImportStats, InsertEntryOptions,
 };
 use crate::error::{HarliteError, Result};
-use crate::har::{parse_har_file, parse_har_file_async, Entry};
+use crate::har::{parse_har_file, parse_har_file_async, Entry, Extensions};
+use serde_json::Value;
 
 /// Options for importing HAR files.
 #[derive(Clone)]
@@ -79,6 +80,31 @@ struct ImportFilters {
     from: Option<DateTime<Utc>>,
     to: Option<DateTime<Utc>>,
     to_is_exclusive: bool,
+}
+
+#[derive(Default)]
+struct InitiatorInfo {
+    initiator_type: Option<String>,
+    initiator_url: Option<String>,
+    initiator_line: Option<i64>,
+    initiator_column: Option<i64>,
+    parent_request_id: Option<String>,
+}
+
+#[derive(Default)]
+struct EntryLinkState {
+    pending_redirects: HashMap<String, String>,
+}
+
+impl EntryLinkState {
+    fn take_redirect_parent(&mut self, url: &str) -> Option<String> {
+        self.pending_redirects.remove(url)
+    }
+
+    fn record_redirect(&mut self, redirect_url: &str, request_id: &str) {
+        self.pending_redirects
+            .insert(redirect_url.to_string(), request_id.to_string());
+    }
 }
 
 const DEFAULT_BATCH_SIZE: usize = 500;
@@ -287,6 +313,7 @@ fn import_single_file(
     };
 
     let mut stats = ImportStats::default();
+    let mut link_state = EntryLinkState::default();
     let mut tx = begin_import_tx(conn, run_config)?;
     let mut batch_count = 0usize;
 
@@ -302,12 +329,42 @@ fn import_single_file(
             continue;
         }
 
-        let entry_result =
-            insert_entry_with_hash(&tx, import_id, entry, options, Some(&entry_hash), false)?;
+        let request_id = extract_request_id(entry);
+        let initiator = extract_initiator(entry);
+        let mut parent_request_id = initiator.parent_request_id.clone();
+        if parent_request_id.is_none() {
+            if let Some(parent) = link_state.take_redirect_parent(&entry.request.url) {
+                parent_request_id = Some(parent);
+            }
+        }
+        let redirect_url = extract_redirect_url(entry);
+
+        let relations = EntryRelations {
+            request_id: request_id.clone(),
+            parent_request_id,
+            initiator_type: initiator.initiator_type,
+            initiator_url: initiator.initiator_url,
+            initiator_line: initiator.initiator_line,
+            initiator_column: initiator.initiator_column,
+            redirect_url: redirect_url.clone(),
+        };
+
+        let entry_result = insert_entry_with_hash(
+            &tx,
+            import_id,
+            entry,
+            options,
+            &relations,
+            Some(&entry_hash),
+            false,
+        )?;
         if entry_result.inserted {
             stats.entries_imported += 1;
             stats.request.add_assign(entry_result.blob_stats.request);
             stats.response.add_assign(entry_result.blob_stats.response);
+        }
+        if let (Some(req_id), Some(target)) = (request_id.as_deref(), redirect_url.as_deref()) {
+            link_state.record_redirect(target, req_id);
         }
 
         batch_count += 1;
@@ -691,6 +748,177 @@ fn entry_matches_filters(entry: &Entry, filters: &ImportFilters) -> Result<bool>
     }
 
     Ok(true)
+}
+
+fn extract_request_id(entry: &Entry) -> Option<String> {
+    extension_string(&entry.extensions, &["_requestId", "requestId", "request_id"])
+        .or_else(|| {
+            extension_string(&entry.request.extensions, &["_requestId", "requestId", "request_id"])
+        })
+        .or_else(|| {
+            extension_string(
+                &entry.response.extensions,
+                &["_requestId", "requestId", "request_id"],
+            )
+        })
+}
+
+fn extract_initiator(entry: &Entry) -> InitiatorInfo {
+    let value = extension_value(&entry.extensions, &["_initiator", "initiator"])
+        .or_else(|| extension_value(&entry.request.extensions, &["_initiator", "initiator"]))
+        .or_else(|| extension_value(&entry.response.extensions, &["_initiator", "initiator"]));
+
+    let Some(Value::Object(map)) = value else {
+        return InitiatorInfo::default();
+    };
+
+    let mut info = InitiatorInfo::default();
+    info.initiator_type = value_string(map.get("type"));
+    info.parent_request_id = value_string_by_keys(
+        map,
+        &["requestId", "request_id", "parentRequestId", "parent_request_id"],
+    );
+    info.initiator_url = value_string_by_keys(map, &["url", "initiatorUrl", "sourceURL"]);
+    info.initiator_line = value_i64_by_keys(map, &["lineNumber", "line"]);
+    info.initiator_column = value_i64_by_keys(map, &["columnNumber", "column"]);
+
+    if info.initiator_url.is_none()
+        || info.initiator_line.is_none()
+        || info.initiator_column.is_none()
+    {
+        if let Some(stack) = map.get("stack") {
+            if let Some(frame) = stack_frame_from_value(stack) {
+                if info.initiator_url.is_none() {
+                    info.initiator_url = Some(frame.url);
+                }
+                if info.initiator_line.is_none() {
+                    info.initiator_line = frame.line;
+                }
+                if info.initiator_column.is_none() {
+                    info.initiator_column = frame.column;
+                }
+            }
+        }
+    }
+
+    info
+}
+
+fn extract_redirect_url(entry: &Entry) -> Option<String> {
+    if !(300..400).contains(&entry.response.status) {
+        return None;
+    }
+    let direct = entry
+        .response
+        .redirect_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    direct.or_else(|| header_value(&entry.response.headers, "location"))
+}
+
+fn extension_value<'a>(extensions: &'a Extensions, keys: &[&str]) -> Option<&'a Value> {
+    for key in keys {
+        if let Some(value) = extensions.get(*key) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn extension_string(extensions: &Extensions, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(value) = extensions.get(*key) {
+            if let Some(s) = value.as_str() {
+                let trimmed = s.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+            if let Some(n) = value.as_i64() {
+                return Some(n.to_string());
+            }
+            if let Some(n) = value.as_u64() {
+                return Some(n.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn value_string(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn value_string_by_keys(
+    map: &serde_json::Map<String, Value>,
+    keys: &[&str],
+) -> Option<String> {
+    for key in keys {
+        if let Some(value) = map.get(*key) {
+            if let Some(s) = value.as_str() {
+                let trimmed = s.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn value_i64_by_keys(map: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<i64> {
+    for key in keys {
+        if let Some(value) = map.get(*key) {
+            if let Some(n) = value.as_i64() {
+                return Some(n);
+            }
+            if let Some(n) = value.as_u64() {
+                return Some(n as i64);
+            }
+            if let Some(n) = value.as_f64() {
+                return Some(n as i64);
+            }
+        }
+    }
+    None
+}
+
+struct StackFrame {
+    url: String,
+    line: Option<i64>,
+    column: Option<i64>,
+}
+
+fn stack_frame_from_value(value: &Value) -> Option<StackFrame> {
+    let obj = value.as_object()?;
+    if let Some(frames) = obj.get("callFrames").and_then(|v| v.as_array()) {
+        for frame in frames {
+            let Some(frame_obj) = frame.as_object() else { continue };
+            let Some(url) = value_string(frame_obj.get("url")) else {
+                continue;
+            };
+            let line = value_i64_by_keys(frame_obj, &["lineNumber", "line"]);
+            let column = value_i64_by_keys(frame_obj, &["columnNumber", "column"]);
+            return Some(StackFrame { url, line, column });
+        }
+    }
+    if let Some(parent) = obj.get("parent") {
+        return stack_frame_from_value(parent);
+    }
+    None
+}
+
+fn header_value(headers: &[crate::har::Header], name: &str) -> Option<String> {
+    headers
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case(name))
+        .map(|h| h.value.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 fn parse_started_at_bound(s: &str, is_end: bool) -> Result<(DateTime<Utc>, bool)> {

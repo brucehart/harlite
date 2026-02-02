@@ -17,7 +17,7 @@ use url::Url;
 
 use crate::db::{
     create_import_with_status, create_schema, insert_entry, update_import_count, BlobStats,
-    ImportStats, InsertEntryOptions,
+    EntryRelations, ImportStats, InsertEntryOptions,
 };
 use crate::error::{HarliteError, Result};
 use crate::har::{
@@ -794,7 +794,8 @@ fn import_entries(path: &PathBuf, har: &Har, options: &CdpOptions) -> Result<()>
 
     let tx = conn.unchecked_transaction()?;
     for entry in &har.log.entries {
-        let entry_result = insert_entry(&tx, import_id, entry, &entry_options)?;
+        let entry_result =
+            insert_entry(&tx, import_id, entry, &entry_options, &EntryRelations::default())?;
         if entry_result.inserted {
             stats.entries_imported += 1;
             stats.request.add_assign(entry_result.blob_stats.request);

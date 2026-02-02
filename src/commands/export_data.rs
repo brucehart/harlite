@@ -121,6 +121,13 @@ const ENTRY_COLUMNS: &[&str] = &[
     "is_redirect",
     "server_ip",
     "connection_id",
+    "request_id",
+    "parent_request_id",
+    "initiator_type",
+    "initiator_url",
+    "initiator_line",
+    "initiator_column",
+    "redirect_url",
     "tls_version",
     "tls_cipher_suite",
     "tls_cert_subject",
@@ -214,6 +221,13 @@ fn entry_to_csv_row(entry: &EntryRow) -> Vec<String> {
         opt_i32(entry.is_redirect),
         opt_string(&entry.server_ip),
         opt_string(&entry.connection_id),
+        opt_string(&entry.request_id),
+        opt_string(&entry.parent_request_id),
+        opt_string(&entry.initiator_type),
+        opt_string(&entry.initiator_url),
+        opt_i64(entry.initiator_line),
+        opt_i64(entry.initiator_column),
+        opt_string(&entry.redirect_url),
         opt_string(&entry.tls_version),
         opt_string(&entry.tls_cipher_suite),
         opt_string(&entry.tls_cert_subject),
@@ -289,6 +303,13 @@ struct EntryExportRecord {
     is_redirect: Option<i32>,
     server_ip: Option<String>,
     connection_id: Option<String>,
+    request_id: Option<String>,
+    parent_request_id: Option<String>,
+    initiator_type: Option<String>,
+    initiator_url: Option<String>,
+    initiator_line: Option<i64>,
+    initiator_column: Option<i64>,
+    redirect_url: Option<String>,
     tls_version: Option<String>,
     tls_cipher_suite: Option<String>,
     tls_cert_subject: Option<String>,
@@ -339,6 +360,13 @@ impl From<&EntryRow> for EntryExportRecord {
             is_redirect: entry.is_redirect,
             server_ip: entry.server_ip.clone(),
             connection_id: entry.connection_id.clone(),
+            request_id: entry.request_id.clone(),
+            parent_request_id: entry.parent_request_id.clone(),
+            initiator_type: entry.initiator_type.clone(),
+            initiator_url: entry.initiator_url.clone(),
+            initiator_line: entry.initiator_line,
+            initiator_column: entry.initiator_column,
+            redirect_url: entry.redirect_url.clone(),
             tls_version: entry.tls_version.clone(),
             tls_cipher_suite: entry.tls_cipher_suite.clone(),
             tls_cert_subject: entry.tls_cert_subject.clone(),
@@ -482,6 +510,32 @@ fn write_parquet(path: &Path, entries: &[EntryRow]) -> Result<()> {
                 .with_repetition(Repetition::OPTIONAL)
                 .build()?,
             Type::primitive_type_builder("connection_id", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(parquet::basic::LogicalType::String))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()?,
+            Type::primitive_type_builder("request_id", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(parquet::basic::LogicalType::String))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()?,
+            Type::primitive_type_builder("parent_request_id", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(parquet::basic::LogicalType::String))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()?,
+            Type::primitive_type_builder("initiator_type", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(parquet::basic::LogicalType::String))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()?,
+            Type::primitive_type_builder("initiator_url", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(parquet::basic::LogicalType::String))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()?,
+            Type::primitive_type_builder("initiator_line", PhysicalType::INT64)
+                .with_repetition(Repetition::OPTIONAL)
+                .build()?,
+            Type::primitive_type_builder("initiator_column", PhysicalType::INT64)
+                .with_repetition(Repetition::OPTIONAL)
+                .build()?,
+            Type::primitive_type_builder("redirect_url", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
                 .build()?,
@@ -664,6 +718,13 @@ fn write_parquet(path: &Path, entries: &[EntryRow]) -> Result<()> {
     write_i32_col(entries.iter().map(|e| e.is_redirect).collect())?;
     write_string_col(entries.iter().map(|e| e.server_ip.clone()).collect())?;
     write_string_col(entries.iter().map(|e| e.connection_id.clone()).collect())?;
+    write_string_col(entries.iter().map(|e| e.request_id.clone()).collect())?;
+    write_string_col(entries.iter().map(|e| e.parent_request_id.clone()).collect())?;
+    write_string_col(entries.iter().map(|e| e.initiator_type.clone()).collect())?;
+    write_string_col(entries.iter().map(|e| e.initiator_url.clone()).collect())?;
+    write_i64_col(entries.iter().map(|e| e.initiator_line).collect())?;
+    write_i64_col(entries.iter().map(|e| e.initiator_column).collect())?;
+    write_string_col(entries.iter().map(|e| e.redirect_url.clone()).collect())?;
     write_string_col(entries.iter().map(|e| e.tls_version.clone()).collect())?;
     write_string_col(entries.iter().map(|e| e.tls_cipher_suite.clone()).collect())?;
     write_string_col(entries.iter().map(|e| e.tls_cert_subject.clone()).collect())?;

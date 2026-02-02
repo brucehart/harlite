@@ -78,6 +78,52 @@ pub fn run_info(database: PathBuf, options: &InfoOptions) -> Result<()> {
         println!("  {} ({})", host, count);
     }
 
+    if table_has_column(&conn, "entries", "request_id")? {
+        let request_id_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM entries WHERE request_id IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        let parent_request_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM entries WHERE parent_request_id IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        let redirect_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM entries WHERE redirect_url IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        let parent_roots: i64 = conn.query_row(
+            "SELECT COUNT(DISTINCT parent_request_id) FROM entries WHERE parent_request_id IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )?;
+
+        println!("\nRequest chains:");
+        println!("  Requests with request_id: {}", request_id_count);
+        println!("  Requests with parent_request_id: {}", parent_request_count);
+        println!("  Parent request ids: {}", parent_roots);
+        println!("  Redirects (redirect_url set): {}", redirect_count);
+
+        let mut stmt = conn.prepare(
+            "SELECT initiator_type, COUNT(*) as cnt \
+             FROM entries WHERE initiator_type IS NOT NULL \
+             GROUP BY initiator_type ORDER BY cnt DESC LIMIT 5",
+        )?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?;
+        let mut initiators = Vec::new();
+        for row in rows {
+            initiators.push(row?);
+        }
+        if !initiators.is_empty() {
+            println!("  Top initiators:");
+            for (initiator, count) in initiators {
+                println!("    {} ({})", initiator, count);
+            }
+        }
+    }
+
     if let Some(days) = options.cert_expiring_days {
         // Check whether the TLS certificate columns exist before querying them.
         let mut has_tls_cert_expiry = false;
@@ -183,4 +229,13 @@ pub fn run_info(database: PathBuf, options: &InfoOptions) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let names: Vec<String> = stmt
+        .query_map([], |row| row.get(1))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(names.iter().any(|name| name == column))
 }
