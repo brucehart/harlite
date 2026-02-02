@@ -69,6 +69,11 @@ CREATE TABLE IF NOT EXISTS entries (
     is_redirect INTEGER,
     server_ip TEXT,
     connection_id TEXT,
+    tls_version TEXT,
+    tls_cipher_suite TEXT,
+    tls_cert_subject TEXT,
+    tls_cert_issuer TEXT,
+    tls_cert_expiry TEXT,
     entry_hash TEXT,
 
     -- HAR extensions (JSON)

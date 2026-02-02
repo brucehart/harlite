@@ -1,6 +1,8 @@
 use rusqlite::{params, Connection};
+use serde_json::{Map, Value};
 use url::Url;
 
+use crate::commands::util::{parse_timestamp, parse_timestamp_number};
 use crate::error::Result;
 use crate::har::{Cookie, Entry, Header, Page};
 use std::fs;
@@ -75,6 +77,15 @@ pub struct EntryBlobStats {
 pub struct EntryInsertResult {
     pub inserted: bool,
     pub blob_stats: EntryBlobStats,
+}
+
+#[derive(Default, Clone, Debug)]
+struct TlsDetails {
+    version: Option<String>,
+    cipher_suite: Option<String>,
+    cert_subject: Option<String>,
+    cert_issuer: Option<String>,
+    cert_expiry: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -486,6 +497,173 @@ fn header_value(headers: &[Header], name: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+fn tls_details_is_empty(details: &TlsDetails) -> bool {
+    details.version.is_none()
+        && details.cipher_suite.is_none()
+        && details.cert_subject.is_none()
+        && details.cert_issuer.is_none()
+        && details.cert_expiry.is_none()
+}
+
+fn merge_tls_details(target: &mut TlsDetails, incoming: TlsDetails) {
+    if target.version.is_none() {
+        target.version = incoming.version;
+    }
+    if target.cipher_suite.is_none() {
+        target.cipher_suite = incoming.cipher_suite;
+    }
+    if target.cert_subject.is_none() {
+        target.cert_subject = incoming.cert_subject;
+    }
+    if target.cert_issuer.is_none() {
+        target.cert_issuer = incoming.cert_issuer;
+    }
+    if target.cert_expiry.is_none() {
+        target.cert_expiry = incoming.cert_expiry;
+    }
+}
+
+fn get_string_value(map: &Map<String, Value>, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(value) = map.get(*key) {
+            if let Some(s) = value.as_str() {
+                let trimmed = s.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn get_value(map: &Map<String, Value>, keys: &[&str]) -> Option<Value> {
+    for key in keys {
+        if let Some(value) = map.get(*key) {
+            return Some(value.clone());
+        }
+    }
+    None
+}
+
+fn parse_expiry_number(value: i64) -> Option<String> {
+    parse_timestamp_number(value).map(|dt| dt.to_rfc3339())
+}
+
+fn parse_expiry_str(value: &str) -> Option<String> {
+    parse_timestamp(value).map(|dt| dt.to_rfc3339())
+}
+
+fn parse_expiry_value(value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) => parse_expiry_str(s),
+        Value::Number(n) => n
+            .as_i64()
+            .or_else(|| n.as_u64().map(|v| v as i64))
+            .and_then(parse_expiry_number),
+        _ => None,
+    }
+}
+
+fn tls_details_from_value(value: &Value) -> Option<TlsDetails> {
+    match value {
+        Value::Object(map) => {
+            let details = tls_details_from_map(map);
+            if tls_details_is_empty(&details) {
+                None
+            } else {
+                Some(details)
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                if let Some(details) = tls_details_from_value(item) {
+                    return Some(details);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn tls_details_from_map(map: &Map<String, Value>) -> TlsDetails {
+    let mut out = TlsDetails::default();
+    out.version = get_string_value(map, &["protocol", "tlsVersion", "version"]);
+    out.cipher_suite = get_string_value(map, &["cipher", "cipherSuite", "cipherSuiteName"]);
+    out.cert_subject = get_string_value(
+        map,
+        &[
+            "subjectName",
+            "subject",
+            "certificateSubject",
+            "certSubject",
+        ],
+    );
+    out.cert_issuer = get_string_value(
+        map,
+        &["issuer", "issuerName", "certificateIssuer", "certIssuer"],
+    );
+    if let Some(value) = get_value(
+        map,
+        &["validTo", "expiry", "expires", "notAfter", "expiresAt"],
+    ) {
+        out.cert_expiry = parse_expiry_value(&value);
+    }
+
+    if out.cert_subject.is_none() || out.cert_issuer.is_none() || out.cert_expiry.is_none() {
+        if let Some(value) = get_value(map, &["certificate", "cert", "certificates"]) {
+            if let Some(details) = tls_details_from_value(&value) {
+                merge_tls_details(&mut out, details);
+            }
+        }
+    }
+
+    out
+}
+
+fn tls_details_from_extensions(extensions: &Map<String, Value>) -> Option<TlsDetails> {
+    let mut out = tls_details_from_map(extensions);
+    let candidates = [
+        "securityDetails",
+        "_securityDetails",
+        "security",
+        "_security",
+        "tls",
+        "_tls",
+        "tlsDetails",
+    ];
+
+    for key in candidates {
+        if let Some(value) = extensions.get(key) {
+            if let Some(details) = tls_details_from_value(value) {
+                merge_tls_details(&mut out, details);
+            }
+        }
+    }
+
+    if tls_details_is_empty(&out) {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn extract_tls_details(entry: &Entry) -> TlsDetails {
+    let mut out = TlsDetails::default();
+    for extensions in [
+        &entry.extensions,
+        &entry.response.extensions,
+        &entry.request.extensions,
+        &entry.response.content.extensions,
+    ] {
+        if let Some(details) = tls_details_from_extensions(extensions) {
+            merge_tls_details(&mut out, details);
+        }
+    }
+    out
+}
+
 fn decode_body(content: &crate::har::Content) -> Option<Vec<u8>> {
     let text = content.text.as_ref()?;
 
@@ -705,6 +883,7 @@ pub fn insert_entry_with_hash(
         .post_data
         .as_ref()
         .and_then(|post| extensions_to_json(&post.extensions));
+    let tls_details = extract_tls_details(entry);
 
     let is_redirect = if (300..400).contains(&entry.response.status) {
         1
@@ -812,13 +991,13 @@ pub fn insert_entry_with_hash(
             request_headers, request_cookies, request_body_hash, request_body_size,
             status, status_text, response_headers, response_cookies,
             response_body_hash, response_body_size, response_body_hash_raw, response_body_size_raw, response_mime_type,
-            is_redirect, server_ip, connection_id, entry_hash,
+            is_redirect, server_ip, connection_id, tls_version, tls_cipher_suite, tls_cert_subject, tls_cert_issuer, tls_cert_expiry, entry_hash,
             entry_extensions, request_extensions, response_extensions, content_extensions, timings_extensions, post_data_extensions
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
             ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
-            ?31, ?32, ?33
+            ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38
         )"
     } else {
         "INSERT INTO entries (
@@ -827,13 +1006,13 @@ pub fn insert_entry_with_hash(
             request_headers, request_cookies, request_body_hash, request_body_size,
             status, status_text, response_headers, response_cookies,
             response_body_hash, response_body_size, response_body_hash_raw, response_body_size_raw, response_mime_type,
-            is_redirect, server_ip, connection_id, entry_hash,
+            is_redirect, server_ip, connection_id, tls_version, tls_cipher_suite, tls_cert_subject, tls_cert_issuer, tls_cert_expiry, entry_hash,
             entry_extensions, request_extensions, response_extensions, content_extensions, timings_extensions, post_data_extensions
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
             ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
-            ?31, ?32, ?33
+            ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38
         )"
     };
 
@@ -866,6 +1045,11 @@ pub fn insert_entry_with_hash(
             is_redirect,
             entry.server_ip_address,
             entry.connection,
+            tls_details.version,
+            tls_details.cipher_suite,
+            tls_details.cert_subject,
+            tls_details.cert_issuer,
+            tls_details.cert_expiry,
             entry_hash,
             entry_extensions_json,
             request_extensions_json,
@@ -1211,5 +1395,73 @@ mod tests {
             .query_row("SELECT request_body_hash FROM entries", [], |r| r.get(0))
             .expect("request body hash");
         assert!(request_hash.is_none());
+    }
+
+    #[test]
+    fn inserts_tls_metadata_from_extensions() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        create_schema(&conn).expect("schema created");
+
+        let json = r#"
+        {
+          "log": {
+            "entries": [
+              {
+                "startedDateTime": "2024-01-15T10:30:00.000Z",
+                "time": 12.0,
+                "_securityDetails": {
+                  "protocol": "TLS 1.3",
+                  "cipher": "TLS_AES_128_GCM_SHA256",
+                  "subjectName": "example.com",
+                  "issuer": "Example CA",
+                  "validTo": 1704067200
+                },
+                "request": {
+                  "method": "GET",
+                  "url": "https://example.com/",
+                  "httpVersion": "HTTP/2",
+                  "headers": [],
+                  "cookies": []
+                },
+                "response": {
+                  "status": 200,
+                  "statusText": "OK",
+                  "httpVersion": "HTTP/2",
+                  "headers": [],
+                  "cookies": [],
+                  "content": { "size": 0 }
+                }
+              }
+            ]
+          }
+        }
+        "#;
+
+        let har: Har = serde_json::from_str(json).expect("parse har");
+        let entry = &har.log.entries[0];
+
+        let import_id = 1i64;
+        conn.execute(
+            "INSERT INTO imports (id, source_file, imported_at, entry_count) VALUES (?1, ?2, ?3, ?4)",
+            params![import_id, "test.har", "2024-01-01T00:00:00Z", 0],
+        )
+        .expect("insert import");
+
+        insert_entry(&conn, import_id, entry, &InsertEntryOptions::default())
+            .expect("insert entry");
+
+        let row: (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>) =
+            conn.query_row(
+                "SELECT tls_version, tls_cipher_suite, tls_cert_subject, tls_cert_issuer, tls_cert_expiry FROM entries",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .expect("tls row");
+
+        assert_eq!(row.0.as_deref(), Some("TLS 1.3"));
+        assert_eq!(row.1.as_deref(), Some("TLS_AES_128_GCM_SHA256"));
+        assert_eq!(row.2.as_deref(), Some("example.com"));
+        assert_eq!(row.3.as_deref(), Some("Example CA"));
+        assert_eq!(row.4.as_deref(), Some("2024-01-01T00:00:00+00:00"));
     }
 }

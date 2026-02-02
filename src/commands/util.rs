@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use chrono::{DateTime, NaiveDate, TimeZone, Utc};
+
 use crate::error::{HarliteError, Result};
 
 pub fn resolve_database(database: Option<PathBuf>) -> Result<PathBuf> {
@@ -9,6 +11,48 @@ pub fn resolve_database(database: Option<PathBuf>) -> Result<PathBuf> {
     }
 
     resolve_database_in_dir(Path::new("."))
+}
+
+/// Parse a timestamp from various formats into a `DateTime<Utc>`.
+///
+/// Supports:
+/// - RFC3339 format (e.g., "2024-01-15T10:30:00Z")
+/// - Date format (e.g., "2024-01-15")
+/// - Unix timestamp in seconds (e.g., 1705315800)
+/// - Unix timestamp in milliseconds (e.g., 1705315800000)
+///
+/// Returns `None` if the input cannot be parsed.
+pub fn parse_timestamp(value: &str) -> Option<DateTime<Utc>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(trimmed) {
+        return Some(parsed.with_timezone(&Utc));
+    }
+    if let Ok(date) = NaiveDate::parse_from_str(trimmed, "%Y-%m-%d") {
+        return Some(date.and_hms_opt(0, 0, 0)?.and_utc());
+    }
+    if trimmed.chars().all(|c| c.is_ascii_digit()) {
+        if let Ok(num) = trimmed.parse::<i64>() {
+            return parse_timestamp_number(num);
+        }
+    }
+    None
+}
+
+/// Parse a Unix timestamp (seconds or milliseconds) into a `DateTime<Utc>`.
+pub fn parse_timestamp_number(value: i64) -> Option<DateTime<Utc>> {
+    let dt = if value >= 1_000_000_000_000 {
+        Utc.timestamp_millis_opt(value).single()?
+    } else {
+        Utc.timestamp_opt(value, 0).single()?
+    };
+    Some(dt)
+}
+
+pub fn parse_cert_expiry(value: &str) -> Option<DateTime<Utc>> {
+    parse_timestamp(value)
 }
 
 fn resolve_database_in_dir(dir: &Path) -> Result<PathBuf> {

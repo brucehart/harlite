@@ -11,17 +11,17 @@ mod size;
 
 use crate::config::{load_config, render_config, ResolvedConfig};
 use crate::db::ExtractBodiesKind;
-use commands::StatsOptions;
 use commands::{
     run_cdp, run_diff, run_export, run_fts_rebuild, run_import, run_imports, run_info, run_merge,
-    run_prune, run_query, run_redact, run_replay, run_repl, run_schema, run_search, run_stats,
-    run_waterfall, run_watch,
+    run_prune, run_query, run_redact, run_repl, run_replay, run_schema, run_search, run_stats,
+    run_watch, run_waterfall,
 };
 use commands::{
     CdpOptions, DedupStrategy, DiffOptions, ExportOptions, ImportOptions, MergeOptions,
-    NameMatchMode, OutputFormat, QueryOptions, RedactOptions, ReplayOptions, ReplOptions,
+    NameMatchMode, OutputFormat, QueryOptions, RedactOptions, ReplOptions, ReplayOptions,
     WatchOptions, WaterfallFormat, WaterfallGroupBy, WaterfallOptions,
 };
+use commands::{InfoOptions, StatsOptions};
 
 #[derive(Parser)]
 #[command(name = "harlite")]
@@ -284,6 +284,10 @@ enum Commands {
     Info {
         /// Database file to inspect
         database: PathBuf,
+
+        /// Report certificates expiring within N days
+        #[arg(long)]
+        cert_expiring_days: Option<u64>,
     },
 
     /// List import metadata for a database
@@ -310,6 +314,10 @@ enum Commands {
         /// Output as JSON
         #[arg(long, action = clap::ArgAction::SetTrue)]
         json: Option<bool>,
+
+        /// Report certificates expiring within N days
+        #[arg(long)]
+        cert_expiring_days: Option<u64>,
     },
 
     /// Export a SQLite database back to HAR format
@@ -877,7 +885,13 @@ fn main() {
 
             Commands::Schema { database } => run_schema(database),
 
-            Commands::Info { database } => run_info(database),
+            Commands::Info {
+                database,
+                cert_expiring_days,
+            } => {
+                let options = InfoOptions { cert_expiring_days };
+                run_info(database, &options)
+            }
 
             Commands::Imports { database } => run_imports(database),
 
@@ -886,10 +900,15 @@ fn main() {
                 import_id,
             } => run_prune(database, import_id),
 
-            Commands::Stats { database, json } => {
+            Commands::Stats {
+                database,
+                json,
+                cert_expiring_days,
+            } => {
                 let defaults = &resolved.stats;
                 let options = StatsOptions {
                     json: json.unwrap_or(defaults.json),
+                    cert_expiring_days: cert_expiring_days.or(defaults.cert_expiring_days),
                 };
                 run_stats(database, &options)
             }

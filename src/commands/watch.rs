@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use rusqlite::Connection;
 
-use crate::commands::{run_import, run_info, run_stats, ImportOptions, StatsOptions};
+use crate::commands::{run_import, run_info, run_stats, ImportOptions, InfoOptions, StatsOptions};
 use crate::db::create_schema;
 use crate::error::{HarliteError, Result};
 
@@ -101,7 +101,11 @@ pub fn run_watch(directory: PathBuf, options: &WatchOptions) -> Result<()> {
     println!(
         "Watching {}{} (Ctrl+C to stop)...",
         directory.display(),
-        if options.recursive { " recursively" } else { "" }
+        if options.recursive {
+            " recursively"
+        } else {
+            ""
+        }
     );
 
     let debounce = Duration::from_millis(options.debounce_ms.max(50));
@@ -167,9 +171,7 @@ pub fn run_watch(directory: PathBuf, options: &WatchOptions) -> Result<()> {
             if stop.load(Ordering::SeqCst) {
                 break;
             }
-            let canonical = path
-                .canonicalize()
-                .unwrap_or_else(|_| path.to_path_buf());
+            let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
             let key = canonical.to_string_lossy().to_string();
             let fingerprint = match file_fingerprint(&canonical) {
                 Ok(fp) => fp,
@@ -199,13 +201,17 @@ pub fn run_watch(directory: PathBuf, options: &WatchOptions) -> Result<()> {
             imported_history.insert(key, SystemTime::now());
 
             if options.post_info {
-                if let Err(err) = run_info(output_db.clone()) {
+                let info_options = InfoOptions {
+                    cert_expiring_days: None,
+                };
+                if let Err(err) = run_info(output_db.clone(), &info_options) {
                     eprintln!("Post-import info failed: {}", err);
                 }
             }
             if options.post_stats {
                 let stats_options = StatsOptions {
                     json: options.post_stats_json,
+                    cert_expiring_days: None,
                 };
                 if let Err(err) = run_stats(output_db.clone(), &stats_options) {
                     eprintln!("Post-import stats failed: {}", err);
@@ -337,9 +343,7 @@ fn import_existing_files(
             if !is_har_file(&path) {
                 continue;
             }
-            let canonical = path
-                .canonicalize()
-                .unwrap_or_else(|_| path.to_path_buf());
+            let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
             let key = canonical.to_string_lossy().to_string();
             let fingerprint = match file_fingerprint(&canonical) {
                 Ok(fp) => fp,
@@ -353,13 +357,17 @@ fn import_existing_files(
             run_import(&[canonical.clone()], import_options)?;
             imported_files.insert(key, fingerprint);
             if options.post_info {
-                if let Err(err) = run_info(output_db.to_path_buf()) {
+                let info_options = InfoOptions {
+                    cert_expiring_days: None,
+                };
+                if let Err(err) = run_info(output_db.to_path_buf(), &info_options) {
                     eprintln!("Post-import info failed: {}", err);
                 }
             }
             if options.post_stats {
                 let stats_options = StatsOptions {
                     json: options.post_stats_json,
+                    cert_expiring_days: None,
                 };
                 if let Err(err) = run_stats(output_db.to_path_buf(), &stats_options) {
                     eprintln!("Post-import stats failed: {}", err);

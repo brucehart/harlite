@@ -184,6 +184,7 @@ pub struct FtsRebuildConfig {
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct StatsConfig {
     pub json: Option<bool>,
+    pub cert_expiring_days: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -350,6 +351,7 @@ pub struct ResolvedFtsRebuildConfig {
 #[derive(Clone, Debug, Serialize)]
 pub struct ResolvedStatsConfig {
     pub json: bool,
+    pub cert_expiring_days: Option<u64>,
 }
 
 impl Default for ResolvedConfig {
@@ -547,7 +549,10 @@ impl Default for ResolvedFtsRebuildConfig {
 
 impl Default for ResolvedStatsConfig {
     fn default() -> Self {
-        Self { json: false }
+        Self {
+            json: false,
+            cert_expiring_days: None,
+        }
     }
 }
 
@@ -945,6 +950,9 @@ impl ResolvedStatsConfig {
         if let Some(value) = cfg.json {
             self.json = value;
         }
+        if let Some(value) = cfg.cert_expiring_days {
+            self.cert_expiring_days = Some(value);
+        }
     }
 }
 
@@ -1133,6 +1141,7 @@ impl FtsRebuildConfig {
 impl StatsConfig {
     fn merge(&mut self, other: StatsConfig) {
         merge_opt(&mut self.json, other.json);
+        merge_opt(&mut self.cert_expiring_days, other.cert_expiring_days);
     }
 }
 

@@ -74,6 +74,11 @@ CREATE TABLE IF NOT EXISTS entries (
     is_redirect INTEGER,
     server_ip TEXT,
     connection_id TEXT,
+    tls_version TEXT,
+    tls_cipher_suite TEXT,
+    tls_cert_subject TEXT,
+    tls_cert_issuer TEXT,
+    tls_cert_expiry TEXT,
     entry_hash TEXT,
 
     -- HAR extensions (JSON)
@@ -174,6 +179,11 @@ CREATE TABLE IF NOT EXISTS entries (
     is_redirect INTEGER,
     server_ip TEXT,
     connection_id TEXT,
+    tls_version TEXT,
+    tls_cipher_suite TEXT,
+    tls_cert_subject TEXT,
+    tls_cert_issuer TEXT,
+    tls_cert_expiry TEXT,
     entry_hash TEXT,
 
     -- HAR extensions (JSON)
@@ -286,6 +296,21 @@ pub fn ensure_schema_upgrades(conn: &Connection) -> Result<()> {
     }
     if !table_has_column(conn, "entries", "entry_hash")? {
         conn.execute("ALTER TABLE entries ADD COLUMN entry_hash TEXT", [])?;
+    }
+    if !table_has_column(conn, "entries", "tls_version")? {
+        conn.execute("ALTER TABLE entries ADD COLUMN tls_version TEXT", [])?;
+    }
+    if !table_has_column(conn, "entries", "tls_cipher_suite")? {
+        conn.execute("ALTER TABLE entries ADD COLUMN tls_cipher_suite TEXT", [])?;
+    }
+    if !table_has_column(conn, "entries", "tls_cert_subject")? {
+        conn.execute("ALTER TABLE entries ADD COLUMN tls_cert_subject TEXT", [])?;
+    }
+    if !table_has_column(conn, "entries", "tls_cert_issuer")? {
+        conn.execute("ALTER TABLE entries ADD COLUMN tls_cert_issuer TEXT", [])?;
+    }
+    if !table_has_column(conn, "entries", "tls_cert_expiry")? {
+        conn.execute("ALTER TABLE entries ADD COLUMN tls_cert_expiry TEXT", [])?;
     }
 
     // Ensure FTS table exists for older databases created before the feature.
