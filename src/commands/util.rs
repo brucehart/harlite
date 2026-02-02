@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use chrono::{DateTime, NaiveDate, TimeZone, Utc};
+
 use crate::error::{HarliteError, Result};
 
 pub fn resolve_database(database: Option<PathBuf>) -> Result<PathBuf> {
@@ -9,6 +11,30 @@ pub fn resolve_database(database: Option<PathBuf>) -> Result<PathBuf> {
     }
 
     resolve_database_in_dir(Path::new("."))
+}
+
+pub fn parse_cert_expiry(value: &str) -> Option<DateTime<Utc>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(trimmed) {
+        return Some(parsed.with_timezone(&Utc));
+    }
+    if let Ok(date) = NaiveDate::parse_from_str(trimmed, "%Y-%m-%d") {
+        return Some(date.and_hms_opt(0, 0, 0)?.and_utc());
+    }
+    if trimmed.chars().all(|c| c.is_ascii_digit()) {
+        if let Ok(num) = trimmed.parse::<i64>() {
+            let dt = if num >= 1_000_000_000_000 {
+                Utc.timestamp_millis_opt(num).single()?
+            } else {
+                Utc.timestamp_opt(num, 0).single()?
+            };
+            return Some(dt);
+        }
+    }
+    None
 }
 
 fn resolve_database_in_dir(dir: &Path) -> Result<PathBuf> {

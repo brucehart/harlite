@@ -2,10 +2,16 @@ use std::path::PathBuf;
 
 use rusqlite::Connection;
 
+use crate::commands::util::parse_cert_expiry;
 use crate::error::Result;
+use chrono::{Duration, Utc};
+
+pub struct InfoOptions {
+    pub cert_expiring_days: Option<u64>,
+}
 
 /// Show summary information for a harlite database.
-pub fn run_info(database: PathBuf) -> Result<()> {
+pub fn run_info(database: PathBuf, options: &InfoOptions) -> Result<()> {
     let conn = Connection::open(&database)?;
 
     let import_count: i64 = conn.query_row("SELECT COUNT(*) FROM imports", [], |row| row.get(0))?;
@@ -70,6 +76,76 @@ pub fn run_info(database: PathBuf) -> Result<()> {
 
     for (host, count) in hosts {
         println!("  {} ({})", host, count);
+    }
+
+    if let Some(days) = options.cert_expiring_days {
+        let now = Utc::now();
+        let cutoff = now + Duration::days(days as i64);
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT host, tls_cert_subject, tls_cert_issuer, tls_cert_expiry, tls_version, tls_cipher_suite \
+             FROM entries WHERE tls_cert_expiry IS NOT NULL",
+        )?;
+        let mut expiring = Vec::new();
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+            ))
+        })?;
+
+        for row in rows {
+            let (host, subject, issuer, expiry_raw, tls_version, tls_cipher) = row?;
+            if let Some(expiry) = parse_cert_expiry(&expiry_raw) {
+                if expiry <= cutoff {
+                    expiring.push((
+                        host.unwrap_or_else(|| "<unknown host>".to_string()),
+                        subject,
+                        issuer,
+                        expiry,
+                        tls_version,
+                        tls_cipher,
+                    ));
+                }
+            }
+        }
+
+        expiring.sort_by_key(|entry| entry.3);
+
+        println!("\nCertificates expiring within {} days:", days);
+        if expiring.is_empty() {
+            println!("  (none found)");
+        } else {
+            const MAX_CERT_ROWS: usize = 20;
+            for (idx, (host, subject, issuer, expiry, tls_version, tls_cipher)) in
+                expiring.iter().take(MAX_CERT_ROWS).enumerate()
+            {
+                let status = if *expiry < now { "expired" } else { "expiring" };
+                let subject = subject.as_deref().unwrap_or("<unknown subject>");
+                let issuer = issuer.as_deref().unwrap_or("<unknown issuer>");
+                let version = tls_version.as_deref().unwrap_or("<unknown tls>");
+                let cipher = tls_cipher.as_deref().unwrap_or("<unknown cipher>");
+                println!(
+                    "  {}. {} | {} | {} | {} | {} | {}",
+                    idx + 1,
+                    host,
+                    subject,
+                    issuer,
+                    expiry.to_rfc3339(),
+                    version,
+                    cipher
+                );
+                if status == "expired" {
+                    println!("     status: expired");
+                }
+            }
+            if expiring.len() > MAX_CERT_ROWS {
+                println!("  ... and {} more", expiring.len() - MAX_CERT_ROWS);
+            }
+        }
     }
 
     Ok(())

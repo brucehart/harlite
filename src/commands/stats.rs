@@ -3,11 +3,15 @@ use std::path::PathBuf;
 use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 
+use chrono::{Duration, Utc};
+
+use crate::commands::util::parse_cert_expiry;
 use crate::error::Result;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StatsOptions {
     pub json: bool,
+    pub cert_expiring_days: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -19,6 +23,8 @@ struct StatsOutput {
     unique_hosts: i64,
     blobs: i64,
     blob_bytes: i64,
+    certs_expiring: Option<i64>,
+    certs_expiring_earliest: Option<String>,
 }
 
 /// Show lightweight, script-friendly stats for a harlite database.
@@ -62,6 +68,39 @@ pub fn run_stats(database: PathBuf, options: &StatsOptions) -> Result<()> {
 
     let extract_date = |s: &String| s.split('T').next().unwrap_or(s).to_string();
 
+    let mut certs_expiring = None;
+    let mut certs_expiring_earliest = None;
+
+    if let Some(days) = options.cert_expiring_days {
+        let cutoff = Utc::now() + Duration::days(days as i64);
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT tls_cert_subject, tls_cert_issuer, tls_cert_expiry \
+             FROM entries WHERE tls_cert_expiry IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut count: i64 = 0;
+        let mut earliest = None;
+        for row in rows {
+            let (_subject, _issuer, expiry_raw) = row?;
+            if let Some(expiry) = parse_cert_expiry(&expiry_raw) {
+                if expiry <= cutoff {
+                    count += 1;
+                    if earliest.map_or(true, |dt| expiry < dt) {
+                        earliest = Some(expiry);
+                    }
+                }
+            }
+        }
+        certs_expiring = Some(count);
+        certs_expiring_earliest = earliest.map(|dt| dt.to_rfc3339());
+    }
+
     let out = StatsOutput {
         imports: import_count,
         entries: entry_count,
@@ -70,6 +109,8 @@ pub fn run_stats(database: PathBuf, options: &StatsOptions) -> Result<()> {
         unique_hosts: host_count,
         blobs: blob_stats.0,
         blob_bytes: blob_stats.1,
+        certs_expiring,
+        certs_expiring_earliest,
     };
 
     if options.json {
@@ -84,6 +125,13 @@ pub fn run_stats(database: PathBuf, options: &StatsOptions) -> Result<()> {
     println!("unique_hosts={}", out.unique_hosts);
     println!("blobs={}", out.blobs);
     println!("blob_bytes={}", out.blob_bytes);
+    if let Some(certs_expiring) = out.certs_expiring {
+        println!("certs_expiring={}", certs_expiring);
+        println!(
+            "certs_expiring_earliest={}",
+            out.certs_expiring_earliest.as_deref().unwrap_or("")
+        );
+    }
 
     Ok(())
 }

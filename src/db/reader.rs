@@ -1,5 +1,6 @@
 use rusqlite::types::Value;
 use rusqlite::{params_from_iter, Connection};
+use std::collections::HashSet;
 
 use crate::error::Result;
 
@@ -28,6 +29,16 @@ pub struct EntryRow {
     pub response_mime_type: Option<String>,
     pub server_ip: Option<String>,
     pub connection_id: Option<String>,
+    #[allow(dead_code)]
+    pub tls_version: Option<String>,
+    #[allow(dead_code)]
+    pub tls_cipher_suite: Option<String>,
+    #[allow(dead_code)]
+    pub tls_cert_subject: Option<String>,
+    #[allow(dead_code)]
+    pub tls_cert_issuer: Option<String>,
+    #[allow(dead_code)]
+    pub tls_cert_expiry: Option<String>,
     pub entry_extensions: Option<String>,
     pub request_extensions: Option<String>,
     pub response_extensions: Option<String>,
@@ -35,6 +46,43 @@ pub struct EntryRow {
     pub timings_extensions: Option<String>,
     pub post_data_extensions: Option<String>,
 }
+
+const ENTRY_COLUMNS: &[&str] = &[
+    "import_id",
+    "page_id",
+    "started_at",
+    "time_ms",
+    "method",
+    "url",
+    "host",
+    "http_version",
+    "request_headers",
+    "request_cookies",
+    "request_body_hash",
+    "request_body_size",
+    "status",
+    "status_text",
+    "response_headers",
+    "response_cookies",
+    "response_body_hash",
+    "response_body_size",
+    "response_body_hash_raw",
+    "response_body_size_raw",
+    "response_mime_type",
+    "server_ip",
+    "connection_id",
+    "tls_version",
+    "tls_cipher_suite",
+    "tls_cert_subject",
+    "tls_cert_issuer",
+    "tls_cert_expiry",
+    "entry_extensions",
+    "request_extensions",
+    "response_extensions",
+    "content_extensions",
+    "timings_extensions",
+    "post_data_extensions",
+];
 
 #[derive(Debug, Default, Clone)]
 pub struct EntryQuery {
@@ -179,40 +227,14 @@ pub fn load_entries(conn: &Connection, query: &EntryQuery) -> Result<Vec<EntryRo
         params.push(Value::Integer(max));
     }
 
-    let mut sql = r#"
-        SELECT
-            import_id,
-            page_id,
-            started_at,
-            time_ms,
-            method,
-            url,
-            host,
-            http_version,
-            request_headers,
-            request_cookies,
-            request_body_hash,
-            request_body_size,
-            status,
-            status_text,
-            response_headers,
-            response_cookies,
-            response_body_hash,
-            response_body_size,
-            response_body_hash_raw,
-            response_body_size_raw,
-            response_mime_type,
-            server_ip,
-            connection_id,
-            entry_extensions,
-            request_extensions,
-            response_extensions,
-            content_extensions,
-            timings_extensions,
-            post_data_extensions
-        FROM entries
-    "#
-    .to_string();
+    let columns = table_columns(conn, "entries")?;
+    let select_cols = ENTRY_COLUMNS
+        .iter()
+        .map(|col| select_col(&columns, col))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let mut sql = format!("SELECT {select_cols} FROM entries");
 
     if !clauses.is_empty() {
         sql.push_str(" WHERE ");
@@ -246,16 +268,38 @@ pub fn load_entries(conn: &Connection, query: &EntryQuery) -> Result<Vec<EntryRo
             response_mime_type: row.get(20)?,
             server_ip: row.get(21)?,
             connection_id: row.get(22)?,
-            entry_extensions: row.get(23)?,
-            request_extensions: row.get(24)?,
-            response_extensions: row.get(25)?,
-            content_extensions: row.get(26)?,
-            timings_extensions: row.get(27)?,
-            post_data_extensions: row.get(28)?,
+            tls_version: row.get(23)?,
+            tls_cipher_suite: row.get(24)?,
+            tls_cert_subject: row.get(25)?,
+            tls_cert_issuer: row.get(26)?,
+            tls_cert_expiry: row.get(27)?,
+            entry_extensions: row.get(28)?,
+            request_extensions: row.get(29)?,
+            response_extensions: row.get(30)?,
+            content_extensions: row.get(31)?,
+            timings_extensions: row.get(32)?,
+            post_data_extensions: row.get(33)?,
         })
     })?;
 
     Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+fn table_columns(conn: &Connection, table: &str) -> Result<HashSet<String>> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let cols: Vec<String> = stmt
+        .query_map([], |row| row.get(1))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(cols.into_iter().collect())
+}
+
+fn select_col(columns: &HashSet<String>, name: &str) -> String {
+    if columns.contains(name) {
+        name.to_string()
+    } else {
+        format!("NULL as {}", name)
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -86,6 +86,11 @@ struct EntryRow {
     is_redirect: Option<i64>,
     server_ip: Option<String>,
     connection_id: Option<String>,
+    tls_version: Option<String>,
+    tls_cipher_suite: Option<String>,
+    tls_cert_subject: Option<String>,
+    tls_cert_issuer: Option<String>,
+    tls_cert_expiry: Option<String>,
     entry_hash: Option<String>,
     entry_extensions: Option<String>,
     request_extensions: Option<String>,
@@ -156,6 +161,11 @@ const ENTRY_COLUMNS: &[&str] = &[
     "is_redirect",
     "server_ip",
     "connection_id",
+    "tls_version",
+    "tls_cipher_suite",
+    "tls_cert_subject",
+    "tls_cert_issuer",
+    "tls_cert_expiry",
     "entry_hash",
     "entry_extensions",
     "request_extensions",
@@ -294,13 +304,18 @@ pub fn run_merge(databases: Vec<PathBuf>, options: &MergeOptions) -> Result<()> 
                 is_redirect: row.get(23)?,
                 server_ip: row.get(24)?,
                 connection_id: row.get(25)?,
-                entry_hash: row.get(26)?,
-                entry_extensions: row.get(27)?,
-                request_extensions: row.get(28)?,
-                response_extensions: row.get(29)?,
-                content_extensions: row.get(30)?,
-                timings_extensions: row.get(31)?,
-                post_data_extensions: row.get(32)?,
+                tls_version: row.get(26)?,
+                tls_cipher_suite: row.get(27)?,
+                tls_cert_subject: row.get(28)?,
+                tls_cert_issuer: row.get(29)?,
+                tls_cert_expiry: row.get(30)?,
+                entry_hash: row.get(31)?,
+                entry_extensions: row.get(32)?,
+                request_extensions: row.get(33)?,
+                response_extensions: row.get(34)?,
+                content_extensions: row.get(35)?,
+                timings_extensions: row.get(36)?,
+                post_data_extensions: row.get(37)?,
             })
         })?;
 
@@ -525,13 +540,18 @@ fn load_entry_keys_for_import(
             is_redirect: row.get(23)?,
             server_ip: row.get(24)?,
             connection_id: row.get(25)?,
-            entry_hash: row.get(26)?,
-            entry_extensions: row.get(27)?,
-            request_extensions: row.get(28)?,
-            response_extensions: row.get(29)?,
-            content_extensions: row.get(30)?,
-            timings_extensions: row.get(31)?,
-            post_data_extensions: row.get(32)?,
+            tls_version: row.get(26)?,
+            tls_cipher_suite: row.get(27)?,
+            tls_cert_subject: row.get(28)?,
+            tls_cert_issuer: row.get(29)?,
+            tls_cert_expiry: row.get(30)?,
+            entry_hash: row.get(31)?,
+            entry_extensions: row.get(32)?,
+            request_extensions: row.get(33)?,
+            response_extensions: row.get(34)?,
+            content_extensions: row.get(35)?,
+            timings_extensions: row.get(36)?,
+            post_data_extensions: row.get(37)?,
         })
     })?;
 
@@ -570,6 +590,11 @@ fn entry_key(entry: &EntryRow, strategy: DedupStrategy) -> EntryKey {
     encode_opt_i64(&mut buf, entry.is_redirect);
     encode_opt_string(&mut buf, entry.server_ip.as_deref());
     encode_opt_string(&mut buf, entry.connection_id.as_deref());
+    encode_opt_string(&mut buf, entry.tls_version.as_deref());
+    encode_opt_string(&mut buf, entry.tls_cipher_suite.as_deref());
+    encode_opt_string(&mut buf, entry.tls_cert_subject.as_deref());
+    encode_opt_string(&mut buf, entry.tls_cert_issuer.as_deref());
+    encode_opt_string(&mut buf, entry.tls_cert_expiry.as_deref());
     // entry_hash is derived from the entry contents; omit from the merge dedup key.
     encode_opt_string(&mut buf, entry.entry_extensions.as_deref());
     encode_opt_string(&mut buf, entry.request_extensions.as_deref());
@@ -624,13 +649,13 @@ fn insert_entry(conn: &Connection, import_id: i64, entry: &EntryRow) -> Result<(
             request_headers, request_cookies, request_body_hash, request_body_size,
             status, status_text, response_headers, response_cookies,
             response_body_hash, response_body_size, response_body_hash_raw, response_body_size_raw, response_mime_type,
-            is_redirect, server_ip, connection_id, entry_hash,
+            is_redirect, server_ip, connection_id, tls_version, tls_cipher_suite, tls_cert_subject, tls_cert_issuer, tls_cert_expiry, entry_hash,
             entry_extensions, request_extensions, response_extensions, content_extensions, timings_extensions, post_data_extensions
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
             ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
-            ?31, ?32, ?33
+            ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38
         )",
         params![
             import_id,
@@ -659,6 +684,11 @@ fn insert_entry(conn: &Connection, import_id: i64, entry: &EntryRow) -> Result<(
             entry.is_redirect,
             entry.server_ip.as_deref(),
             entry.connection_id.as_deref(),
+            entry.tls_version.as_deref(),
+            entry.tls_cipher_suite.as_deref(),
+            entry.tls_cert_subject.as_deref(),
+            entry.tls_cert_issuer.as_deref(),
+            entry.tls_cert_expiry.as_deref(),
             entry.entry_hash.as_deref(),
             entry.entry_extensions.as_deref(),
             entry.request_extensions.as_deref(),
