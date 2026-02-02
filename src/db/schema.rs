@@ -119,6 +119,7 @@ CREATE TABLE IF NOT EXISTS graphql_fields (
     entry_id INTEGER REFERENCES entries(id),
     field TEXT NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_graphql_fields_entry_field ON graphql_fields(entry_id, field);
 CREATE INDEX IF NOT EXISTS idx_graphql_fields_field ON graphql_fields(field);
 CREATE INDEX IF NOT EXISTS idx_graphql_fields_entry ON graphql_fields(entry_id);
 "#;
@@ -246,6 +247,7 @@ CREATE TABLE IF NOT EXISTS graphql_fields (
     entry_id INTEGER REFERENCES entries(id),
     field TEXT NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_graphql_fields_entry_field ON graphql_fields(entry_id, field);
 CREATE INDEX IF NOT EXISTS idx_graphql_fields_field ON graphql_fields(field);
 CREATE INDEX IF NOT EXISTS idx_graphql_fields_entry ON graphql_fields(entry_id);
 
@@ -429,6 +431,7 @@ pub fn ensure_schema_upgrades(conn: &Connection) -> Result<()> {
 
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS graphql_fields (entry_id INTEGER REFERENCES entries(id), field TEXT NOT NULL);
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_graphql_fields_entry_field ON graphql_fields(entry_id, field);
          CREATE INDEX IF NOT EXISTS idx_graphql_fields_field ON graphql_fields(field);
          CREATE INDEX IF NOT EXISTS idx_graphql_fields_entry ON graphql_fields(entry_id);",
     )?;

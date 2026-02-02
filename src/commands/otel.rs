@@ -997,6 +997,9 @@ mod tests {
             content_extensions: None,
             timings_extensions: None,
             post_data_extensions: None,
+            graphql_operation_type: None,
+            graphql_operation_name: None,
+            graphql_top_level_fields: None,
         }
     }
 
