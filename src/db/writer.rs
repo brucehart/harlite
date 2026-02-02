@@ -2,9 +2,9 @@ use rusqlite::{params, Connection};
 use serde_json::{Map, Value};
 use url::Url;
 
+use crate::commands::util::{parse_timestamp, parse_timestamp_number};
 use crate::error::Result;
 use crate::har::{Cookie, Entry, Header, Page};
-use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -547,31 +547,11 @@ fn get_value(map: &Map<String, Value>, keys: &[&str]) -> Option<Value> {
 }
 
 fn parse_expiry_number(value: i64) -> Option<String> {
-    let dt = if value >= 1_000_000_000_000 {
-        Utc.timestamp_millis_opt(value).single()?
-    } else {
-        Utc.timestamp_opt(value, 0).single()?
-    };
-    Some(dt.to_rfc3339())
+    parse_timestamp_number(value).map(|dt| dt.to_rfc3339())
 }
 
 fn parse_expiry_str(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if let Ok(parsed) = DateTime::parse_from_rfc3339(trimmed) {
-        return Some(parsed.with_timezone(&Utc).to_rfc3339());
-    }
-    if let Ok(date) = NaiveDate::parse_from_str(trimmed, "%Y-%m-%d") {
-        return Some(date.and_hms_opt(0, 0, 0)?.and_utc().to_rfc3339());
-    }
-    if trimmed.chars().all(|c| c.is_ascii_digit()) {
-        if let Ok(num) = trimmed.parse::<i64>() {
-            return parse_expiry_number(num);
-        }
-    }
-    None
+    parse_timestamp(value).map(|dt| dt.to_rfc3339())
 }
 
 fn parse_expiry_value(value: &Value) -> Option<String> {
