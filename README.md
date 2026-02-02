@@ -34,6 +34,7 @@ Works great with AI coding agents like Codex and Claude — they already know SQ
 - **Queryable headers** — Headers stored as JSON, queryable with SQLite JSON functions
 - **Interactive REPL** — Explore databases with history, completions, and shortcuts (`harlite repl`)
 - **Safe sharing** — Redact sensitive headers/cookies before sharing a database
+- **PII scanning** — Find emails/phones/SSNs/credit cards in URLs and bodies (`harlite pii`)
 - **Diffing** — Compare two HAR files or two databases (`harlite diff`)
 - **Replay** — Reissue requests against live servers and compare responses (`harlite replay`)
 - **HAR extensions preserved** — Store and round-trip HAR 1.3 extension fields as JSON
@@ -184,6 +185,11 @@ min_response_size = "1KB"
 [redact]
 header = ["authorization", "x-api-key"]
 match_mode = "wildcard"
+
+[pii]
+redact = false
+no_defaults = false
+email_regex = ["(?i)\\b[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}\\b"]
 ```
 
 ## Usage
@@ -512,6 +518,26 @@ harlite redact traffic.db --query-param token --query-param session --match wild
 # Redact matching patterns in stored bodies (UTF-8 only)
 harlite redact traffic.db --body-regex '(?i)\"password\"\\s*:\\s*\"[^\"]+\"'
 ```
+
+### Scan for PII
+
+Find emails, phone numbers, SSNs, and credit card numbers in URLs and stored bodies:
+
+```bash
+# Scan and report findings
+harlite pii traffic.db
+
+# JSON output for scripting
+harlite pii traffic.db --format json
+
+# Customize patterns (disable defaults, add your own)
+harlite pii traffic.db --no-defaults --email-regex '(?i)\\b.+@example\\.com\\b'
+
+# Auto-redact findings (write a new DB)
+harlite pii traffic.db --redact --output traffic.redacted.db
+```
+
+Defaults are conservative but may still produce false positives; review results before redacting. Use `--no-defaults` to opt out and supply your own regexes.
 
 ### Query with harlite
 

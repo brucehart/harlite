@@ -5,6 +5,19 @@ use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 
 use crate::error::{HarliteError, Result};
 
+pub fn canonicalize_path_for_compare(path: &Path) -> Result<PathBuf> {
+    if path.exists() {
+        return Ok(fs::canonicalize(path)?);
+    }
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let parent_canon = fs::canonicalize(parent)?;
+    let name = path.file_name().ok_or_else(|| {
+        HarliteError::InvalidArgs("Output path must be a file".to_string())
+    })?;
+    Ok(parent_canon.join(name))
+}
+
 pub fn resolve_database(database: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(db) = database {
         return Ok(db);

@@ -10,7 +10,7 @@ use url::Url;
 use crate::db::store_blob;
 use crate::error::{HarliteError, Result};
 
-use super::util::resolve_database;
+use super::util::{canonicalize_path_for_compare, resolve_database};
 
 #[derive(Clone, Copy, Debug, ValueEnum, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -653,7 +653,9 @@ pub fn run_redact(database: Option<PathBuf>, options: &RedactOptions) -> Result<
     let target_db = if options.dry_run {
         input_db.clone()
     } else if let Some(out) = &options.output {
-        if out == &input_db {
+        let input_cmp = canonicalize_path_for_compare(&input_db)?;
+        let out_cmp = canonicalize_path_for_compare(out)?;
+        if out_cmp == input_cmp {
             return Err(HarliteError::InvalidArgs(
                 "Output database must be different from input database".to_string(),
             ));

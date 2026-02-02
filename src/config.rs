@@ -21,6 +21,8 @@ pub struct Config {
     #[serde(default)]
     pub redact: Option<RedactConfig>,
     #[serde(default)]
+    pub pii: Option<PiiConfig>,
+    #[serde(default)]
     pub diff: Option<DiffConfig>,
     #[serde(default)]
     pub merge: Option<MergeConfig>,
@@ -137,6 +139,25 @@ pub struct RedactConfig {
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
+pub struct PiiConfig {
+    pub format: Option<OutputFormat>,
+    pub redact: Option<bool>,
+    pub output: Option<PathBuf>,
+    pub force: Option<bool>,
+    pub dry_run: Option<bool>,
+    pub no_defaults: Option<bool>,
+    pub no_email: Option<bool>,
+    pub no_phone: Option<bool>,
+    pub no_ssn: Option<bool>,
+    pub no_credit_card: Option<bool>,
+    pub email_regex: Option<Vec<String>>,
+    pub phone_regex: Option<Vec<String>>,
+    pub ssn_regex: Option<Vec<String>>,
+    pub credit_card_regex: Option<Vec<String>>,
+    pub token: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct DiffConfig {
     pub format: Option<OutputFormat>,
     pub host: Option<Vec<String>>,
@@ -194,6 +215,7 @@ pub struct ResolvedConfig {
     pub replay: ResolvedReplayConfig,
     pub export: ResolvedExportConfig,
     pub redact: ResolvedRedactConfig,
+    pub pii: ResolvedPiiConfig,
     pub diff: ResolvedDiffConfig,
     pub merge: ResolvedMergeConfig,
     pub query: ResolvedQueryConfig,
@@ -304,6 +326,25 @@ pub struct ResolvedRedactConfig {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct ResolvedPiiConfig {
+    pub format: OutputFormat,
+    pub redact: bool,
+    pub output: Option<PathBuf>,
+    pub force: bool,
+    pub dry_run: bool,
+    pub no_defaults: bool,
+    pub no_email: bool,
+    pub no_phone: bool,
+    pub no_ssn: bool,
+    pub no_credit_card: bool,
+    pub email_regex: Vec<String>,
+    pub phone_regex: Vec<String>,
+    pub ssn_regex: Vec<String>,
+    pub credit_card_regex: Vec<String>,
+    pub token: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct ResolvedDiffConfig {
     pub format: OutputFormat,
     pub host: Vec<String>,
@@ -362,6 +403,7 @@ impl Default for ResolvedConfig {
             replay: ResolvedReplayConfig::default(),
             export: ResolvedExportConfig::default(),
             redact: ResolvedRedactConfig::default(),
+            pii: ResolvedPiiConfig::default(),
             diff: ResolvedDiffConfig::default(),
             merge: ResolvedMergeConfig::default(),
             query: ResolvedQueryConfig::default(),
@@ -484,6 +526,28 @@ impl Default for ResolvedRedactConfig {
     }
 }
 
+impl Default for ResolvedPiiConfig {
+    fn default() -> Self {
+        Self {
+            format: OutputFormat::Table,
+            redact: false,
+            output: None,
+            force: false,
+            dry_run: false,
+            no_defaults: false,
+            no_email: false,
+            no_phone: false,
+            no_ssn: false,
+            no_credit_card: false,
+            email_regex: Vec::new(),
+            phone_regex: Vec::new(),
+            ssn_regex: Vec::new(),
+            credit_card_regex: Vec::new(),
+            token: "REDACTED".to_string(),
+        }
+    }
+}
+
 impl Default for ResolvedDiffConfig {
     fn default() -> Self {
         Self {
@@ -573,6 +637,9 @@ impl ResolvedConfig {
         }
         if let Some(cfg) = &config.redact {
             resolved.redact.apply(cfg);
+        }
+        if let Some(cfg) = &config.pii {
+            resolved.pii.apply(cfg);
         }
         if let Some(cfg) = &config.diff {
             resolved.diff.apply(cfg);
@@ -852,6 +919,56 @@ impl ResolvedRedactConfig {
     }
 }
 
+impl ResolvedPiiConfig {
+    fn apply(&mut self, cfg: &PiiConfig) {
+        if let Some(value) = cfg.format {
+            self.format = value;
+        }
+        if let Some(value) = cfg.redact {
+            self.redact = value;
+        }
+        if let Some(value) = cfg.output.clone() {
+            self.output = Some(value);
+        }
+        if let Some(value) = cfg.force {
+            self.force = value;
+        }
+        if let Some(value) = cfg.dry_run {
+            self.dry_run = value;
+        }
+        if let Some(value) = cfg.no_defaults {
+            self.no_defaults = value;
+        }
+        if let Some(value) = cfg.no_email {
+            self.no_email = value;
+        }
+        if let Some(value) = cfg.no_phone {
+            self.no_phone = value;
+        }
+        if let Some(value) = cfg.no_ssn {
+            self.no_ssn = value;
+        }
+        if let Some(value) = cfg.no_credit_card {
+            self.no_credit_card = value;
+        }
+        if let Some(value) = cfg.email_regex.clone() {
+            self.email_regex = value;
+        }
+        if let Some(value) = cfg.phone_regex.clone() {
+            self.phone_regex = value;
+        }
+        if let Some(value) = cfg.ssn_regex.clone() {
+            self.ssn_regex = value;
+        }
+        if let Some(value) = cfg.credit_card_regex.clone() {
+            self.credit_card_regex = value;
+        }
+        if let Some(value) = cfg.token.clone() {
+            self.token = value;
+        }
+    }
+}
+
 impl ResolvedDiffConfig {
     fn apply(&mut self, cfg: &DiffConfig) {
         if let Some(value) = cfg.format {
@@ -981,6 +1098,7 @@ fn merge_config(base: &mut Config, other: Config) {
     merge_section(&mut base.cdp, other.cdp, CdpConfig::merge);
     merge_section(&mut base.export, other.export, ExportConfig::merge);
     merge_section(&mut base.redact, other.redact, RedactConfig::merge);
+    merge_section(&mut base.pii, other.pii, PiiConfig::merge);
     merge_section(&mut base.diff, other.diff, DiffConfig::merge);
     merge_section(&mut base.merge, other.merge, MergeConfig::merge);
     merge_section(&mut base.query, other.query, QueryConfig::merge);
@@ -1083,6 +1201,26 @@ impl RedactConfig {
         merge_opt(&mut self.query_param, other.query_param);
         merge_opt(&mut self.body_regex, other.body_regex);
         merge_opt(&mut self.match_mode, other.match_mode);
+        merge_opt(&mut self.token, other.token);
+    }
+}
+
+impl PiiConfig {
+    fn merge(&mut self, other: PiiConfig) {
+        merge_opt(&mut self.format, other.format);
+        merge_opt(&mut self.redact, other.redact);
+        merge_opt(&mut self.output, other.output);
+        merge_opt(&mut self.force, other.force);
+        merge_opt(&mut self.dry_run, other.dry_run);
+        merge_opt(&mut self.no_defaults, other.no_defaults);
+        merge_opt(&mut self.no_email, other.no_email);
+        merge_opt(&mut self.no_phone, other.no_phone);
+        merge_opt(&mut self.no_ssn, other.no_ssn);
+        merge_opt(&mut self.no_credit_card, other.no_credit_card);
+        merge_opt(&mut self.email_regex, other.email_regex);
+        merge_opt(&mut self.phone_regex, other.phone_regex);
+        merge_opt(&mut self.ssn_regex, other.ssn_regex);
+        merge_opt(&mut self.credit_card_regex, other.credit_card_regex);
         merge_opt(&mut self.token, other.token);
     }
 }
