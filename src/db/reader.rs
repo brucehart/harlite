@@ -63,8 +63,11 @@ pub struct EntryRow {
     pub content_extensions: Option<String>,
     pub timings_extensions: Option<String>,
     pub post_data_extensions: Option<String>,
+    #[allow(dead_code)]
     pub graphql_operation_type: Option<String>,
+    #[allow(dead_code)]
     pub graphql_operation_name: Option<String>,
+    #[allow(dead_code)]
     pub graphql_top_level_fields: Option<String>,
 }
 
