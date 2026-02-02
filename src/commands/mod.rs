@@ -13,7 +13,7 @@ mod replay;
 mod schema;
 mod search;
 mod stats;
-mod util;
+pub mod util;
 mod watch;
 mod waterfall;
 

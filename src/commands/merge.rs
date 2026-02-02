@@ -729,6 +729,27 @@ fn insert_entry(conn: &Connection, import_id: i64, entry: &EntryRow) -> Result<i
     Ok(conn.last_insert_rowid())
 }
 
+fn update_entry_tls_metadata(conn: &Connection, rowid: i64, entry: &EntryRow) -> Result<()> {
+    conn.execute(
+        "UPDATE entries SET
+            tls_version = COALESCE(tls_version, ?1),
+            tls_cipher_suite = COALESCE(tls_cipher_suite, ?2),
+            tls_cert_subject = COALESCE(tls_cert_subject, ?3),
+            tls_cert_issuer = COALESCE(tls_cert_issuer, ?4),
+            tls_cert_expiry = COALESCE(tls_cert_expiry, ?5)
+         WHERE rowid = ?6",
+        params![
+            entry.tls_version.as_deref(),
+            entry.tls_cipher_suite.as_deref(),
+            entry.tls_cert_subject.as_deref(),
+            entry.tls_cert_issuer.as_deref(),
+            entry.tls_cert_expiry.as_deref(),
+            rowid,
+        ],
+    )?;
+    Ok(())
+}
+
 fn merge_blobs(conn: &Connection, output: &Connection, stats: &mut MergeStats) -> Result<()> {
     if !table_exists(conn, "blobs")? {
         return Ok(());
