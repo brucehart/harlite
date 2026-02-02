@@ -600,8 +600,9 @@ fn entry_key(entry: &EntryRow, strategy: DedupStrategy) -> EntryKey {
     encode_opt_i64(&mut buf, entry.is_redirect);
     encode_opt_string(&mut buf, entry.server_ip.as_deref());
     encode_opt_string(&mut buf, entry.connection_id.as_deref());
-    // TLS fields are omitted from the dedup key to allow metadata enrichment on duplicate detection.
-    // entry_hash is derived from the entry contents; omit from the merge dedup key.
+    // TLS fields (tls_version, tls_cipher_suite, tls_cert_subject, tls_cert_issuer, tls_cert_expiry)
+    // are omitted from the dedup key to allow metadata enrichment when duplicates are detected.
+    // entry_hash is derived from the entry contents; also omit from the dedup key.
     encode_opt_string(&mut buf, entry.entry_extensions.as_deref());
     encode_opt_string(&mut buf, entry.request_extensions.as_deref());
     encode_opt_string(&mut buf, entry.response_extensions.as_deref());
