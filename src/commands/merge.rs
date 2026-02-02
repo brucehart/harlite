@@ -339,10 +339,8 @@ pub fn run_merge(databases: Vec<PathBuf>, options: &MergeOptions) -> Result<()> 
                 continue;
             }
 
-            insert_entry(&tx, mapped_import_id, &entry)?;
-            // Note: We don't track the new entry_id here because we don't need it for this import_id
-            // (we only track existing entries when loading them initially).
-            keys.insert(key, 0); // Use 0 as a placeholder since we don't need the actual id
+            let new_entry_id = insert_entry(&tx, mapped_import_id, &entry)?;
+            keys.insert(key, new_entry_id);
             stats.entries_added += 1;
         }
 
@@ -671,7 +669,7 @@ fn update_tls_fields(conn: &Connection, entry_id: i64, entry: &EntryRow) -> Resu
     Ok(())
 }
 
-fn insert_entry(conn: &Connection, import_id: i64, entry: &EntryRow) -> Result<()> {
+fn insert_entry(conn: &Connection, import_id: i64, entry: &EntryRow) -> Result<i64> {
     conn.execute(
         "INSERT INTO entries (
             import_id, page_id, started_at, time_ms,
@@ -728,7 +726,7 @@ fn insert_entry(conn: &Connection, import_id: i64, entry: &EntryRow) -> Result<(
             entry.post_data_extensions.as_deref(),
         ],
     )?;
-    Ok(())
+    Ok(conn.last_insert_rowid())
 }
 
 fn merge_blobs(conn: &Connection, output: &Connection, stats: &mut MergeStats) -> Result<()> {
