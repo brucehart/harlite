@@ -41,6 +41,7 @@ Works great with AI coding agents like Codex and Claude — they already know SQ
 - **HAR extensions preserved** — Store and round-trip HAR 1.3 extension fields as JSON
 - **CDP capture** — Capture from Chrome and write directly to HAR or SQLite
 - **Watch mode** — Monitor a directory and auto-import new HAR files (`harlite watch`)
+- **OpenTelemetry export** — Export spans to JSON or OTLP (HTTP/gRPC)
 
 ## Installation
 
@@ -502,6 +503,34 @@ harlite waterfall traffic.db --format text --group-by navigation
 harlite waterfall traffic.db --host api.example.com --from 2024-01-15 --to 2024-01-16
 harlite waterfall traffic.db --page "Homepage"
 ```
+
+### Export OpenTelemetry spans
+
+Export timing data as OpenTelemetry spans, either as JSON (for inspection) or directly to an OTLP collector.
+
+```bash
+# JSON export to stdout
+harlite otel traffic.db --format json
+
+# JSON export to file
+harlite otel traffic.db --format json -o traces.json
+
+# OTLP over HTTP (protobuf)
+harlite otel traffic.db --format otlp-http --endpoint http://localhost:4318
+
+# OTLP over gRPC
+harlite otel traffic.db --format otlp-grpc --endpoint localhost:4317
+
+# Include only specific hosts and keep the first 5k spans
+harlite otel traffic.db --host api.example.com --max-spans 5000
+
+# Disable phase spans (only root request spans)
+harlite otel traffic.db --no-phases
+```
+
+Sampling / volume notes:
+- Exports can be large; use `--sample-rate` to reduce volume deterministically and `--max-spans` to cap output.
+- Each request becomes a root span; with phases enabled, extra child spans are emitted for blocked/dns/connect/ssl/send/wait/receive.
 
 ### Diff HAR or databases
 
