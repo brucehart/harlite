@@ -199,7 +199,7 @@ pub fn run_merge(databases: Vec<PathBuf>, options: &MergeOptions) -> Result<()> 
 
     let output_columns = table_columns(&output_conn, "entries")?;
     let mut import_map = load_existing_imports(&output_conn)?;
-    let mut entry_keys: HashMap<i64, HashSet<EntryKey>> = HashMap::new();
+    let mut entry_keys: HashMap<i64, HashMap<EntryKey, i64>> = HashMap::new();
     let mut fts_hashes = load_existing_fts_hashes(&output_conn)?;
 
     let tx = output_conn.unchecked_transaction()?;
@@ -332,13 +332,17 @@ pub fn run_merge(databases: Vec<PathBuf>, options: &MergeOptions) -> Result<()> 
             });
 
             let key = entry_key(&entry, options.dedup);
-            if keys.contains(&key) {
+            if let Some(&existing_entry_id) = keys.get(&key) {
+                // Entry already exists. Update TLS fields if they are missing in the existing entry.
+                update_tls_fields(&tx, existing_entry_id, &entry)?;
                 stats.entries_deduped += 1;
                 continue;
             }
 
             insert_entry(&tx, mapped_import_id, &entry)?;
-            keys.insert(key);
+            // Note: We don't track the new entry_id here because we don't need it for this import_id
+            // (we only track existing entries when loading them initially).
+            keys.insert(key, 0); // Use 0 as a placeholder since we don't need the actual id
             stats.entries_added += 1;
         }
 
@@ -509,56 +513,64 @@ fn load_entry_keys_for_import(
     columns: &HashSet<String>,
     import_id: i64,
     strategy: DedupStrategy,
-) -> Result<HashSet<EntryKey>> {
-    let sql = format!("{} WHERE import_id = ?1", entry_select_sql(columns));
+) -> Result<HashMap<EntryKey, i64>> {
+    let sql = format!("SELECT id, {} FROM entries WHERE import_id = ?1", 
+        ENTRY_COLUMNS.iter()
+            .map(|col| select_col(columns, col))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![import_id], |row| {
-        Ok(EntryRow {
-            import_id: row.get(0)?,
-            page_id: row.get(1)?,
-            started_at: row.get(2)?,
-            time_ms: row.get(3)?,
-            method: row.get(4)?,
-            url: row.get(5)?,
-            host: row.get(6)?,
-            path: row.get(7)?,
-            query_string: row.get(8)?,
-            http_version: row.get(9)?,
-            request_headers: row.get(10)?,
-            request_cookies: row.get(11)?,
-            request_body_hash: row.get(12)?,
-            request_body_size: row.get(13)?,
-            status: row.get(14)?,
-            status_text: row.get(15)?,
-            response_headers: row.get(16)?,
-            response_cookies: row.get(17)?,
-            response_body_hash: row.get(18)?,
-            response_body_size: row.get(19)?,
-            response_body_hash_raw: row.get(20)?,
-            response_body_size_raw: row.get(21)?,
-            response_mime_type: row.get(22)?,
-            is_redirect: row.get(23)?,
-            server_ip: row.get(24)?,
-            connection_id: row.get(25)?,
-            tls_version: row.get(26)?,
-            tls_cipher_suite: row.get(27)?,
-            tls_cert_subject: row.get(28)?,
-            tls_cert_issuer: row.get(29)?,
-            tls_cert_expiry: row.get(30)?,
-            entry_hash: row.get(31)?,
-            entry_extensions: row.get(32)?,
-            request_extensions: row.get(33)?,
-            response_extensions: row.get(34)?,
-            content_extensions: row.get(35)?,
-            timings_extensions: row.get(36)?,
-            post_data_extensions: row.get(37)?,
-        })
+        Ok((
+            row.get::<_, i64>(0)?, // entry id
+            EntryRow {
+                import_id: row.get(1)?,
+                page_id: row.get(2)?,
+                started_at: row.get(3)?,
+                time_ms: row.get(4)?,
+                method: row.get(5)?,
+                url: row.get(6)?,
+                host: row.get(7)?,
+                path: row.get(8)?,
+                query_string: row.get(9)?,
+                http_version: row.get(10)?,
+                request_headers: row.get(11)?,
+                request_cookies: row.get(12)?,
+                request_body_hash: row.get(13)?,
+                request_body_size: row.get(14)?,
+                status: row.get(15)?,
+                status_text: row.get(16)?,
+                response_headers: row.get(17)?,
+                response_cookies: row.get(18)?,
+                response_body_hash: row.get(19)?,
+                response_body_size: row.get(20)?,
+                response_body_hash_raw: row.get(21)?,
+                response_body_size_raw: row.get(22)?,
+                response_mime_type: row.get(23)?,
+                is_redirect: row.get(24)?,
+                server_ip: row.get(25)?,
+                connection_id: row.get(26)?,
+                tls_version: row.get(27)?,
+                tls_cipher_suite: row.get(28)?,
+                tls_cert_subject: row.get(29)?,
+                tls_cert_issuer: row.get(30)?,
+                tls_cert_expiry: row.get(31)?,
+                entry_hash: row.get(32)?,
+                entry_extensions: row.get(33)?,
+                request_extensions: row.get(34)?,
+                response_extensions: row.get(35)?,
+                content_extensions: row.get(36)?,
+                timings_extensions: row.get(37)?,
+                post_data_extensions: row.get(38)?,
+            },
+        ))
     })?;
 
-    let mut keys = HashSet::new();
+    let mut keys = HashMap::new();
     for row in rows {
-        let entry = row?;
-        keys.insert(entry_key(&entry, strategy));
+        let (entry_id, entry) = row?;
+        keys.insert(entry_key(&entry, strategy), entry_id);
     }
     Ok(keys)
 }
@@ -590,11 +602,7 @@ fn entry_key(entry: &EntryRow, strategy: DedupStrategy) -> EntryKey {
     encode_opt_i64(&mut buf, entry.is_redirect);
     encode_opt_string(&mut buf, entry.server_ip.as_deref());
     encode_opt_string(&mut buf, entry.connection_id.as_deref());
-    encode_opt_string(&mut buf, entry.tls_version.as_deref());
-    encode_opt_string(&mut buf, entry.tls_cipher_suite.as_deref());
-    encode_opt_string(&mut buf, entry.tls_cert_subject.as_deref());
-    encode_opt_string(&mut buf, entry.tls_cert_issuer.as_deref());
-    encode_opt_string(&mut buf, entry.tls_cert_expiry.as_deref());
+    // TLS fields are omitted from the merge dedup key to allow enriching existing entries with TLS metadata.
     // entry_hash is derived from the entry contents; omit from the merge dedup key.
     encode_opt_string(&mut buf, entry.entry_extensions.as_deref());
     encode_opt_string(&mut buf, entry.request_extensions.as_deref());
@@ -639,6 +647,28 @@ fn encode_opt_f64(buf: &mut Vec<u8>, value: Option<f64>) {
         }
         None => buf.push(0),
     }
+}
+
+fn update_tls_fields(conn: &Connection, entry_id: i64, entry: &EntryRow) -> Result<()> {
+    // Update TLS fields using COALESCE to preserve existing values and only fill in missing ones
+    conn.execute(
+        "UPDATE entries SET
+            tls_version = COALESCE(tls_version, ?1),
+            tls_cipher_suite = COALESCE(tls_cipher_suite, ?2),
+            tls_cert_subject = COALESCE(tls_cert_subject, ?3),
+            tls_cert_issuer = COALESCE(tls_cert_issuer, ?4),
+            tls_cert_expiry = COALESCE(tls_cert_expiry, ?5)
+        WHERE id = ?6",
+        params![
+            entry.tls_version.as_deref(),
+            entry.tls_cipher_suite.as_deref(),
+            entry.tls_cert_subject.as_deref(),
+            entry.tls_cert_issuer.as_deref(),
+            entry.tls_cert_expiry.as_deref(),
+            entry_id,
+        ],
+    )?;
+    Ok(())
 }
 
 fn insert_entry(conn: &Connection, import_id: i64, entry: &EntryRow) -> Result<()> {
