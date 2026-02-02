@@ -1,4 +1,5 @@
 mod diff;
+mod analyze;
 mod export;
 mod fts;
 mod import;
@@ -19,6 +20,7 @@ mod watch;
 mod waterfall;
 
 pub use diff::{run_diff, DiffOptions};
+pub use analyze::{run_analyze, AnalyzeOptions};
 pub use export::{run_export, ExportOptions};
 pub use fts::{run_fts_rebuild, FtsTokenizer};
 pub use import::{run_import, ImportOptions};

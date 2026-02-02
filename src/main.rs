@@ -12,13 +12,13 @@ mod size;
 use crate::config::{load_config, render_config, ResolvedConfig};
 use crate::db::ExtractBodiesKind;
 use commands::{
-    run_cdp, run_diff, run_export, run_fts_rebuild, run_import, run_imports, run_info, run_merge,
-    run_pii, run_prune, run_query, run_redact, run_repl, run_replay, run_schema, run_search,
-    run_stats, run_watch, run_waterfall,
+    run_analyze, run_cdp, run_diff, run_export, run_fts_rebuild, run_import, run_imports, run_info,
+    run_merge, run_pii, run_prune, run_query, run_redact, run_repl, run_replay, run_schema,
+    run_search, run_stats, run_watch, run_waterfall,
 };
 use commands::{
-    CdpOptions, DedupStrategy, DiffOptions, ExportOptions, ImportOptions, MergeOptions,
-    NameMatchMode, OutputFormat, PiiOptions, QueryOptions, RedactOptions, ReplOptions,
+    AnalyzeOptions, CdpOptions, DedupStrategy, DiffOptions, ExportOptions, ImportOptions,
+    MergeOptions, NameMatchMode, OutputFormat, PiiOptions, QueryOptions, RedactOptions, ReplOptions,
     ReplayOptions, WatchOptions, WaterfallFormat, WaterfallGroupBy, WaterfallOptions,
 };
 use commands::{InfoOptions, StatsOptions};
@@ -318,6 +318,48 @@ enum Commands {
         /// Report certificates expiring within N days
         #[arg(long)]
         cert_expiring_days: Option<u64>,
+    },
+
+    /// Analyze performance timings and caching opportunities
+    Analyze {
+        /// Database file to inspect
+        database: PathBuf,
+
+        /// Output as JSON
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        json: Option<bool>,
+
+        /// Hostname filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        host: Option<Vec<String>>,
+
+        /// HTTP method filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        method: Option<Vec<String>>,
+
+        /// HTTP status filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        status: Option<Vec<i32>>,
+
+        /// Only include entries on/after this timestamp (RFC3339) or date (YYYY-MM-DD)
+        #[arg(long)]
+        from: Option<String>,
+
+        /// Only include entries on/before this timestamp (RFC3339) or date (YYYY-MM-DD)
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Threshold for slow requests by total time (ms)
+        #[arg(long)]
+        slow_total_ms: Option<f64>,
+
+        /// Threshold for slow requests by TTFB (ms)
+        #[arg(long)]
+        slow_ttfb_ms: Option<f64>,
+
+        /// Limit for top N lists
+        #[arg(long)]
+        top: Option<usize>,
     },
 
     /// Export a SQLite database back to HAR format
@@ -977,6 +1019,32 @@ fn main() {
                     cert_expiring_days: cert_expiring_days.or(defaults.cert_expiring_days),
                 };
                 run_stats(database, &options)
+            }
+
+            Commands::Analyze {
+                database,
+                json,
+                host,
+                method,
+                status,
+                from,
+                to,
+                slow_total_ms,
+                slow_ttfb_ms,
+                top,
+            } => {
+                let options = AnalyzeOptions {
+                    json: json.unwrap_or(false),
+                    host: host.unwrap_or_default(),
+                    method: method.unwrap_or_default(),
+                    status: status.unwrap_or_default(),
+                    from,
+                    to,
+                    slow_total_ms: slow_total_ms.unwrap_or(1000.0),
+                    slow_ttfb_ms: slow_ttfb_ms.unwrap_or(500.0),
+                    top: top.unwrap_or(10),
+                };
+                run_analyze(database, &options)
             }
 
             Commands::Export {

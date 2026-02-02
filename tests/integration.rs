@@ -713,6 +713,106 @@ fn test_stats_command_json() {
 }
 
 #[test]
+fn test_analyze_command_json() {
+    let tmp = TempDir::new().unwrap();
+    let har_path = tmp.path().join("analyze.har");
+    let db_path = tmp.path().join("analyze.db");
+
+    let har = json!({
+        "log": {
+            "version": "1.2",
+            "creator": { "name": "harlite", "version": "0.0" },
+            "entries": [
+                {
+                    "startedDateTime": "2024-01-01T00:00:00.000Z",
+                    "time": 1200.0,
+                    "request": {
+                        "method": "GET",
+                        "url": "http://example.com/api",
+                        "httpVersion": "HTTP/1.1",
+                        "headers": [],
+                        "cookies": [],
+                        "queryString": [],
+                        "headersSize": -1,
+                        "bodySize": -1
+                    },
+                    "response": {
+                        "status": 200,
+                        "statusText": "OK",
+                        "httpVersion": "HTTP/1.1",
+                        "headers": [
+                            { "name": "Content-Type", "value": "application/json" }
+                        ],
+                        "cookies": [],
+                        "content": { "size": 100, "mimeType": "application/json" },
+                        "redirectURL": "",
+                        "headersSize": -1,
+                        "bodySize": 100
+                    },
+                    "cache": {},
+                    "connection": "conn-1",
+                    "timings": { "blocked": 50, "dns": 20, "connect": 100, "send": 10, "wait": 800, "receive": 220, "ssl": 80 }
+                },
+                {
+                    "startedDateTime": "2024-01-01T00:00:01.000Z",
+                    "time": 100.0,
+                    "request": {
+                        "method": "GET",
+                        "url": "http://example.com/api",
+                        "httpVersion": "HTTP/1.1",
+                        "headers": [],
+                        "cookies": [],
+                        "queryString": [],
+                        "headersSize": -1,
+                        "bodySize": -1
+                    },
+                    "response": {
+                        "status": 200,
+                        "statusText": "OK",
+                        "httpVersion": "HTTP/1.1",
+                        "headers": [],
+                        "cookies": [],
+                        "content": { "size": 50, "mimeType": "application/json" },
+                        "redirectURL": "",
+                        "headersSize": -1,
+                        "bodySize": 50
+                    },
+                    "cache": {},
+                    "connection": "conn-1",
+                    "timings": { "send": 5, "wait": 50, "receive": 45 }
+                }
+            ]
+        }
+    });
+
+    fs::write(&har_path, serde_json::to_vec(&har).unwrap()).unwrap();
+
+    harlite()
+        .args(["import"])
+        .arg(&har_path)
+        .args(["-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let output = harlite()
+        .args(["analyze", "--json"])
+        .arg(&db_path)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(v["entries"], 2);
+    assert_eq!(v["aggregates"]["total_ms"]["count"], 2);
+    assert_eq!(v["slow_requests"]["total_count"], 1);
+    assert_eq!(v["connection_reuse"]["requests_with_connection_id"], 2);
+    assert_eq!(v["connection_reuse"]["unique_connection_ids"], 1);
+    assert_eq!(v["cache_candidates"]["unique_urls"], 1);
+    assert_eq!(v["cache_candidates"]["total_requests"], 2);
+}
+
+#[test]
 fn test_stats_command_with_null_entry_count() {
     // This test verifies the fallback path where entry_count is NULL,
     // simulating databases created by other tools or older versions.
