@@ -512,8 +512,12 @@ fn load_entry_keys_for_import(
     import_id: i64,
     strategy: DedupStrategy,
 ) -> Result<HashMap<EntryKey, i64>> {
-    let sql = format!("SELECT rowid, {} FROM entries WHERE import_id = ?1", 
-        ENTRY_COLUMNS.iter().map(|c| select_col(columns, c)).collect::<Vec<_>>().join(", "));
+    let column_list = ENTRY_COLUMNS
+        .iter()
+        .map(|c| select_col(columns, c))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!("SELECT rowid, {} FROM entries WHERE import_id = ?1", column_list);
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![import_id], |row| {
         Ok((
