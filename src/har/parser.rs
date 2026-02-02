@@ -16,12 +16,12 @@ fn extensions_is_empty(ext: &Extensions) -> bool {
     ext.is_empty()
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Har {
     pub log: Log,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Log {
     pub version: Option<String>,
     pub creator: Option<Creator>,
@@ -32,19 +32,19 @@ pub struct Log {
     pub extensions: Extensions,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Creator {
     pub name: String,
     pub version: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Browser {
     pub name: String,
     pub version: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Page {
     pub started_date_time: String,
@@ -55,7 +55,7 @@ pub struct Page {
     pub extensions: Extensions,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PageTimings {
     pub on_content_load: Option<f64>,
@@ -64,7 +64,7 @@ pub struct PageTimings {
     pub extensions: Extensions,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Entry {
     pub pageref: Option<String>,
@@ -81,7 +81,7 @@ pub struct Entry {
     pub extensions: Extensions,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Request {
     pub method: String,
@@ -97,7 +97,7 @@ pub struct Request {
     pub extensions: Extensions,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Response {
     pub status: i32,
@@ -114,7 +114,7 @@ pub struct Response {
     pub extensions: Extensions,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Content {
     pub size: i64,
@@ -132,7 +132,7 @@ pub struct Header {
     pub value: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Cookie {
     pub name: String,
@@ -144,13 +144,13 @@ pub struct Cookie {
     pub secure: Option<bool>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct QueryParam {
     pub name: String,
     pub value: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PostData {
     pub mime_type: Option<String>,
@@ -160,7 +160,7 @@ pub struct PostData {
     pub extensions: Extensions,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PostParam {
     pub name: String,
@@ -169,7 +169,7 @@ pub struct PostParam {
     pub content_type: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Timings {
     pub blocked: Option<f64>,
     pub dns: Option<f64>,

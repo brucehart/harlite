@@ -204,6 +204,69 @@ no_defaults = false
 email_regex = ["(?i)\\b[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}\\b"]
 ```
 
+## Plugins
+
+`harlite` supports external plugins for custom import/export logic. Plugins are **separate executables** that read a JSON request from stdin and write a JSON response to stdout. This keeps a clear security boundary (the plugin runs as its own process).
+
+Plugin kinds:
+- **filter** — decide whether an entry should be included
+- **transform** — modify entries during import/export
+- **exporter** — consume the final HAR and optionally skip the default output
+
+Plugin config example:
+
+```toml
+[[plugins]]
+name = "sample-filter"
+kind = "filter"
+command = "plugins/sample_filter.py"
+phase = "import"
+enabled = true
+
+[[plugins]]
+name = "sample-exporter"
+kind = "exporter"
+command = "plugins/sample_exporter.py"
+phase = "export"
+```
+
+Enable/disable per run:
+
+```bash
+harlite import capture.har --plugin sample-filter
+harlite export traffic.db --disable-plugin sample-exporter
+harlite watch ./captures --plugin sample-filter
+```
+
+Plugin API (v1):
+
+Filter request:
+```json
+{"api_version":"v1","event":"filter_entry","phase":"import","context":{"command":"import","source":"/path/capture.har","database":"/path/output.db","output":null},"entry":{...}}
+```
+
+Filter response:
+```json
+{"allow": true}
+```
+
+Transform response:
+```json
+{"entry": {...}}
+```
+
+Exporter request:
+```json
+{"api_version":"v1","event":"export","phase":"export","context":{"command":"export","source":null,"database":"traffic.db","output":"traffic.har"},"har":{...}}
+```
+
+Exporter response (optional):
+```json
+{"skip_default": true}
+```
+
+Sample plugins are in `plugins/`.
+
 ## Usage
 
 ### Import HAR files

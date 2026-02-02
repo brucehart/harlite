@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::commands::{DedupStrategy, FtsTokenizer, NameMatchMode, OutputFormat};
 use crate::db::ExtractBodiesKind;
 use crate::error::{HarliteError, Result};
+use crate::plugins::PluginConfig;
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct Config {
@@ -36,6 +37,8 @@ pub struct Config {
     pub fts_rebuild: Option<FtsRebuildConfig>,
     #[serde(default)]
     pub stats: Option<StatsConfig>,
+    #[serde(default)]
+    pub plugins: Vec<PluginConfig>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -1110,6 +1113,7 @@ fn merge_config(base: &mut Config, other: Config) {
         FtsRebuildConfig::merge,
     );
     merge_section(&mut base.stats, other.stats, StatsConfig::merge);
+    merge_plugins(&mut base.plugins, other.plugins);
 }
 
 fn merge_section<T>(base: &mut Option<T>, other: Option<T>, merge: fn(&mut T, T)) {
@@ -1286,6 +1290,16 @@ impl StatsConfig {
 fn merge_opt<T>(base: &mut Option<T>, other: Option<T>) {
     if other.is_some() {
         *base = other;
+    }
+}
+
+fn merge_plugins(base: &mut Vec<PluginConfig>, other: Vec<PluginConfig>) {
+    for plugin in other {
+        if let Some(existing) = base.iter_mut().find(|p| p.name == plugin.name) {
+            *existing = plugin;
+        } else {
+            base.push(plugin);
+        }
     }
 }
 

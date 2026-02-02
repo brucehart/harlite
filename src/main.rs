@@ -8,10 +8,12 @@ mod db;
 mod error;
 mod graphql;
 mod har;
+mod plugins;
 mod size;
 
 use crate::config::{load_config, render_config, ResolvedConfig};
 use crate::db::ExtractBodiesKind;
+use crate::plugins::resolve_plugins;
 use commands::{
     run_analyze, run_cdp, run_diff, run_export, run_export_data, run_fts_rebuild, run_import,
     run_imports, run_info, run_merge, run_openapi, run_otel, run_pii, run_prune, run_query,
@@ -123,6 +125,14 @@ enum Commands {
         /// Only import entries on/before this timestamp (RFC3339) or date (YYYY-MM-DD)
         #[arg(long)]
         to: Option<String>,
+
+        /// Enable plugin by name (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        plugin: Option<Vec<String>>,
+
+        /// Disable plugin by name (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        disable_plugin: Option<Vec<String>>,
     },
 
     /// Capture network traffic from Chrome via CDP
@@ -273,6 +283,14 @@ enum Commands {
         /// Only import entries on/before this timestamp (RFC3339) or date (YYYY-MM-DD)
         #[arg(long)]
         to: Option<String>,
+
+        /// Enable plugin by name (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        plugin: Option<Vec<String>>,
+
+        /// Disable plugin by name (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        disable_plugin: Option<Vec<String>>,
     },
 
     /// Print the database schema
@@ -458,6 +476,14 @@ enum Commands {
         /// Maximum response body size (e.g., '100KB', '1.5MB', '1M', '100k', 'unlimited')
         #[arg(long)]
         max_response_size: Option<String>,
+
+        /// Enable plugin by name (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        plugin: Option<Vec<String>>,
+
+        /// Disable plugin by name (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        disable_plugin: Option<Vec<String>>,
     },
 
     /// Export entries to CSV/JSONL/Parquet
@@ -1169,8 +1195,15 @@ fn main() {
                 url_regex,
                 from,
                 to,
+                plugin,
+                disable_plugin,
             } => {
                 let defaults = &resolved.import;
+                let plugins = resolve_plugins(
+                    &config.plugins,
+                    &plugin.unwrap_or_default(),
+                    &disable_plugin.unwrap_or_default(),
+                )?;
                 let max_body_size = size::parse_size_bytes_usize(
                     &max_body_size.unwrap_or_else(|| defaults.max_body_size.clone()),
                 )?;
@@ -1197,6 +1230,7 @@ fn main() {
                     url_regex: url_regex.unwrap_or_else(|| defaults.url_regex.clone()),
                     from: from.or_else(|| defaults.from.clone()),
                     to: to.or_else(|| defaults.to.clone()),
+                    plugins,
                 };
                 run_import(&files, &options).map(|_| ())
             }
@@ -1258,9 +1292,16 @@ fn main() {
                 url_regex,
                 from,
                 to,
+                plugin,
+                disable_plugin,
             } => {
                 let defaults = &resolved.import;
                 let output_override = output.clone();
+                let plugins = resolve_plugins(
+                    &config.plugins,
+                    &plugin.unwrap_or_default(),
+                    &disable_plugin.unwrap_or_default(),
+                )?;
                 let max_body_size = size::parse_size_bytes_usize(
                     &max_body_size.unwrap_or_else(|| defaults.max_body_size.clone()),
                 )?;
@@ -1287,6 +1328,7 @@ fn main() {
                     url_regex: url_regex.unwrap_or_else(|| defaults.url_regex.clone()),
                     from: from.or_else(|| defaults.from.clone()),
                     to: to.or_else(|| defaults.to.clone()),
+                    plugins,
                 };
 
                 let watch_options = WatchOptions {
@@ -1390,8 +1432,15 @@ fn main() {
                 max_request_size,
                 min_response_size,
                 max_response_size,
+                plugin,
+                disable_plugin,
             } => {
                 let defaults = &resolved.export;
+                let plugins = resolve_plugins(
+                    &config.plugins,
+                    &plugin.unwrap_or_default(),
+                    &disable_plugin.unwrap_or_default(),
+                )?;
                 let compact = compact.unwrap_or(defaults.compact);
                 let bodies = bodies.unwrap_or(defaults.bodies);
                 let bodies_raw = bodies_raw.unwrap_or(defaults.bodies_raw);
@@ -1425,6 +1474,7 @@ fn main() {
                         .or_else(|| defaults.min_response_size.clone()),
                     max_response_size: max_response_size
                         .or_else(|| defaults.max_response_size.clone()),
+                    plugins,
                 };
                 run_export(database, &options)
             }
