@@ -848,9 +848,8 @@ fn build_otlp_request(
                         value: Some(AnyValue {
                             value: Some(match attr.value {
                                 AttrValue::String(value) => any_value::Value::StringValue(value),
-                                AttrValue::Int(value) => any_value::Value::IntValue(value),
-                                AttrValue::Double(value) => any_value::Value::DoubleValue(value),
-                                AttrValue::Bool(value) => any_value::Value::BoolValue(value),
+                        AttrValue::Int(value) => any_value::Value::IntValue(value),
+                        AttrValue::Bool(value) => any_value::Value::BoolValue(value),
                             }),
                         }),
                     })
