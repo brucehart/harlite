@@ -15,13 +15,15 @@ use crate::db::ExtractBodiesKind;
 use commands::{
     run_analyze, run_cdp, run_diff, run_export, run_export_data, run_fts_rebuild, run_import,
     run_imports, run_info, run_merge, run_openapi, run_otel, run_pii, run_prune, run_query,
-    run_redact, run_repl, run_replay, run_schema, run_search, run_stats, run_watch, run_waterfall,
+    run_redact, run_repl, run_replay, run_schema, run_search, run_serve, run_stats, run_watch,
+    run_waterfall,
 };
 use commands::{
     AnalyzeOptions, CdpOptions, DataExportFormat, DedupStrategy, DiffOptions, EntryFilterOptions,
-    ExportDataOptions, ExportOptions, ImportOptions, MergeOptions, NameMatchMode, OpenApiOptions,
-    OtelExportFormat, OtelExportOptions, OutputFormat, PiiOptions, QueryOptions, RedactOptions,
-    ReplOptions, ReplayOptions, WatchOptions, WaterfallFormat, WaterfallGroupBy, WaterfallOptions,
+    ExportDataOptions, ExportOptions, ImportOptions, MatchMode, MergeOptions, NameMatchMode,
+    OpenApiOptions, OtelExportFormat, OtelExportOptions, OutputFormat, PiiOptions, QueryOptions,
+    RedactOptions, ReplOptions, ReplayOptions, ServeOptions, WatchOptions, WaterfallFormat,
+    WaterfallGroupBy, WaterfallOptions,
 };
 use commands::{InfoOptions, StatsOptions};
 
@@ -984,6 +986,40 @@ enum Commands {
         override_header: Option<Vec<String>>,
     },
 
+    /// Serve recorded responses as a mock API server
+    Serve {
+        /// HAR file or SQLite database to serve
+        input: PathBuf,
+
+        /// Bind address
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+
+        /// Port to listen on
+        #[arg(long, default_value_t = 8080)]
+        port: u16,
+
+        /// Match mode (strict = method + full URL, fuzzy = method + host/path + query similarity)
+        #[arg(long, value_enum, default_value_t = MatchMode::Strict)]
+        match_mode: MatchMode,
+
+        /// Allow reading external blob paths from the database
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        allow_external_paths: Option<bool>,
+
+        /// Root directory for external blob paths (defaults to database directory)
+        #[arg(long, value_name = "DIR")]
+        external_path_root: Option<PathBuf>,
+
+        /// TLS certificate (PEM)
+        #[arg(long)]
+        tls_cert: Option<PathBuf>,
+
+        /// TLS private key (PEM)
+        #[arg(long)]
+        tls_key: Option<PathBuf>,
+    },
+
     /// Merge multiple harlite databases into one
     Merge {
         /// Database files to merge
@@ -1709,6 +1745,28 @@ fn main() {
                         .unwrap_or_else(|| defaults.override_header.clone()),
                 };
                 run_replay(input, &options)
+            }
+
+            Commands::Serve {
+                input,
+                bind,
+                port,
+                match_mode,
+                allow_external_paths,
+                external_path_root,
+                tls_cert,
+                tls_key,
+            } => {
+                let options = ServeOptions {
+                    bind,
+                    port,
+                    match_mode,
+                    allow_external_paths: allow_external_paths.unwrap_or(false),
+                    external_path_root,
+                    tls_cert,
+                    tls_key,
+                };
+                run_serve(input, &options)
             }
 
             Commands::Merge {
