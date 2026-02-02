@@ -231,6 +231,29 @@ fn test_export_data_jsonl() {
 }
 
 #[test]
+fn test_export_data_source_filter_no_match() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+    let out_path = tmp.path().join("entries.jsonl");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args(["export-data", "--format", "jsonl", "--source", "missing.har", "-o"])
+        .arg(&out_path)
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let contents = fs::read_to_string(&out_path).unwrap_or_default();
+    assert!(contents.trim().is_empty());
+}
+
+#[test]
 fn test_openapi_basic() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("test.db");

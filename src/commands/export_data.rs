@@ -51,10 +51,21 @@ pub fn run_export_data(database: PathBuf, options: &ExportDataOptions) -> Result
         }
     };
 
-    let mut writer = open_output(&output_path)?;
+    if matches!(options.format, DataExportFormat::Parquet) && output_path == PathBuf::from("-") {
+        return Err(HarliteError::InvalidArgs(
+            "Parquet export requires a file path; '-' is not supported".to_string(),
+        ));
+    }
+
     match options.format {
-        DataExportFormat::Csv => write_csv(&mut writer, &entries)?,
-        DataExportFormat::Jsonl => write_jsonl(&mut writer, &entries)?,
+        DataExportFormat::Csv => {
+            let mut writer = open_output(&output_path)?;
+            write_csv(&mut writer, &entries)?;
+        }
+        DataExportFormat::Jsonl => {
+            let mut writer = open_output(&output_path)?;
+            write_jsonl(&mut writer, &entries)?;
+        }
         DataExportFormat::Parquet => write_parquet(&output_path, &entries)?,
     }
 

@@ -45,6 +45,11 @@ pub fn load_entries_with_filters(
 
     let mut query = EntryQuery::default();
     let import_ids = load_import_ids_by_source(conn, &options.source, &options.source_contains)?;
+    if !options.source.is_empty() || !options.source_contains.is_empty() {
+        if import_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+    }
     if !import_ids.is_empty() {
         query.import_ids = import_ids;
     }
