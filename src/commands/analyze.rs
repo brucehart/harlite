@@ -450,9 +450,12 @@ fn is_cache_candidate(row: &EntryRow) -> bool {
         .get("cache-control")
         .map(|v| v.to_ascii_lowercase());
     if let Some(control) = cache_control {
-        return control.contains("no-store")
+        if control.contains("no-store")
             || control.contains("no-cache")
-            || control.contains("max-age=0");
+            || control.contains("max-age=0")
+        {
+            return false;
+        }
     }
     let has_validator = headers.contains_key("etag")
         || headers.contains_key("last-modified")
