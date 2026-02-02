@@ -98,7 +98,15 @@ pub fn run_stats(database: PathBuf, options: &StatsOptions) -> Result<()> {
                 );
             }
         } else {
-            let cutoff = Utc::now() + Duration::days(days as i64);
+            // Clamp the number of days to what chrono::Duration can safely represent.
+            // chrono::Duration stores seconds in an i64, so the maximum whole days is i64::MAX / 86_400.
+            const MAX_DAYS_I64: i64 = i64::MAX / 86_400;
+            let clamped_days_i64 = match i64::try_from(days) {
+                Ok(d) if d <= MAX_DAYS_I64 => d,
+                Ok(_) => MAX_DAYS_I64,
+                Err(_) => MAX_DAYS_I64,
+            };
+            let cutoff = Utc::now() + Duration::days(clamped_days_i64);
             let mut stmt = conn.prepare(
                 "SELECT DISTINCT tls_cert_subject, tls_cert_issuer, tls_cert_expiry \
                  FROM entries WHERE tls_cert_expiry IS NOT NULL",
