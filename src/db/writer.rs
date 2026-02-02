@@ -571,7 +571,7 @@ fn parse_expiry_str(value: &str) -> Option<String> {
             return parse_expiry_number(num);
         }
     }
-    Some(trimmed.to_string())
+    None
 }
 
 fn parse_expiry_value(value: &Value) -> Option<String> {
