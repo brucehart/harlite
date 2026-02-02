@@ -80,6 +80,17 @@ pub struct EntryInsertResult {
     pub blob_stats: EntryBlobStats,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct EntryRelations {
+    pub request_id: Option<String>,
+    pub parent_request_id: Option<String>,
+    pub initiator_type: Option<String>,
+    pub initiator_url: Option<String>,
+    pub initiator_line: Option<i64>,
+    pub initiator_column: Option<i64>,
+    pub redirect_url: Option<String>,
+}
+
 #[derive(Default, Clone, Debug)]
 struct TlsDetails {
     version: Option<String>,
@@ -851,9 +862,18 @@ pub fn insert_entry(
     import_id: i64,
     entry: &Entry,
     options: &InsertEntryOptions,
+    relations: &EntryRelations,
 ) -> Result<EntryInsertResult> {
     let entry_hash = entry_content_hash(entry);
-    insert_entry_with_hash(conn, import_id, entry, options, Some(&entry_hash), false)
+    insert_entry_with_hash(
+        conn,
+        import_id,
+        entry,
+        options,
+        relations,
+        Some(&entry_hash),
+        false,
+    )
 }
 
 /// Insert an entry with an optional content hash (used for incremental imports).
@@ -862,6 +882,7 @@ pub fn insert_entry_with_hash(
     import_id: i64,
     entry: &Entry,
     options: &InsertEntryOptions,
+    relations: &EntryRelations,
     entry_hash: Option<&str>,
     ignore_duplicates: bool,
 ) -> Result<EntryInsertResult> {
@@ -1024,7 +1045,8 @@ pub fn insert_entry_with_hash(
             request_headers, request_cookies, request_body_hash, request_body_size,
             status, status_text, response_headers, response_cookies,
             response_body_hash, response_body_size, response_body_hash_raw, response_body_size_raw, response_mime_type,
-            is_redirect, server_ip, connection_id, tls_version, tls_cipher_suite, tls_cert_subject, tls_cert_issuer, tls_cert_expiry, entry_hash,
+            is_redirect, server_ip, connection_id, request_id, parent_request_id, initiator_type, initiator_url, initiator_line, initiator_column, redirect_url,
+            tls_version, tls_cipher_suite, tls_cert_subject, tls_cert_issuer, tls_cert_expiry, entry_hash,
             entry_extensions, request_extensions, response_extensions, content_extensions, timings_extensions, post_data_extensions,
             graphql_operation_type, graphql_operation_name, graphql_top_level_fields
         ) VALUES (
@@ -1032,7 +1054,8 @@ pub fn insert_entry_with_hash(
             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
             ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
             ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40,
-            ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48
+            ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50,
+            ?51, ?52, ?53, ?54, ?55
         )"
     } else {
         "INSERT INTO entries (
@@ -1041,7 +1064,8 @@ pub fn insert_entry_with_hash(
             request_headers, request_cookies, request_body_hash, request_body_size,
             status, status_text, response_headers, response_cookies,
             response_body_hash, response_body_size, response_body_hash_raw, response_body_size_raw, response_mime_type,
-            is_redirect, server_ip, connection_id, tls_version, tls_cipher_suite, tls_cert_subject, tls_cert_issuer, tls_cert_expiry, entry_hash,
+            is_redirect, server_ip, connection_id, request_id, parent_request_id, initiator_type, initiator_url, initiator_line, initiator_column, redirect_url,
+            tls_version, tls_cipher_suite, tls_cert_subject, tls_cert_issuer, tls_cert_expiry, entry_hash,
             entry_extensions, request_extensions, response_extensions, content_extensions, timings_extensions, post_data_extensions,
             graphql_operation_type, graphql_operation_name, graphql_top_level_fields
         ) VALUES (
@@ -1049,7 +1073,8 @@ pub fn insert_entry_with_hash(
             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
             ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
             ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40,
-            ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48
+            ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50,
+            ?51, ?52, ?53, ?54, ?55
         )"
     };
 
@@ -1089,6 +1114,13 @@ pub fn insert_entry_with_hash(
             is_redirect,
             entry.server_ip_address,
             entry.connection,
+            relations.request_id.as_deref(),
+            relations.parent_request_id.as_deref(),
+            relations.initiator_type.as_deref(),
+            relations.initiator_url.as_deref(),
+            relations.initiator_line,
+            relations.initiator_column,
+            relations.redirect_url.as_deref(),
             tls_details.version,
             tls_details.cipher_suite,
             tls_details.cert_subject,
@@ -1167,7 +1199,7 @@ fn store_response_blob(
 
 #[cfg(test)]
 mod tests {
-    use super::{insert_entry, InsertEntryOptions};
+    use super::{insert_entry, EntryRelations, InsertEntryOptions};
     use crate::db::create_schema;
     use crate::har::Har;
     use rusqlite::{params, Connection};
@@ -1233,7 +1265,9 @@ mod tests {
         )
         .expect("insert import");
 
-        let result = insert_entry(&conn, import_id, entry, &options).expect("insert entry");
+        let result =
+            insert_entry(&conn, import_id, entry, &options, &EntryRelations::default())
+                .expect("insert entry");
         assert!(result.inserted);
         assert_eq!(result.blob_stats.request.created, 0);
         assert_eq!(result.blob_stats.response.created, 1);
@@ -1300,7 +1334,14 @@ mod tests {
         )
         .expect("insert import");
 
-        insert_entry(&conn, 1, entry, &InsertEntryOptions::default()).expect("insert entry");
+        insert_entry(
+            &conn,
+            1,
+            entry,
+            &InsertEntryOptions::default(),
+            &EntryRelations::default(),
+        )
+        .expect("insert entry");
 
         let (op_type, op_name, fields_json): (Option<String>, Option<String>, Option<String>) = conn
             .query_row(
@@ -1383,7 +1424,8 @@ mod tests {
         )
         .expect("insert import");
 
-        insert_entry(&conn, import_id, entry, &options).expect("insert entry");
+        insert_entry(&conn, import_id, entry, &options, &EntryRelations::default())
+            .expect("insert entry");
 
         let (hash, body): (String, Vec<u8>) = conn
             .query_row(
@@ -1453,7 +1495,8 @@ mod tests {
         )
         .expect("insert import");
 
-        insert_entry(&conn, import_id, entry, &options).expect("insert entry");
+        insert_entry(&conn, import_id, entry, &options, &EntryRelations::default())
+            .expect("insert entry");
 
         let request_body_hash: Option<String> = conn
             .query_row("SELECT request_body_hash FROM entries", [], |r| r.get(0))
@@ -1518,7 +1561,8 @@ mod tests {
         )
         .expect("insert import");
 
-        insert_entry(&conn, import_id, entry, &options).expect("insert entry");
+        insert_entry(&conn, import_id, entry, &options, &EntryRelations::default())
+            .expect("insert entry");
 
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM blobs", [], |r| r.get(0))
@@ -1581,7 +1625,13 @@ mod tests {
         )
         .expect("insert import");
 
-        insert_entry(&conn, import_id, entry, &InsertEntryOptions::default())
+        insert_entry(
+            &conn,
+            import_id,
+            entry,
+            &InsertEntryOptions::default(),
+            &EntryRelations::default(),
+        )
             .expect("insert entry");
 
         let row: (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>) =

@@ -81,6 +81,13 @@ CREATE TABLE IF NOT EXISTS entries (
     is_redirect INTEGER,
     server_ip TEXT,
     connection_id TEXT,
+    request_id TEXT,
+    parent_request_id TEXT,
+    initiator_type TEXT,
+    initiator_url TEXT,
+    initiator_line INTEGER,
+    initiator_column INTEGER,
+    redirect_url TEXT,
     tls_version TEXT,
     tls_cipher_suite TEXT,
     tls_cert_subject TEXT,
@@ -111,6 +118,9 @@ CREATE INDEX IF NOT EXISTS idx_entries_mime ON entries(response_mime_type);
 CREATE INDEX IF NOT EXISTS idx_entries_started ON entries(started_at);
 CREATE INDEX IF NOT EXISTS idx_entries_import ON entries(import_id);
 CREATE INDEX IF NOT EXISTS idx_entries_entry_hash ON entries(entry_hash);
+CREATE INDEX IF NOT EXISTS idx_entries_request_id ON entries(request_id);
+CREATE INDEX IF NOT EXISTS idx_entries_parent_request_id ON entries(parent_request_id);
+CREATE INDEX IF NOT EXISTS idx_entries_redirect_url ON entries(redirect_url);
 CREATE INDEX IF NOT EXISTS idx_entries_graphql_type ON entries(graphql_operation_type);
 CREATE INDEX IF NOT EXISTS idx_entries_graphql_name ON entries(graphql_operation_name);
 
@@ -209,6 +219,13 @@ CREATE TABLE IF NOT EXISTS entries (
     is_redirect INTEGER,
     server_ip TEXT,
     connection_id TEXT,
+    request_id TEXT,
+    parent_request_id TEXT,
+    initiator_type TEXT,
+    initiator_url TEXT,
+    initiator_line INTEGER,
+    initiator_column INTEGER,
+    redirect_url TEXT,
     tls_version TEXT,
     tls_cipher_suite TEXT,
     tls_cert_subject TEXT,
@@ -239,6 +256,9 @@ CREATE INDEX IF NOT EXISTS idx_entries_mime ON entries(response_mime_type);
 CREATE INDEX IF NOT EXISTS idx_entries_started ON entries(started_at);
 CREATE INDEX IF NOT EXISTS idx_entries_import ON entries(import_id);
 CREATE INDEX IF NOT EXISTS idx_entries_entry_hash ON entries(entry_hash);
+CREATE INDEX IF NOT EXISTS idx_entries_request_id ON entries(request_id);
+CREATE INDEX IF NOT EXISTS idx_entries_parent_request_id ON entries(parent_request_id);
+CREATE INDEX IF NOT EXISTS idx_entries_redirect_url ON entries(redirect_url);
 CREATE INDEX IF NOT EXISTS idx_entries_graphql_type ON entries(graphql_operation_type);
 CREATE INDEX IF NOT EXISTS idx_entries_graphql_name ON entries(graphql_operation_name);
 
@@ -382,6 +402,42 @@ pub fn ensure_schema_upgrades(conn: &Connection) -> Result<()> {
     if !table_has_column(conn, "entries", "entry_hash")? {
         conn.execute("ALTER TABLE entries ADD COLUMN entry_hash TEXT", [])?;
     }
+    if !table_has_column(conn, "entries", "request_id")? {
+        conn.execute("ALTER TABLE entries ADD COLUMN request_id TEXT", [])?;
+    }
+    if !table_has_column(conn, "entries", "parent_request_id")? {
+        conn.execute(
+            "ALTER TABLE entries ADD COLUMN parent_request_id TEXT",
+            [],
+        )?;
+    }
+    if !table_has_column(conn, "entries", "initiator_type")? {
+        conn.execute(
+            "ALTER TABLE entries ADD COLUMN initiator_type TEXT",
+            [],
+        )?;
+    }
+    if !table_has_column(conn, "entries", "initiator_url")? {
+        conn.execute(
+            "ALTER TABLE entries ADD COLUMN initiator_url TEXT",
+            [],
+        )?;
+    }
+    if !table_has_column(conn, "entries", "initiator_line")? {
+        conn.execute(
+            "ALTER TABLE entries ADD COLUMN initiator_line INTEGER",
+            [],
+        )?;
+    }
+    if !table_has_column(conn, "entries", "initiator_column")? {
+        conn.execute(
+            "ALTER TABLE entries ADD COLUMN initiator_column INTEGER",
+            [],
+        )?;
+    }
+    if !table_has_column(conn, "entries", "redirect_url")? {
+        conn.execute("ALTER TABLE entries ADD COLUMN redirect_url TEXT", [])?;
+    }
     if !table_has_column(conn, "entries", "tls_version")? {
         conn.execute("ALTER TABLE entries ADD COLUMN tls_version TEXT", [])?;
     }
@@ -421,6 +477,18 @@ pub fn ensure_schema_upgrades(conn: &Connection) -> Result<()> {
         [],
     )?;
     conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_entries_request_id ON entries(request_id)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_entries_parent_request_id ON entries(parent_request_id)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_entries_redirect_url ON entries(redirect_url)",
+        [],
+    )?;
+    conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_entries_graphql_type ON entries(graphql_operation_type)",
         [],
     )?;
@@ -428,7 +496,6 @@ pub fn ensure_schema_upgrades(conn: &Connection) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_entries_graphql_name ON entries(graphql_operation_name)",
         [],
     )?;
-
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS graphql_fields (entry_id INTEGER REFERENCES entries(id), field TEXT NOT NULL);
          CREATE UNIQUE INDEX IF NOT EXISTS idx_graphql_fields_entry_field ON graphql_fields(entry_id, field);

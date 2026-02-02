@@ -93,6 +93,13 @@ struct EntryRow {
     is_redirect: Option<i64>,
     server_ip: Option<String>,
     connection_id: Option<String>,
+    request_id: Option<String>,
+    parent_request_id: Option<String>,
+    initiator_type: Option<String>,
+    initiator_url: Option<String>,
+    initiator_line: Option<i64>,
+    initiator_column: Option<i64>,
+    redirect_url: Option<String>,
     tls_version: Option<String>,
     tls_cipher_suite: Option<String>,
     tls_cert_subject: Option<String>,
@@ -178,6 +185,13 @@ const ENTRY_COLUMNS: &[&str] = &[
     "is_redirect",
     "server_ip",
     "connection_id",
+    "request_id",
+    "parent_request_id",
+    "initiator_type",
+    "initiator_url",
+    "initiator_line",
+    "initiator_column",
+    "redirect_url",
     "tls_version",
     "tls_cipher_suite",
     "tls_cert_subject",
@@ -335,21 +349,28 @@ pub fn run_merge(databases: Vec<PathBuf>, options: &MergeOptions) -> Result<()> 
                     is_redirect: row.get(31)?,
                     server_ip: row.get(32)?,
                     connection_id: row.get(33)?,
-                    tls_version: row.get(34)?,
-                    tls_cipher_suite: row.get(35)?,
-                    tls_cert_subject: row.get(36)?,
-                    tls_cert_issuer: row.get(37)?,
-                    tls_cert_expiry: row.get(38)?,
-                    entry_hash: row.get(39)?,
-                    entry_extensions: row.get(40)?,
-                    request_extensions: row.get(41)?,
-                    response_extensions: row.get(42)?,
-                    content_extensions: row.get(43)?,
-                    timings_extensions: row.get(44)?,
-                    post_data_extensions: row.get(45)?,
-                    graphql_operation_type: row.get(46)?,
-                    graphql_operation_name: row.get(47)?,
-                    graphql_top_level_fields: row.get(48)?,
+                    request_id: row.get(34)?,
+                    parent_request_id: row.get(35)?,
+                    initiator_type: row.get(36)?,
+                    initiator_url: row.get(37)?,
+                    initiator_line: row.get(38)?,
+                    initiator_column: row.get(39)?,
+                    redirect_url: row.get(40)?,
+                    tls_version: row.get(41)?,
+                    tls_cipher_suite: row.get(42)?,
+                    tls_cert_subject: row.get(43)?,
+                    tls_cert_issuer: row.get(44)?,
+                    tls_cert_expiry: row.get(45)?,
+                    entry_hash: row.get(46)?,
+                    entry_extensions: row.get(47)?,
+                    request_extensions: row.get(48)?,
+                    response_extensions: row.get(49)?,
+                    content_extensions: row.get(50)?,
+                    timings_extensions: row.get(51)?,
+                    post_data_extensions: row.get(52)?,
+                    graphql_operation_type: row.get(53)?,
+                    graphql_operation_name: row.get(54)?,
+                    graphql_top_level_fields: row.get(55)?,
                 },
             ))
         })?;
@@ -374,6 +395,7 @@ pub fn run_merge(databases: Vec<PathBuf>, options: &MergeOptions) -> Result<()> 
                 if let Some(fields) = graphql_fields.get(&entry_id) {
                     insert_graphql_fields(&tx, existing_entry_id, fields)?;
                 }
+                update_chain_fields(&tx, existing_entry_id, &entry)?;
                 stats.entries_deduped += 1;
                 continue;
             }
@@ -598,21 +620,28 @@ fn load_entry_keys_for_import(
                 is_redirect: row.get(31)?,
                 server_ip: row.get(32)?,
                 connection_id: row.get(33)?,
-                tls_version: row.get(34)?,
-                tls_cipher_suite: row.get(35)?,
-                tls_cert_subject: row.get(36)?,
-                tls_cert_issuer: row.get(37)?,
-                tls_cert_expiry: row.get(38)?,
-                entry_hash: row.get(39)?,
-                entry_extensions: row.get(40)?,
-                request_extensions: row.get(41)?,
-                response_extensions: row.get(42)?,
-                content_extensions: row.get(43)?,
-                timings_extensions: row.get(44)?,
-                post_data_extensions: row.get(45)?,
-                graphql_operation_type: row.get(46)?,
-                graphql_operation_name: row.get(47)?,
-                graphql_top_level_fields: row.get(48)?,
+                request_id: row.get(34)?,
+                parent_request_id: row.get(35)?,
+                initiator_type: row.get(36)?,
+                initiator_url: row.get(37)?,
+                initiator_line: row.get(38)?,
+                initiator_column: row.get(39)?,
+                redirect_url: row.get(40)?,
+                tls_version: row.get(41)?,
+                tls_cipher_suite: row.get(42)?,
+                tls_cert_subject: row.get(43)?,
+                tls_cert_issuer: row.get(44)?,
+                tls_cert_expiry: row.get(45)?,
+                entry_hash: row.get(46)?,
+                entry_extensions: row.get(47)?,
+                request_extensions: row.get(48)?,
+                response_extensions: row.get(49)?,
+                content_extensions: row.get(50)?,
+                timings_extensions: row.get(51)?,
+                post_data_extensions: row.get(52)?,
+                graphql_operation_type: row.get(53)?,
+                graphql_operation_name: row.get(54)?,
+                graphql_top_level_fields: row.get(55)?,
             },
         ))
     })?;
@@ -659,6 +688,13 @@ fn entry_key(entry: &EntryRow, strategy: DedupStrategy) -> EntryKey {
     encode_opt_i64(&mut buf, entry.is_redirect);
     encode_opt_string(&mut buf, entry.server_ip.as_deref());
     encode_opt_string(&mut buf, entry.connection_id.as_deref());
+    encode_opt_string(&mut buf, entry.request_id.as_deref());
+    encode_opt_string(&mut buf, entry.parent_request_id.as_deref());
+    encode_opt_string(&mut buf, entry.initiator_type.as_deref());
+    encode_opt_string(&mut buf, entry.initiator_url.as_deref());
+    encode_opt_i64(&mut buf, entry.initiator_line);
+    encode_opt_i64(&mut buf, entry.initiator_column);
+    encode_opt_string(&mut buf, entry.redirect_url.as_deref());
     // TLS fields are omitted from the merge dedup key to allow enriching existing entries with TLS metadata.
     // entry_hash is derived from the entry contents; omit from the merge dedup key.
     encode_opt_string(&mut buf, entry.entry_extensions.as_deref());
@@ -728,6 +764,31 @@ fn update_tls_fields(conn: &Connection, entry_id: i64, entry: &EntryRow) -> Resu
     Ok(())
 }
 
+fn update_chain_fields(conn: &Connection, entry_id: i64, entry: &EntryRow) -> Result<()> {
+    conn.execute(
+        "UPDATE entries SET
+            request_id = COALESCE(request_id, ?1),
+            parent_request_id = COALESCE(parent_request_id, ?2),
+            initiator_type = COALESCE(initiator_type, ?3),
+            initiator_url = COALESCE(initiator_url, ?4),
+            initiator_line = COALESCE(initiator_line, ?5),
+            initiator_column = COALESCE(initiator_column, ?6),
+            redirect_url = COALESCE(redirect_url, ?7)
+        WHERE id = ?8",
+        params![
+            entry.request_id.as_deref(),
+            entry.parent_request_id.as_deref(),
+            entry.initiator_type.as_deref(),
+            entry.initiator_url.as_deref(),
+            entry.initiator_line,
+            entry.initiator_column,
+            entry.redirect_url.as_deref(),
+            entry_id,
+        ],
+    )?;
+    Ok(())
+}
+
 fn update_graphql_fields(conn: &Connection, entry_id: i64, entry: &EntryRow) -> Result<()> {
     conn.execute(
         "UPDATE entries SET
@@ -753,7 +814,8 @@ fn insert_entry(conn: &Connection, import_id: i64, entry: &EntryRow) -> Result<i
             request_headers, request_cookies, request_body_hash, request_body_size,
             status, status_text, response_headers, response_cookies,
             response_body_hash, response_body_size, response_body_hash_raw, response_body_size_raw, response_mime_type,
-            is_redirect, server_ip, connection_id, tls_version, tls_cipher_suite, tls_cert_subject, tls_cert_issuer, tls_cert_expiry, entry_hash,
+            is_redirect, server_ip, connection_id, request_id, parent_request_id, initiator_type, initiator_url, initiator_line, initiator_column, redirect_url,
+            tls_version, tls_cipher_suite, tls_cert_subject, tls_cert_issuer, tls_cert_expiry, entry_hash,
             entry_extensions, request_extensions, response_extensions, content_extensions, timings_extensions, post_data_extensions,
             graphql_operation_type, graphql_operation_name, graphql_top_level_fields
         ) VALUES (
@@ -761,7 +823,8 @@ fn insert_entry(conn: &Connection, import_id: i64, entry: &EntryRow) -> Result<i
             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
             ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
             ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40,
-            ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48
+            ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50,
+            ?51, ?52, ?53, ?54, ?55
         )",
         params![
             import_id,
@@ -797,6 +860,13 @@ fn insert_entry(conn: &Connection, import_id: i64, entry: &EntryRow) -> Result<i
             entry.is_redirect,
             entry.server_ip.as_deref(),
             entry.connection_id.as_deref(),
+            entry.request_id.as_deref(),
+            entry.parent_request_id.as_deref(),
+            entry.initiator_type.as_deref(),
+            entry.initiator_url.as_deref(),
+            entry.initiator_line,
+            entry.initiator_column,
+            entry.redirect_url.as_deref(),
             entry.tls_version.as_deref(),
             entry.tls_cipher_suite.as_deref(),
             entry.tls_cert_subject.as_deref(),

@@ -76,6 +76,13 @@ CREATE TABLE IF NOT EXISTS entries (
     is_redirect INTEGER,
     server_ip TEXT,
     connection_id TEXT,
+    request_id TEXT,
+    parent_request_id TEXT,
+    initiator_type TEXT,
+    initiator_url TEXT,
+    initiator_line INTEGER,
+    initiator_column INTEGER,
+    redirect_url TEXT,
     tls_version TEXT,
     tls_cipher_suite TEXT,
     tls_cert_subject TEXT,
@@ -106,6 +113,9 @@ CREATE INDEX IF NOT EXISTS idx_entries_mime ON entries(response_mime_type);
 CREATE INDEX IF NOT EXISTS idx_entries_started ON entries(started_at);
 CREATE INDEX IF NOT EXISTS idx_entries_import ON entries(import_id);
 CREATE INDEX IF NOT EXISTS idx_entries_entry_hash ON entries(entry_hash);
+CREATE INDEX IF NOT EXISTS idx_entries_request_id ON entries(request_id);
+CREATE INDEX IF NOT EXISTS idx_entries_parent_request_id ON entries(parent_request_id);
+CREATE INDEX IF NOT EXISTS idx_entries_redirect_url ON entries(redirect_url);
 CREATE INDEX IF NOT EXISTS idx_entries_graphql_type ON entries(graphql_operation_type);
 CREATE INDEX IF NOT EXISTS idx_entries_graphql_name ON entries(graphql_operation_name);
 
