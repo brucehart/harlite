@@ -46,6 +46,13 @@ CREATE TABLE IF NOT EXISTS entries (
     -- Timing
     started_at TEXT,
     time_ms REAL,
+    blocked_ms REAL,
+    dns_ms REAL,
+    connect_ms REAL,
+    send_ms REAL,
+    wait_ms REAL,
+    receive_ms REAL,
+    ssl_ms REAL,
 
     -- Request
     method TEXT,
@@ -151,6 +158,13 @@ CREATE TABLE IF NOT EXISTS entries (
     -- Timing
     started_at TEXT,
     time_ms REAL,
+    blocked_ms REAL,
+    dns_ms REAL,
+    connect_ms REAL,
+    send_ms REAL,
+    wait_ms REAL,
+    receive_ms REAL,
+    ssl_ms REAL,
 
     -- Request
     method TEXT,
@@ -269,6 +283,27 @@ pub fn ensure_schema_upgrades(conn: &Connection) -> Result<()> {
             "ALTER TABLE entries ADD COLUMN response_body_size_raw INTEGER",
             [],
         )?;
+    }
+    if !table_has_column(conn, "entries", "blocked_ms")? {
+        conn.execute("ALTER TABLE entries ADD COLUMN blocked_ms REAL", [])?;
+    }
+    if !table_has_column(conn, "entries", "dns_ms")? {
+        conn.execute("ALTER TABLE entries ADD COLUMN dns_ms REAL", [])?;
+    }
+    if !table_has_column(conn, "entries", "connect_ms")? {
+        conn.execute("ALTER TABLE entries ADD COLUMN connect_ms REAL", [])?;
+    }
+    if !table_has_column(conn, "entries", "send_ms")? {
+        conn.execute("ALTER TABLE entries ADD COLUMN send_ms REAL", [])?;
+    }
+    if !table_has_column(conn, "entries", "wait_ms")? {
+        conn.execute("ALTER TABLE entries ADD COLUMN wait_ms REAL", [])?;
+    }
+    if !table_has_column(conn, "entries", "receive_ms")? {
+        conn.execute("ALTER TABLE entries ADD COLUMN receive_ms REAL", [])?;
+    }
+    if !table_has_column(conn, "entries", "ssl_ms")? {
+        conn.execute("ALTER TABLE entries ADD COLUMN ssl_ms REAL", [])?;
     }
     if !table_has_column(conn, "entries", "entry_extensions")? {
         conn.execute("ALTER TABLE entries ADD COLUMN entry_extensions TEXT", [])?;

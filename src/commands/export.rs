@@ -130,6 +130,13 @@ fn headers_from_json(json: Option<&str>) -> Vec<Header> {
     out
 }
 
+fn normalize_ms(value: Option<f64>) -> Option<f64> {
+    match value {
+        Some(v) if v >= 0.0 => Some(v),
+        _ => None,
+    }
+}
+
 fn cookies_from_json(json: Option<&str>) -> Vec<Cookie> {
     let Some(json) = json else {
         return Vec::new();
@@ -561,14 +568,22 @@ pub fn run_export(database: PathBuf, options: &ExportOptions) -> Result<()> {
             row.response_body_size
         };
 
+        let has_timing_parts = row.blocked_ms.is_some()
+            || row.dns_ms.is_some()
+            || row.connect_ms.is_some()
+            || row.ssl_ms.is_some()
+            || row.send_ms.is_some()
+            || row.wait_ms.is_some()
+            || row.receive_ms.is_some();
+        let wait_ms = normalize_ms(row.wait_ms).unwrap_or_else(|| if has_timing_parts { 0.0 } else { time_ms });
         let timings = Some(Timings {
-            blocked: None,
-            dns: None,
-            connect: None,
-            send: 0.0,
-            wait: time_ms,
-            receive: 0.0,
-            ssl: None,
+            blocked: normalize_ms(row.blocked_ms),
+            dns: normalize_ms(row.dns_ms),
+            connect: normalize_ms(row.connect_ms),
+            send: normalize_ms(row.send_ms).unwrap_or(0.0),
+            wait: wait_ms,
+            receive: normalize_ms(row.receive_ms).unwrap_or(0.0),
+            ssl: normalize_ms(row.ssl_ms),
             extensions: Extensions::new(),
         });
 

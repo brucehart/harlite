@@ -883,6 +883,23 @@ pub fn insert_entry_with_hash(
         .post_data
         .as_ref()
         .and_then(|post| extensions_to_json(&post.extensions));
+    let mut blocked_ms = None;
+    let mut dns_ms = None;
+    let mut connect_ms = None;
+    let mut send_ms = None;
+    let mut wait_ms = None;
+    let mut receive_ms = None;
+    let mut ssl_ms = None;
+    if let Some(timings) = &entry.timings {
+        let normalize = |value: f64| if value >= 0.0 { Some(value) } else { None };
+        blocked_ms = timings.blocked.and_then(|v| normalize(v));
+        dns_ms = timings.dns.and_then(|v| normalize(v));
+        connect_ms = timings.connect.and_then(|v| normalize(v));
+        send_ms = normalize(timings.send);
+        wait_ms = normalize(timings.wait);
+        receive_ms = normalize(timings.receive);
+        ssl_ms = timings.ssl.and_then(|v| normalize(v));
+    }
     let tls_details = extract_tls_details(entry);
 
     let is_redirect = if (300..400).contains(&entry.response.status) {
@@ -986,7 +1003,7 @@ pub fn insert_entry_with_hash(
 
     let insert_sql = if ignore_duplicates {
         "INSERT OR IGNORE INTO entries (
-            import_id, page_id, started_at, time_ms,
+            import_id, page_id, started_at, time_ms, blocked_ms, dns_ms, connect_ms, send_ms, wait_ms, receive_ms, ssl_ms,
             method, url, host, path, query_string, http_version,
             request_headers, request_cookies, request_body_hash, request_body_size,
             status, status_text, response_headers, response_cookies,
@@ -997,11 +1014,12 @@ pub fn insert_entry_with_hash(
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
             ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
-            ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38
+            ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40,
+            ?41, ?42, ?43, ?44, ?45
         )"
     } else {
         "INSERT INTO entries (
-            import_id, page_id, started_at, time_ms,
+            import_id, page_id, started_at, time_ms, blocked_ms, dns_ms, connect_ms, send_ms, wait_ms, receive_ms, ssl_ms,
             method, url, host, path, query_string, http_version,
             request_headers, request_cookies, request_body_hash, request_body_size,
             status, status_text, response_headers, response_cookies,
@@ -1012,7 +1030,8 @@ pub fn insert_entry_with_hash(
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
             ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
-            ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38
+            ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40,
+            ?41, ?42, ?43, ?44, ?45
         )"
     };
 
@@ -1023,6 +1042,13 @@ pub fn insert_entry_with_hash(
             entry.pageref,
             entry.started_date_time,
             entry.time,
+            blocked_ms,
+            dns_ms,
+            connect_ms,
+            send_ms,
+            wait_ms,
+            receive_ms,
+            ssl_ms,
             entry.request.method,
             entry.request.url,
             host,

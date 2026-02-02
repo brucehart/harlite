@@ -32,6 +32,7 @@ Works great with AI coding agents like Codex and Claude — they already know SQ
 - **Multi-file support** — Merge multiple HAR files into one database
 - **Database merge** — Combine multiple harlite databases with deduplication (`harlite merge`)
 - **Queryable headers** — Headers stored as JSON, queryable with SQLite JSON functions
+- **Performance analysis** — Built-in timing analysis and caching insights (`harlite analyze`)
 - **Interactive REPL** — Explore databases with history, completions, and shortcuts (`harlite repl`)
 - **Safe sharing** — Redact sensitive headers/cookies before sharing a database
 - **PII scanning** — Find emails/phones/SSNs/credit cards in URLs and bodies (`harlite pii`)
@@ -375,6 +376,21 @@ harlite stats traffic.db
 harlite stats traffic.db --json
 ```
 
+### Performance analysis
+
+Use `harlite analyze` to summarize performance timings, slow requests, connection reuse, and caching opportunities.
+
+```bash
+harlite analyze traffic.db
+
+# JSON output for scripts
+harlite analyze traffic.db --json
+
+# Filters + thresholds
+harlite analyze traffic.db --host api.example.com --from 2024-01-15 --to 2024-01-16 \
+  --slow-total-ms 800 --slow-ttfb-ms 300 --top 20
+```
+
 ### Imports list and prune
 
 List import metadata (id, source, date range, entry count):
@@ -594,6 +610,13 @@ The main table containing one row per HTTP request/response pair.
 | `page_id` | TEXT | References `pages.id` (if available) |
 | `started_at` | TEXT | ISO 8601 timestamp |
 | `time_ms` | REAL | Total request duration in milliseconds |
+| `blocked_ms` | REAL | Time spent blocked (ms) |
+| `dns_ms` | REAL | DNS lookup time (ms) |
+| `connect_ms` | REAL | TCP connect time (ms) |
+| `send_ms` | REAL | Request send time (ms) |
+| `wait_ms` | REAL | Time to first byte (TTFB) (ms) |
+| `receive_ms` | REAL | Response receive time (ms) |
+| `ssl_ms` | REAL | TLS handshake time (ms) |
 | `method` | TEXT | HTTP method (GET, POST, etc.) |
 | `url` | TEXT | Full request URL |
 | `host` | TEXT | Hostname extracted from URL |

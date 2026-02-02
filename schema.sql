@@ -41,6 +41,13 @@ CREATE TABLE IF NOT EXISTS entries (
     -- Timing
     started_at TEXT,
     time_ms REAL,
+    blocked_ms REAL,
+    dns_ms REAL,
+    connect_ms REAL,
+    send_ms REAL,
+    wait_ms REAL,
+    receive_ms REAL,
+    ssl_ms REAL,
 
     -- Request
     method TEXT,

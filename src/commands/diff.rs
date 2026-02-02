@@ -244,7 +244,7 @@ impl EntrySnapshot {
             host,
             status: row.status,
             total_ms: row.time_ms,
-            ttfb_ms: None,
+            ttfb_ms: normalize_ms(row.wait_ms),
             request_headers: headers_from_json(row.request_headers.as_deref()),
             response_headers: headers_from_json(row.response_headers.as_deref()),
             request_body_size: normalize_i64(row.request_body_size),
@@ -281,6 +281,13 @@ fn host_from_url(url: &str) -> Option<String> {
 fn normalize_i64(value: Option<i64>) -> Option<i64> {
     match value {
         Some(v) if v >= 0 => Some(v),
+        _ => None,
+    }
+}
+
+fn normalize_ms(value: Option<f64>) -> Option<f64> {
+    match value {
+        Some(v) if v >= 0.0 => Some(v),
         _ => None,
     }
 }
