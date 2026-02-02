@@ -41,7 +41,7 @@ struct ServeEntry {
     method: String,
     url: String,
     status: u16,
-    headers: HashMap<String, String>,
+    headers: Vec<(String, String)>,
     body: Bytes,
     mime_type: Option<String>,
     started_at: Option<String>,
@@ -274,7 +274,7 @@ fn build_response(entry: &ServeEntry) -> Response<Body> {
             }
             if let Ok(header_name) = hyper::header::HeaderName::from_bytes(name.as_bytes()) {
                 if let Ok(header_value) = hyper::header::HeaderValue::from_str(value) {
-                    headers.insert(header_name, header_value);
+                    headers.append(header_name, header_value);
                 }
             }
         }
@@ -470,13 +470,26 @@ fn load_entries_from_db(path: &Path, options: &ServeOptions) -> Result<Vec<Serve
         let Some(url) = row.url.clone() else { continue; };
         let method = row.method.unwrap_or_else(|| "GET".to_string());
         let status = row.status.and_then(|s| u16::try_from(s).ok()).unwrap_or(200);
-        let headers = headers_from_json(row.response_headers.as_deref());
-        let body_hash = row.response_body_hash.or(row.response_body_hash_raw);
+        let headers_map = headers_from_json(row.response_headers.as_deref());
+        let mut headers = headers_from_map(&headers_map);
+        let has_content_encoding = headers_map
+            .keys()
+            .any(|name| name.eq_ignore_ascii_case("content-encoding"));
+
+        let body_hash = if has_content_encoding {
+            row.response_body_hash_raw.clone().or(row.response_body_hash.clone())
+        } else {
+            row.response_body_hash.clone().or(row.response_body_hash_raw.clone())
+        };
         let body = body_hash
             .as_ref()
             .and_then(|hash| blob_map.get(hash))
             .map(|blob| Bytes::from(blob.content.clone()))
             .unwrap_or_else(Bytes::new);
+
+        if has_content_encoding && row.response_body_hash_raw.is_none() {
+            strip_content_encoding(&mut headers);
+        }
 
         out.push(ServeEntry {
             method,
@@ -544,7 +557,20 @@ fn headers_from_json(json: Option<&str>) -> HashMap<String, String> {
         .unwrap_or_default()
 }
 
-fn headers_from_list(headers: &[Header]) -> HashMap<String, String> {
+fn headers_from_map(headers: &HashMap<String, String>) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            if name.trim().is_empty() {
+                None
+            } else {
+                Some((name.to_ascii_lowercase(), value.clone()))
+            }
+        })
+        .collect()
+}
+
+fn headers_from_list(headers: &[Header]) -> Vec<(String, String)> {
     headers
         .iter()
         .filter_map(|h| {
@@ -555,6 +581,10 @@ fn headers_from_list(headers: &[Header]) -> HashMap<String, String> {
             }
         })
         .collect()
+}
+
+fn strip_content_encoding(headers: &mut Vec<(String, String)>) {
+    headers.retain(|(name, _)| !name.eq_ignore_ascii_case("content-encoding"));
 }
 
 fn load_external_blob_content(blob: &mut BlobRow, external_root: Option<&Path>) -> Result<()> {
@@ -628,16 +658,19 @@ fn is_db_path(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_url, query_score, select_entry, MatchMode, NormalizedUrl, ServeEntry};
+    use super::{
+        build_response, headers_from_list, normalize_url, query_score, select_entry, strip_content_encoding,
+        MatchMode, NormalizedUrl, ServeEntry,
+    };
     use bytes::Bytes;
-    use std::collections::HashMap;
+    use crate::har::Header;
 
     fn entry(method: &str, url: &str, started_at: Option<&str>) -> ServeEntry {
         ServeEntry {
             method: method.to_string(),
             url: url.to_string(),
             status: 200,
-            headers: HashMap::new(),
+            headers: Vec::new(),
             body: Bytes::new(),
             mime_type: None,
             started_at: started_at.map(|s| s.to_string()),
@@ -689,5 +722,48 @@ mod tests {
             ],
         };
         assert_eq!(query_score(&a, &b), 1);
+    }
+
+    #[test]
+    fn headers_from_list_preserves_duplicates() {
+        let headers = vec![
+            Header {
+                name: "Set-Cookie".to_string(),
+                value: "a=1".to_string(),
+            },
+            Header {
+                name: "Set-Cookie".to_string(),
+                value: "b=2".to_string(),
+            },
+        ];
+        let pairs = headers_from_list(&headers);
+        assert_eq!(pairs.len(), 2);
+    }
+
+    #[test]
+    fn build_response_appends_duplicate_headers() {
+        let mut entry = entry("GET", "http://example.com/", None);
+        entry.headers = vec![
+            ("set-cookie".to_string(), "a=1".to_string()),
+            ("set-cookie".to_string(), "b=2".to_string()),
+        ];
+        let response = build_response(&entry);
+        let values = response
+            .headers()
+            .get_all(hyper::header::SET_COOKIE)
+            .iter()
+            .collect::<Vec<_>>();
+        assert_eq!(values.len(), 2);
+    }
+
+    #[test]
+    fn strip_content_encoding_removes_header() {
+        let mut headers = vec![
+            ("content-encoding".to_string(), "gzip".to_string()),
+            ("content-type".to_string(), "text/plain".to_string()),
+        ];
+        strip_content_encoding(&mut headers);
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].0, "content-type");
     }
 }
