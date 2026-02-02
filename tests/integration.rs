@@ -202,6 +202,64 @@ fn test_import_with_pages() {
 }
 
 #[test]
+fn test_export_data_jsonl() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+    let out_path = tmp.path().join("entries.jsonl");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args(["export-data", "--format", "jsonl", "-o"])
+        .arg(&out_path)
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let mut contents = String::new();
+    fs::File::open(&out_path)
+        .unwrap()
+        .read_to_string(&mut contents)
+        .unwrap();
+    let first_line = contents.lines().next().unwrap_or("");
+    let parsed: serde_json::Value = serde_json::from_str(first_line).unwrap();
+    assert!(parsed.get("url").is_some());
+}
+
+#[test]
+fn test_openapi_basic() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+    let out_path = tmp.path().join("openapi.json");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args(["openapi", "-o"])
+        .arg(&out_path)
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let mut contents = String::new();
+    fs::File::open(&out_path)
+        .unwrap()
+        .read_to_string(&mut contents)
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&contents).unwrap();
+    assert_eq!(parsed.get("openapi").and_then(|v| v.as_str()), Some("3.0.3"));
+    assert!(parsed.get("paths").is_some());
+}
+
+#[test]
 fn test_replay_har_with_override() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();

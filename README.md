@@ -452,6 +452,41 @@ Notes / gaps:
 - Extension fields (including underscore-prefixed fields) on log/page/entry/request/response/content/timings/postData are preserved as JSON for round-trip export. Example extensions seen in Chromium HARs include `_resourceType`, `_priority`, `_transferSize`, `_initiator`, `_fromDiskCache`, and `_fromServiceWorker`.
 - Schema upgrades automatically add extension columns (`log_extensions`, `page_extensions`, `entry_extensions`, etc.) when opening older databases.
 
+### Export entries for data pipelines
+
+Export entries as CSV, JSON Lines, or Parquet (feature-gated). Filters match `harlite export`.
+
+```bash
+# JSON Lines export (default)
+harlite export-data traffic.db -o entries.jsonl
+
+# CSV export
+harlite export-data traffic.db --format csv -o entries.csv
+
+# Parquet export (requires building with the parquet feature)
+cargo build --features parquet
+harlite export-data traffic.db --format parquet -o entries.parquet
+
+# Filter examples
+harlite export-data traffic.db --host api.example.com --status 200 --method GET
+harlite export-data traffic.db --url-regex 'example\\.com/(api|v1)/'
+harlite export-data traffic.db --from 2024-01-15 --to 2024-01-16 --format csv
+```
+
+### Generate OpenAPI schema
+
+Generate an OpenAPI 3.0 schema from captured traffic. By default, the schema is conservative and does not sample bodies. Use `--sample-bodies` to infer JSON schemas.
+
+```bash
+harlite openapi traffic.db -o openapi.json
+
+# Sample up to 5 request/response bodies per operation (JSON only)
+harlite openapi traffic.db --sample-bodies 5 --sample-body-max-size 100KB -o openapi.json
+
+# Filter to a specific host and time window
+harlite openapi traffic.db --host api.example.com --from 2024-01-15 --to 2024-01-16 -o openapi.json
+```
+
 ### Export waterfall data
 
 Export request waterfall timing data as either a Chrome/Perfetto trace (machine-readable) or a terminal-friendly ASCII diagram:

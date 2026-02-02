@@ -1,6 +1,9 @@
 mod diff;
 mod analyze;
+mod entry_filter;
 mod export;
+mod export_data;
+mod openapi;
 mod fts;
 mod import;
 mod imports;
@@ -21,7 +24,9 @@ mod waterfall;
 
 pub use diff::{run_diff, DiffOptions};
 pub use analyze::{run_analyze, AnalyzeOptions};
+pub use entry_filter::EntryFilterOptions;
 pub use export::{run_export, ExportOptions};
+pub use export_data::{run_export_data, DataExportFormat, ExportDataOptions};
 pub use fts::{run_fts_rebuild, FtsTokenizer};
 pub use import::{run_import, ImportOptions};
 pub use imports::run_imports;
@@ -35,6 +40,7 @@ pub use repl::{run_repl, ReplOptions};
 pub use replay::{run_replay, ReplayOptions};
 pub use schema::run_schema;
 pub use search::run_search;
+pub use openapi::{run_openapi, OpenApiOptions};
 pub use stats::{run_stats, StatsOptions};
 pub use waterfall::{run_waterfall, WaterfallFormat, WaterfallGroupBy, WaterfallOptions};
 mod cdp;
