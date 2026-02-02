@@ -79,80 +79,105 @@ pub fn run_info(database: PathBuf, options: &InfoOptions) -> Result<()> {
     }
 
     if let Some(days) = options.cert_expiring_days {
-        // Clamp the number of days to what chrono::Duration can safely represent.
-        // chrono::Duration stores seconds in an i64, so the maximum whole days is i64::MAX / 86_400.
-        const MAX_DAYS_I64: i64 = i64::MAX / 86_400;
-        let clamped_days_i64 = match i64::try_from(days) {
-            Ok(d) if d <= MAX_DAYS_I64 => d,
-            Ok(_) => MAX_DAYS_I64,
-            Err(_) => MAX_DAYS_I64,
-        };
-
-        let now = Utc::now();
-        let cutoff = now + Duration::days(clamped_days_i64);
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT host, tls_cert_subject, tls_cert_issuer, tls_cert_expiry, tls_version, tls_cipher_suite \
-             FROM entries WHERE tls_cert_expiry IS NOT NULL",
-        )?;
-        let mut expiring = Vec::new();
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, Option<String>>(0)?,
-                row.get::<_, Option<String>>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, Option<String>>(5)?,
-            ))
-        })?;
-
-        for row in rows {
-            let (host, subject, issuer, expiry_raw, tls_version, tls_cipher) = row?;
-            if let Some(expiry) = parse_cert_expiry(&expiry_raw) {
-                if expiry <= cutoff {
-                    expiring.push((
-                        host.unwrap_or_else(|| "<unknown host>".to_string()),
-                        subject,
-                        issuer,
-                        expiry,
-                        tls_version,
-                        tls_cipher,
-                    ));
+        // Check whether the TLS certificate columns exist before querying them.
+        let mut has_tls_cert_expiry = false;
+        {
+            let mut pragma_stmt = conn.prepare("PRAGMA table_info(entries)")?;
+            let pragma_rows = pragma_stmt.query_map([], |row| {
+                // Column name is in the second column (index 1).
+                row.get::<_, String>(1)
+            })?;
+            for col_result in pragma_rows {
+                let col_name = col_result?;
+                if col_name == "tls_cert_expiry" {
+                    has_tls_cert_expiry = true;
+                    break;
                 }
             }
         }
 
-        expiring.sort_by_key(|entry| entry.3);
-
-        println!("\nCertificates expiring within {} days:", days);
-        if expiring.is_empty() {
-            println!("  (none found)");
+        if !has_tls_cert_expiry {
+            // Older databases may not have TLS metadata; skip cert-expiry report.
+            eprintln!(
+                "\nTLS certificate metadata not available in this database; \
+                 skipping certificate expiry report."
+            );
         } else {
-            const MAX_CERT_ROWS: usize = 20;
-            for (idx, (host, subject, issuer, expiry, tls_version, tls_cipher)) in
-                expiring.iter().take(MAX_CERT_ROWS).enumerate()
-            {
-                let status = if *expiry < now { "expired" } else { "expiring" };
-                let subject = subject.as_deref().unwrap_or("<unknown subject>");
-                let issuer = issuer.as_deref().unwrap_or("<unknown issuer>");
-                let version = tls_version.as_deref().unwrap_or("<unknown tls>");
-                let cipher = tls_cipher.as_deref().unwrap_or("<unknown cipher>");
-                println!(
-                    "  {}. {} | {} | {} | {} | {} | {}",
-                    idx + 1,
-                    host,
-                    subject,
-                    issuer,
-                    expiry.to_rfc3339(),
-                    version,
-                    cipher
-                );
-                if status == "expired" {
-                    println!("     status: expired");
+            // Clamp the number of days to what chrono::Duration can safely represent.
+            // chrono::Duration stores seconds in an i64, so the maximum whole days is i64::MAX / 86_400.
+            const MAX_DAYS_I64: i64 = i64::MAX / 86_400;
+            let clamped_days_i64 = match i64::try_from(days) {
+                Ok(d) if d <= MAX_DAYS_I64 => d,
+                Ok(_) => MAX_DAYS_I64,
+                Err(_) => MAX_DAYS_I64,
+            };
+
+            let now = Utc::now();
+            let cutoff = now + Duration::days(clamped_days_i64);
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT host, tls_cert_subject, tls_cert_issuer, tls_cert_expiry, tls_version, tls_cipher_suite \
+                 FROM entries WHERE tls_cert_expiry IS NOT NULL",
+            )?;
+            let mut expiring = Vec::new();
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                ))
+            })?;
+
+            for row in rows {
+                let (host, subject, issuer, expiry_raw, tls_version, tls_cipher) = row?;
+                if let Some(expiry) = parse_cert_expiry(&expiry_raw) {
+                    if expiry <= cutoff {
+                        expiring.push((
+                            host.unwrap_or_else(|| "<unknown host>".to_string()),
+                            subject,
+                            issuer,
+                            expiry,
+                            tls_version,
+                            tls_cipher,
+                        ));
+                    }
                 }
             }
-            if expiring.len() > MAX_CERT_ROWS {
-                println!("  ... and {} more", expiring.len() - MAX_CERT_ROWS);
+
+            expiring.sort_by_key(|entry| entry.3);
+
+            println!("\nCertificates expiring within {} days:", days);
+            if expiring.is_empty() {
+                println!("  (none found)");
+            } else {
+                const MAX_CERT_ROWS: usize = 20;
+                for (idx, (host, subject, issuer, expiry, tls_version, tls_cipher)) in
+                    expiring.iter().take(MAX_CERT_ROWS).enumerate()
+                {
+                    let status = if *expiry < now { "expired" } else { "expiring" };
+                    let subject = subject.as_deref().unwrap_or("<unknown subject>");
+                    let issuer = issuer.as_deref().unwrap_or("<unknown issuer>");
+                    let version = tls_version.as_deref().unwrap_or("<unknown tls>");
+                    let cipher = tls_cipher.as_deref().unwrap_or("<unknown cipher>");
+                    println!(
+                        "  {}. {} | {} | {} | {} | {} | {}",
+                        idx + 1,
+                        host,
+                        subject,
+                        issuer,
+                        expiry.to_rfc3339(),
+                        version,
+                        cipher
+                    );
+                    if status == "expired" {
+                        println!("     status: expired");
+                    }
+                }
+                if expiring.len() > MAX_CERT_ROWS {
+                    println!("  ... and {} more", expiring.len() - MAX_CERT_ROWS);
+                }
             }
         }
     }
