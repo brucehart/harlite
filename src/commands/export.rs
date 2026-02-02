@@ -13,6 +13,7 @@ use crate::har::{
     Content, Cookie, Creator, Entry, Extensions, Har, Header, Log, Page, PageTimings, PostData,
     QueryParam, Request, Response, Timings,
 };
+use crate::plugins::{PluginContext, PluginSet};
 use super::entry_filter::{load_entries_with_filters, EntryFilterOptions};
 
 /// Options for exporting a harlite database back to a HAR file.
@@ -43,6 +44,7 @@ pub struct ExportOptions {
     pub max_request_size: Option<String>,
     pub min_response_size: Option<String>,
     pub max_response_size: Option<String>,
+    pub plugins: PluginSet,
 }
 
 impl Default for ExportOptions {
@@ -70,6 +72,7 @@ impl Default for ExportOptions {
             max_request_size: None,
             min_response_size: None,
             max_response_size: None,
+            plugins: PluginSet::default(),
         }
     }
 }
@@ -234,6 +237,14 @@ pub fn run_export(database: PathBuf, options: &ExportOptions) -> Result<()> {
                 .unwrap_or("export");
             PathBuf::from(format!("{stem}.har"))
         }
+    };
+    let output_str = output_path.to_string_lossy();
+    let database_str = database.to_string_lossy();
+    let context = PluginContext {
+        command: "export",
+        source: None,
+        database: Some(database_str.as_ref()),
+        output: Some(output_str.as_ref()),
     };
 
     let filters = EntryFilterOptions {
@@ -456,7 +467,7 @@ pub fn run_export(database: PathBuf, options: &ExportOptions) -> Result<()> {
             None
         };
 
-        har_entries.push(Entry {
+        let entry = Entry {
             pageref: row
                 .page_id
                 .as_deref()
@@ -502,7 +513,11 @@ pub fn run_export(database: PathBuf, options: &ExportOptions) -> Result<()> {
             server_ip_address: row.server_ip.clone(),
             connection: row.connection_id.clone(),
             extensions: extensions_from_json(row.entry_extensions.as_deref()),
-        });
+        };
+
+        if let Some(entry) = options.plugins.apply_export_entry(entry, &context)? {
+            har_entries.push(entry);
+        }
     }
 
     let log_extensions = if !multi_import && import_ids.len() == 1 {
@@ -536,6 +551,14 @@ pub fn run_export(database: PathBuf, options: &ExportOptions) -> Result<()> {
             extensions: log_extensions,
         },
     };
+
+    let export_outcome = options.plugins.run_exporters(&har, &context)?;
+    if export_outcome.skip_default {
+        if export_outcome.ran {
+            println!("Export handled by plugin(s); skipping default HAR output.");
+        }
+        return Ok(());
+    }
 
     let mut writer = open_output(&output_path)?;
     if options.pretty {

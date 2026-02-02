@@ -17,6 +17,7 @@ use crate::db::{
 };
 use crate::error::{HarliteError, Result};
 use crate::har::{parse_har_file, parse_har_file_async, Entry, Extensions};
+use crate::plugins::{PluginContext, PluginSet};
 use serde_json::Value;
 
 /// Options for importing HAR files.
@@ -42,6 +43,7 @@ pub struct ImportOptions {
     pub url_regex: Vec<String>,
     pub from: Option<String>,
     pub to: Option<String>,
+    pub plugins: PluginSet,
 }
 
 impl Default for ImportOptions {
@@ -67,6 +69,7 @@ impl Default for ImportOptions {
             url_regex: Vec::new(),
             from: None,
             to: None,
+            plugins: PluginSet::default(),
         }
     }
 }
@@ -199,8 +202,15 @@ pub fn run_import(files: &[PathBuf], options: &ImportOptions) -> Result<ImportSt
     let total_stats = if jobs == 1 {
         let mut stats = ImportStats::default();
         for file_path in files {
-            let file_stats =
-                import_single_file(&mut conn, file_path, &entry_options, &filters, &run_config)?;
+            let file_stats = import_single_file(
+                &mut conn,
+                file_path,
+                &entry_options,
+                &filters,
+                &run_config,
+                &options.plugins,
+                &output_path,
+            )?;
             stats.add_assign(file_stats);
         }
         stats
@@ -212,6 +222,7 @@ pub fn run_import(files: &[PathBuf], options: &ImportOptions) -> Result<ImportSt
             &entry_options,
             &filters,
             &run_config,
+            &options.plugins,
             jobs,
         )?
     };
@@ -244,12 +255,21 @@ fn import_single_file(
     options: &InsertEntryOptions,
     filters: &ImportFilters,
     run_config: &ImportRunConfig,
+    plugins: &PluginSet,
+    output_path: &Path,
 ) -> Result<ImportStats> {
     let file_name = path
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("unknown");
     let source_key = source_key(path);
+    let output_str = output_path.to_string_lossy();
+    let context = PluginContext {
+        command: "import",
+        source: Some(source_key.as_str()),
+        database: Some(output_str.as_ref()),
+        output: None,
+    };
 
     println!("Importing {}...", file_name);
 
@@ -328,22 +348,38 @@ fn import_single_file(
             pb.inc(1);
             continue;
         }
-        let entry_hash = entry_content_hash(entry);
+        let owned_entry: Entry;
+        let entry_ref = if plugins.is_empty() {
+            entry
+        } else {
+            match plugins.apply_import_entry(entry, &context)? {
+                Some(next) => {
+                    owned_entry = next;
+                    &owned_entry
+                }
+                None => {
+                    pb.inc(1);
+                    continue;
+                }
+            }
+        };
+
+        let entry_hash = entry_content_hash(entry_ref);
         if run_config.incremental && entry_hash_exists(&tx, &entry_hash)? {
             stats.entries_skipped += 1;
             pb.inc(1);
             continue;
         }
 
-        let request_id = extract_request_id(entry);
-        let initiator = extract_initiator(entry);
+        let request_id = extract_request_id(entry_ref);
+        let initiator = extract_initiator(entry_ref);
         let mut parent_request_id = initiator.parent_request_id.clone();
         if parent_request_id.is_none() {
-            if let Some(parent) = link_state.take_redirect_parent(&entry.request.url) {
+            if let Some(parent) = link_state.take_redirect_parent(&entry_ref.request.url) {
                 parent_request_id = Some(parent);
             }
         }
-        let redirect_url = extract_redirect_url(entry);
+        let redirect_url = extract_redirect_url(entry_ref);
 
         let relations = EntryRelations {
             request_id: request_id.clone(),
@@ -358,7 +394,7 @@ fn import_single_file(
         let entry_result = insert_entry_with_hash(
             &tx,
             import_id,
-            entry,
+            entry_ref,
             options,
             &relations,
             Some(&entry_hash),
@@ -370,7 +406,7 @@ fn import_single_file(
             stats.response.add_assign(entry_result.blob_stats.response);
         }
         if let (Some(req_id), Some(target)) = (request_id.as_deref(), redirect_url.as_deref()) {
-            link_state.record_redirect(target, &entry.request.url, req_id);
+            link_state.record_redirect(target, &entry_ref.request.url, req_id);
         }
 
         batch_count += 1;
@@ -452,6 +488,7 @@ fn import_parallel(
     entry_options: &InsertEntryOptions,
     filters: &ImportFilters,
     run_config: &ImportRunConfig,
+    plugins: &PluginSet,
     jobs: usize,
 ) -> Result<ImportStats> {
     let queue = Arc::new(Mutex::new(files.iter().cloned().collect::<VecDeque<_>>()));
@@ -463,6 +500,7 @@ fn import_parallel(
         let entry_options = entry_options.clone();
         let filters = filters.clone();
         let run_config = *run_config;
+        let plugins = plugins.clone();
         handles.push(thread::spawn(move || -> Result<ImportStats> {
             let mut conn = Connection::open(&output_path)?;
             setup_connection(&conn)?;
@@ -475,8 +513,15 @@ fn import_parallel(
                 let Some(path) = next else {
                     break;
                 };
-                let file_stats =
-                    import_single_file(&mut conn, &path, &entry_options, &filters, &run_config)?;
+                let file_stats = import_single_file(
+                    &mut conn,
+                    &path,
+                    &entry_options,
+                    &filters,
+                    &run_config,
+                    &plugins,
+                    &output_path,
+                )?;
                 stats.add_assign(file_stats);
             }
             Ok(stats)

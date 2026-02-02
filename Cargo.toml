@@ -12,6 +12,7 @@ keywords = ["har", "http", "sqlite", "web", "debugging"]
 categories = ["command-line-utilities", "web-programming"]
 include = [
     "src/**",
+    "plugins/**",
     "Cargo.toml",
     "Cargo.lock",
     "README.md",
