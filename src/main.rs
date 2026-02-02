@@ -12,14 +12,15 @@ mod size;
 use crate::config::{load_config, render_config, ResolvedConfig};
 use crate::db::ExtractBodiesKind;
 use commands::{
-    run_analyze, run_cdp, run_diff, run_export, run_fts_rebuild, run_import, run_imports, run_info,
-    run_merge, run_pii, run_prune, run_query, run_redact, run_repl, run_replay, run_schema,
-    run_search, run_stats, run_watch, run_waterfall,
+    run_analyze, run_cdp, run_diff, run_export, run_export_data, run_fts_rebuild, run_import,
+    run_imports, run_info, run_merge, run_openapi, run_pii, run_prune, run_query, run_redact,
+    run_repl, run_replay, run_schema, run_search, run_stats, run_watch, run_waterfall,
 };
 use commands::{
-    AnalyzeOptions, CdpOptions, DedupStrategy, DiffOptions, ExportOptions, ImportOptions,
-    MergeOptions, NameMatchMode, OutputFormat, PiiOptions, QueryOptions, RedactOptions, ReplOptions,
-    ReplayOptions, WatchOptions, WaterfallFormat, WaterfallGroupBy, WaterfallOptions,
+    AnalyzeOptions, CdpOptions, DataExportFormat, DedupStrategy, DiffOptions, EntryFilterOptions,
+    ExportDataOptions, ExportOptions, ImportOptions, MergeOptions, NameMatchMode, OpenApiOptions,
+    OutputFormat, PiiOptions, QueryOptions, RedactOptions, ReplOptions, ReplayOptions, WatchOptions,
+    WaterfallFormat, WaterfallGroupBy, WaterfallOptions,
 };
 use commands::{InfoOptions, StatsOptions};
 
@@ -390,6 +391,184 @@ enum Commands {
         /// Write compact JSON (disable pretty-printing)
         #[arg(long, action = clap::ArgAction::SetTrue)]
         compact: Option<bool>,
+
+        /// Exact URL match (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        url: Option<Vec<String>>,
+
+        /// URL substring match (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        url_contains: Option<Vec<String>>,
+
+        /// URL regex match (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        url_regex: Option<Vec<String>>,
+
+        /// Hostname filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        host: Option<Vec<String>>,
+
+        /// HTTP method filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        method: Option<Vec<String>>,
+
+        /// HTTP status filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        status: Option<Vec<i32>>,
+
+        /// Response MIME type substring match (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        mime: Option<Vec<String>>,
+
+        /// URL extension filter (repeatable, comma-separated allowed; e.g. 'js,css,json')
+        #[arg(long, value_delimiter = ',', action = clap::ArgAction::Append)]
+        ext: Option<Vec<String>>,
+
+        /// Filter by import source filename (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        source: Option<Vec<String>>,
+
+        /// Filter by import source filename substring match (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        source_contains: Option<Vec<String>>,
+
+        /// Only export entries on/after this timestamp (RFC3339) or date (YYYY-MM-DD)
+        #[arg(long)]
+        from: Option<String>,
+
+        /// Only export entries on/before this timestamp (RFC3339) or date (YYYY-MM-DD)
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Minimum request body size (e.g., '1KB', '1.5MB', '1M', '100k', '500B')
+        #[arg(long)]
+        min_request_size: Option<String>,
+
+        /// Maximum request body size (e.g., '100KB', '1.5MB', '1M', '100k', 'unlimited')
+        #[arg(long)]
+        max_request_size: Option<String>,
+
+        /// Minimum response body size (e.g., '1KB', '1.5MB', '1M', '100k', '500B')
+        #[arg(long)]
+        min_response_size: Option<String>,
+
+        /// Maximum response body size (e.g., '100KB', '1.5MB', '1M', '100k', 'unlimited')
+        #[arg(long)]
+        max_response_size: Option<String>,
+    },
+
+    /// Export entries to CSV/JSONL/Parquet
+    #[command(name = "export-data")]
+    ExportData {
+        /// Database file to export
+        database: PathBuf,
+
+        /// Output file (default: <database>.<ext>). Use '-' for stdout.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Output format
+        #[arg(short, long, value_enum, default_value_t = DataExportFormat::Jsonl)]
+        format: DataExportFormat,
+
+        /// Exact URL match (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        url: Option<Vec<String>>,
+
+        /// URL substring match (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        url_contains: Option<Vec<String>>,
+
+        /// URL regex match (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        url_regex: Option<Vec<String>>,
+
+        /// Hostname filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        host: Option<Vec<String>>,
+
+        /// HTTP method filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        method: Option<Vec<String>>,
+
+        /// HTTP status filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        status: Option<Vec<i32>>,
+
+        /// Response MIME type substring match (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        mime: Option<Vec<String>>,
+
+        /// URL extension filter (repeatable, comma-separated allowed; e.g. 'js,css,json')
+        #[arg(long, value_delimiter = ',', action = clap::ArgAction::Append)]
+        ext: Option<Vec<String>>,
+
+        /// Filter by import source filename (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        source: Option<Vec<String>>,
+
+        /// Filter by import source filename substring match (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        source_contains: Option<Vec<String>>,
+
+        /// Only export entries on/after this timestamp (RFC3339) or date (YYYY-MM-DD)
+        #[arg(long)]
+        from: Option<String>,
+
+        /// Only export entries on/before this timestamp (RFC3339) or date (YYYY-MM-DD)
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Minimum request body size (e.g., '1KB', '1.5MB', '1M', '100k', '500B')
+        #[arg(long)]
+        min_request_size: Option<String>,
+
+        /// Maximum request body size (e.g., '100KB', '1.5MB', '1M', '100k', 'unlimited')
+        #[arg(long)]
+        max_request_size: Option<String>,
+
+        /// Minimum response body size (e.g., '1KB', '1.5MB', '1M', '100k', '500B')
+        #[arg(long)]
+        min_response_size: Option<String>,
+
+        /// Maximum response body size (e.g., '100KB', '1.5MB', '1M', '100k', 'unlimited')
+        #[arg(long)]
+        max_response_size: Option<String>,
+    },
+
+    /// Generate an OpenAPI schema from captured traffic
+    #[command(name = "openapi")]
+    OpenApi {
+        /// Database file to inspect
+        database: PathBuf,
+
+        /// Output file (default: <database>-openapi.json). Use '-' for stdout.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// OpenAPI title
+        #[arg(long)]
+        title: Option<String>,
+
+        /// OpenAPI version
+        #[arg(long)]
+        version: Option<String>,
+
+        /// Sample up to N request/response bodies per operation (opt-in)
+        #[arg(long)]
+        sample_bodies: Option<usize>,
+
+        /// Maximum body size to sample (e.g., '100KB', '1.5MB', '1M', '100k', 'unlimited')
+        #[arg(long)]
+        sample_body_max_size: Option<String>,
+
+        /// Allow reading external blob paths from the database
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        allow_external_paths: Option<bool>,
+
+        /// Root directory for external blob paths (defaults to database directory)
+        #[arg(long, value_name = "DIR")]
+        external_path_root: Option<PathBuf>,
 
         /// Exact URL match (repeatable)
         #[arg(long, action = clap::ArgAction::Append)]
@@ -1108,6 +1287,110 @@ fn main() {
                         .or_else(|| defaults.max_response_size.clone()),
                 };
                 run_export(database, &options)
+            }
+
+            Commands::ExportData {
+                database,
+                output,
+                format,
+                url,
+                url_contains,
+                url_regex,
+                host,
+                method,
+                status,
+                mime,
+                ext,
+                source,
+                source_contains,
+                from,
+                to,
+                min_request_size,
+                max_request_size,
+                min_response_size,
+                max_response_size,
+            } => {
+                let filters = EntryFilterOptions {
+                    url: url.unwrap_or_default(),
+                    url_contains: url_contains.unwrap_or_default(),
+                    url_regex: url_regex.unwrap_or_default(),
+                    host: host.unwrap_or_default(),
+                    method: method.unwrap_or_default(),
+                    status: status.unwrap_or_default(),
+                    mime_contains: mime.unwrap_or_default(),
+                    ext: ext.unwrap_or_default(),
+                    source: source.unwrap_or_default(),
+                    source_contains: source_contains.unwrap_or_default(),
+                    from,
+                    to,
+                    min_request_size,
+                    max_request_size,
+                    min_response_size,
+                    max_response_size,
+                };
+                let options = ExportDataOptions {
+                    output,
+                    format,
+                    filters,
+                };
+                run_export_data(database, &options)
+            }
+
+            Commands::OpenApi {
+                database,
+                output,
+                title,
+                version,
+                sample_bodies,
+                sample_body_max_size,
+                allow_external_paths,
+                external_path_root,
+                url,
+                url_contains,
+                url_regex,
+                host,
+                method,
+                status,
+                mime,
+                ext,
+                source,
+                source_contains,
+                from,
+                to,
+                min_request_size,
+                max_request_size,
+                min_response_size,
+                max_response_size,
+            } => {
+                let filters = EntryFilterOptions {
+                    url: url.unwrap_or_default(),
+                    url_contains: url_contains.unwrap_or_default(),
+                    url_regex: url_regex.unwrap_or_default(),
+                    host: host.unwrap_or_default(),
+                    method: method.unwrap_or_default(),
+                    status: status.unwrap_or_default(),
+                    mime_contains: mime.unwrap_or_default(),
+                    ext: ext.unwrap_or_default(),
+                    source: source.unwrap_or_default(),
+                    source_contains: source_contains.unwrap_or_default(),
+                    from,
+                    to,
+                    min_request_size,
+                    max_request_size,
+                    min_response_size,
+                    max_response_size,
+                };
+                let options = OpenApiOptions {
+                    output,
+                    title,
+                    version,
+                    sample_bodies,
+                    sample_body_max_size,
+                    allow_external_paths: allow_external_paths.unwrap_or(false),
+                    external_path_root,
+                    filters,
+                };
+                run_openapi(database, &options)
             }
 
             Commands::Waterfall {
