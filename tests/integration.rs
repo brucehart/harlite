@@ -656,6 +656,43 @@ fn test_search_command() {
 }
 
 #[test]
+fn test_fts_rebuild_restores_missing_index() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "--bodies", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch("DROP TABLE response_body_fts;").unwrap();
+    drop(conn);
+
+    harlite()
+        .args(["search", "Alice"])
+        .arg(&db_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("FTS index not found"));
+
+    harlite()
+        .args(["fts-rebuild"])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Rebuilt response body FTS index"));
+
+    harlite()
+        .args(["search", "Alice"])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Alice"));
+}
+
+#[test]
 fn test_deduplication() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("test.db");
