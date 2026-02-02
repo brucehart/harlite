@@ -463,6 +463,41 @@ Notes / gaps:
 - Extension fields (including underscore-prefixed fields) on log/page/entry/request/response/content/timings/postData are preserved as JSON for round-trip export. Example extensions seen in Chromium HARs include `_resourceType`, `_priority`, `_transferSize`, `_initiator`, `_fromDiskCache`, and `_fromServiceWorker`.
 - Schema upgrades automatically add extension columns (`log_extensions`, `page_extensions`, `entry_extensions`, etc.) when opening older databases.
 
+### Export entries for data pipelines
+
+Export entries as CSV, JSON Lines, or Parquet (feature-gated). Filters match `harlite export`.
+
+```bash
+# JSON Lines export (default)
+harlite export-data traffic.db -o entries.jsonl
+
+# CSV export
+harlite export-data traffic.db --format csv -o entries.csv
+
+# Parquet export (requires building with the parquet feature)
+cargo build --features parquet
+harlite export-data traffic.db --format parquet -o entries.parquet
+
+# Filter examples
+harlite export-data traffic.db --host api.example.com --status 200 --method GET
+harlite export-data traffic.db --url-regex 'example\\.com/(api|v1)/'
+harlite export-data traffic.db --from 2024-01-15 --to 2024-01-16 --format csv
+```
+
+### Generate OpenAPI schema
+
+Generate an OpenAPI 3.0 schema from captured traffic. By default, the schema is conservative and does not sample bodies. Use `--sample-bodies` to infer JSON schemas.
+
+```bash
+harlite openapi traffic.db -o openapi.json
+
+# Sample up to 5 request/response bodies per operation (JSON only)
+harlite openapi traffic.db --sample-bodies 5 --sample-body-max-size 100KB -o openapi.json
+
+# Filter to a specific host and time window
+harlite openapi traffic.db --host api.example.com --from 2024-01-15 --to 2024-01-16 -o openapi.json
+```
+
 ### Export waterfall data
 
 Export request waterfall timing data as either a Chrome/Perfetto trace (machine-readable) or a terminal-friendly ASCII diagram:
@@ -478,6 +513,34 @@ harlite waterfall traffic.db --format text --group-by navigation
 harlite waterfall traffic.db --host api.example.com --from 2024-01-15 --to 2024-01-16
 harlite waterfall traffic.db --page "Homepage"
 ```
+
+### Export OpenTelemetry spans
+
+Export timing data as OpenTelemetry spans, either as JSON (for inspection) or directly to an OTLP collector.
+
+```bash
+# JSON export to stdout
+harlite otel traffic.db --format json
+
+# JSON export to file
+harlite otel traffic.db --format json -o traces.json
+
+# OTLP over HTTP (protobuf)
+harlite otel traffic.db --format otlp-http --endpoint http://localhost:4318
+
+# OTLP over gRPC
+harlite otel traffic.db --format otlp-grpc --endpoint localhost:4317
+
+# Include only specific hosts and keep the first 5k spans
+harlite otel traffic.db --host api.example.com --max-spans 5000
+
+# Disable phase spans (only root request spans)
+harlite otel traffic.db --no-phases
+```
+
+Sampling / volume notes:
+- Exports can be large; use `--sample-rate` to reduce volume deterministically and `--max-spans` to cap output.
+- Each request becomes a root span; with phases enabled, extra child spans are emitted for blocked/dns/connect/ssl/send/wait/receive.
 
 ### Diff HAR or databases
 
