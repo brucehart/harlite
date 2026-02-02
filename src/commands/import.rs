@@ -101,9 +101,15 @@ impl EntryLinkState {
         self.pending_redirects.remove(url)
     }
 
-    fn record_redirect(&mut self, redirect_url: &str, request_id: &str) {
+    fn record_redirect(&mut self, redirect_url: &str, base_url: &str, request_id: &str) {
         self.pending_redirects
             .insert(redirect_url.to_string(), request_id.to_string());
+        if let Some(normalized) = normalize_redirect_url(redirect_url, base_url) {
+            if normalized != redirect_url {
+                self.pending_redirects
+                    .insert(normalized, request_id.to_string());
+            }
+        }
     }
 }
 
@@ -364,7 +370,7 @@ fn import_single_file(
             stats.response.add_assign(entry_result.blob_stats.response);
         }
         if let (Some(req_id), Some(target)) = (request_id.as_deref(), redirect_url.as_deref()) {
-            link_state.record_redirect(target, req_id);
+            link_state.record_redirect(target, &entry.request.url, req_id);
         }
 
         batch_count += 1;
@@ -816,6 +822,18 @@ fn extract_redirect_url(entry: &Entry) -> Option<String> {
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
     direct.or_else(|| header_value(&entry.response.headers, "location"))
+}
+
+fn normalize_redirect_url(redirect_url: &str, base_url: &str) -> Option<String> {
+    let trimmed = redirect_url.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(parsed) = Url::parse(trimmed) {
+        return Some(parsed.to_string());
+    }
+    let base = Url::parse(base_url).ok()?;
+    base.join(trimmed).ok().map(|url| url.to_string())
 }
 
 fn extension_value<'a>(extensions: &'a Extensions, keys: &[&str]) -> Option<&'a Value> {
