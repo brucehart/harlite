@@ -13,14 +13,14 @@ use crate::config::{load_config, render_config, ResolvedConfig};
 use crate::db::ExtractBodiesKind;
 use commands::{
     run_analyze, run_cdp, run_diff, run_export, run_export_data, run_fts_rebuild, run_import,
-    run_imports, run_info, run_merge, run_openapi, run_pii, run_prune, run_query, run_redact,
-    run_repl, run_replay, run_schema, run_search, run_stats, run_watch, run_waterfall,
+    run_imports, run_info, run_merge, run_openapi, run_otel, run_pii, run_prune, run_query,
+    run_redact, run_repl, run_replay, run_schema, run_search, run_stats, run_watch, run_waterfall,
 };
 use commands::{
     AnalyzeOptions, CdpOptions, DataExportFormat, DedupStrategy, DiffOptions, EntryFilterOptions,
     ExportDataOptions, ExportOptions, ImportOptions, MergeOptions, NameMatchMode, OpenApiOptions,
-    OutputFormat, PiiOptions, QueryOptions, RedactOptions, ReplOptions, ReplayOptions, WatchOptions,
-    WaterfallFormat, WaterfallGroupBy, WaterfallOptions,
+    OtelExportFormat, OtelExportOptions, OutputFormat, PiiOptions, QueryOptions, RedactOptions,
+    ReplOptions, ReplayOptions, WatchOptions, WaterfallFormat, WaterfallGroupBy, WaterfallOptions,
 };
 use commands::{InfoOptions, StatsOptions};
 
@@ -470,6 +470,109 @@ enum Commands {
         /// Output format
         #[arg(short, long, value_enum, default_value_t = DataExportFormat::Jsonl)]
         format: DataExportFormat,
+
+        /// Exact URL match (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        url: Option<Vec<String>>,
+
+        /// URL substring match (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        url_contains: Option<Vec<String>>,
+
+        /// URL regex match (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        url_regex: Option<Vec<String>>,
+
+        /// Hostname filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        host: Option<Vec<String>>,
+
+        /// HTTP method filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        method: Option<Vec<String>>,
+
+        /// HTTP status filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        status: Option<Vec<i32>>,
+
+        /// Response MIME type substring match (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        mime: Option<Vec<String>>,
+
+        /// URL extension filter (repeatable, comma-separated allowed; e.g. 'js,css,json')
+        #[arg(long, value_delimiter = ',', action = clap::ArgAction::Append)]
+        ext: Option<Vec<String>>,
+
+        /// Filter by import source filename (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        source: Option<Vec<String>>,
+
+        /// Filter by import source filename substring match (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        source_contains: Option<Vec<String>>,
+
+        /// Only export entries on/after this timestamp (RFC3339) or date (YYYY-MM-DD)
+        #[arg(long)]
+        from: Option<String>,
+
+        /// Only export entries on/before this timestamp (RFC3339) or date (YYYY-MM-DD)
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Minimum request body size (e.g., '1KB', '1.5MB', '1M', '100k', '500B')
+        #[arg(long)]
+        min_request_size: Option<String>,
+
+        /// Maximum request body size (e.g., '100KB', '1.5MB', '1M', '100k', 'unlimited')
+        #[arg(long)]
+        max_request_size: Option<String>,
+
+        /// Minimum response body size (e.g., '1KB', '1.5MB', '1M', '100k', '500B')
+        #[arg(long)]
+        min_response_size: Option<String>,
+
+        /// Maximum response body size (e.g., '100KB', '1.5MB', '1M', '100k', 'unlimited')
+        #[arg(long)]
+        max_response_size: Option<String>,
+    },
+
+    /// Export entries as OpenTelemetry spans
+    #[command(name = "otel")]
+    Otel {
+        /// Database file to export
+        database: PathBuf,
+
+        /// Output format (json, otlp-http, otlp-grpc)
+        #[arg(short, long, value_enum, default_value_t = OtelExportFormat::Json)]
+        format: OtelExportFormat,
+
+        /// Output file for JSON (default: stdout). Use '-' for stdout.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// OTLP endpoint (required for otlp-http/otlp-grpc)
+        #[arg(long)]
+        endpoint: Option<String>,
+
+        /// Service name for resource attributes
+        #[arg(long, default_value = "harlite")]
+        service_name: String,
+
+        /// Extra resource attributes (key=value, repeatable)
+        #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+        resource_attr: Option<Vec<String>>,
+
+        /// Disable phase spans for timing breakdowns
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        no_phases: bool,
+
+        /// Deterministic sampling rate (0.0 - 1.0)
+        #[arg(long, default_value_t = 1.0)]
+        sample_rate: f64,
+
+        /// Maximum number of root spans to export
+        #[arg(long)]
+        max_spans: Option<usize>,
 
         /// Exact URL match (repeatable)
         #[arg(long, action = clap::ArgAction::Append)]
@@ -1334,6 +1437,65 @@ fn main() {
                     filters,
                 };
                 run_export_data(database, &options)
+            }
+
+            Commands::Otel {
+                database,
+                format,
+                output,
+                endpoint,
+                service_name,
+                resource_attr,
+                no_phases,
+                sample_rate,
+                max_spans,
+                url,
+                url_contains,
+                url_regex,
+                host,
+                method,
+                status,
+                mime,
+                ext,
+                source,
+                source_contains,
+                from,
+                to,
+                min_request_size,
+                max_request_size,
+                min_response_size,
+                max_response_size,
+            } => {
+                let filters = EntryFilterOptions {
+                    url: url.unwrap_or_default(),
+                    url_contains: url_contains.unwrap_or_default(),
+                    url_regex: url_regex.unwrap_or_default(),
+                    host: host.unwrap_or_default(),
+                    method: method.unwrap_or_default(),
+                    status: status.unwrap_or_default(),
+                    mime_contains: mime.unwrap_or_default(),
+                    ext: ext.unwrap_or_default(),
+                    source: source.unwrap_or_default(),
+                    source_contains: source_contains.unwrap_or_default(),
+                    from,
+                    to,
+                    min_request_size,
+                    max_request_size,
+                    min_response_size,
+                    max_response_size,
+                };
+                let options = OtelExportOptions {
+                    format,
+                    output,
+                    endpoint,
+                    service_name,
+                    resource_attr: resource_attr.unwrap_or_default(),
+                    include_phases: !no_phases,
+                    sample_rate,
+                    max_spans,
+                    filters,
+                };
+                run_otel(database, &options)
             }
 
             Commands::OpenApi {
