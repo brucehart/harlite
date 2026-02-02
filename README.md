@@ -208,6 +208,8 @@ email_regex = ["(?i)\\b[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}\\b"]
 
 `harlite` supports external plugins for custom import/export logic. Plugins are **separate executables** that read a JSON request from stdin and write a JSON response to stdout. This keeps a clear security boundary (the plugin runs as its own process).
 
+For full details, see the plugin developer guide: `docs/plugin-developer-guide.md`.
+
 Plugin kinds:
 - **filter** — decide whether an entry should be included
 - **transform** — modify entries during import/export
