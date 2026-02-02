@@ -623,10 +623,12 @@ fn normalize_otlp_http_endpoint(endpoint: &str) -> Result<String> {
     let parsed = Url::parse(endpoint).map_err(|_| {
         HarliteError::InvalidArgs("--endpoint must be a valid URL".to_string())
     })?;
-    if parsed.path().ends_with("/v1/traces") {
-        return Ok(endpoint.to_string());
+    let trimmed = endpoint.trim_end_matches('/');
+    let path = parsed.path().trim_end_matches('/');
+    if path.ends_with("/v1/traces") {
+        return Ok(trimmed.to_string());
     }
-    let mut base = endpoint.trim_end_matches('/').to_string();
+    let mut base = trimmed.to_string();
     base.push_str("/v1/traces");
     Ok(base)
 }
