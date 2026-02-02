@@ -105,6 +105,9 @@ struct EntryRow {
     content_extensions: Option<String>,
     timings_extensions: Option<String>,
     post_data_extensions: Option<String>,
+    graphql_operation_type: Option<String>,
+    graphql_operation_name: Option<String>,
+    graphql_top_level_fields: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -187,6 +190,9 @@ const ENTRY_COLUMNS: &[&str] = &[
     "content_extensions",
     "timings_extensions",
     "post_data_extensions",
+    "graphql_operation_type",
+    "graphql_operation_name",
+    "graphql_top_level_fields",
 ];
 
 pub fn run_merge(databases: Vec<PathBuf>, options: &MergeOptions) -> Result<()> {
@@ -289,59 +295,67 @@ pub fn run_merge(databases: Vec<PathBuf>, options: &MergeOptions) -> Result<()> 
             }
         }
 
+        let graphql_fields = load_graphql_fields(&input_conn)?;
+
         let mut stmt = input_conn.prepare(&entry_select_sql(&input_columns))?;
         let rows = stmt.query_map([], |row| {
-            Ok(EntryRow {
-                import_id: row.get(0)?,
-                page_id: row.get(1)?,
-                started_at: row.get(2)?,
-                time_ms: row.get(3)?,
-                blocked_ms: row.get(4)?,
-                dns_ms: row.get(5)?,
-                connect_ms: row.get(6)?,
-                send_ms: row.get(7)?,
-                wait_ms: row.get(8)?,
-                receive_ms: row.get(9)?,
-                ssl_ms: row.get(10)?,
-                method: row.get(11)?,
-                url: row.get(12)?,
-                host: row.get(13)?,
-                path: row.get(14)?,
-                query_string: row.get(15)?,
-                http_version: row.get(16)?,
-                request_headers: row.get(17)?,
-                request_cookies: row.get(18)?,
-                request_body_hash: row.get(19)?,
-                request_body_size: row.get(20)?,
-                status: row.get(21)?,
-                status_text: row.get(22)?,
-                response_headers: row.get(23)?,
-                response_cookies: row.get(24)?,
-                response_body_hash: row.get(25)?,
-                response_body_size: row.get(26)?,
-                response_body_hash_raw: row.get(27)?,
-                response_body_size_raw: row.get(28)?,
-                response_mime_type: row.get(29)?,
-                is_redirect: row.get(30)?,
-                server_ip: row.get(31)?,
-                connection_id: row.get(32)?,
-                tls_version: row.get(33)?,
-                tls_cipher_suite: row.get(34)?,
-                tls_cert_subject: row.get(35)?,
-                tls_cert_issuer: row.get(36)?,
-                tls_cert_expiry: row.get(37)?,
-                entry_hash: row.get(38)?,
-                entry_extensions: row.get(39)?,
-                request_extensions: row.get(40)?,
-                response_extensions: row.get(41)?,
-                content_extensions: row.get(42)?,
-                timings_extensions: row.get(43)?,
-                post_data_extensions: row.get(44)?,
-            })
+            Ok((
+                row.get::<_, i64>(0)?,
+                EntryRow {
+                    import_id: row.get(1)?,
+                    page_id: row.get(2)?,
+                    started_at: row.get(3)?,
+                    time_ms: row.get(4)?,
+                    blocked_ms: row.get(5)?,
+                    dns_ms: row.get(6)?,
+                    connect_ms: row.get(7)?,
+                    send_ms: row.get(8)?,
+                    wait_ms: row.get(9)?,
+                    receive_ms: row.get(10)?,
+                    ssl_ms: row.get(11)?,
+                    method: row.get(12)?,
+                    url: row.get(13)?,
+                    host: row.get(14)?,
+                    path: row.get(15)?,
+                    query_string: row.get(16)?,
+                    http_version: row.get(17)?,
+                    request_headers: row.get(18)?,
+                    request_cookies: row.get(19)?,
+                    request_body_hash: row.get(20)?,
+                    request_body_size: row.get(21)?,
+                    status: row.get(22)?,
+                    status_text: row.get(23)?,
+                    response_headers: row.get(24)?,
+                    response_cookies: row.get(25)?,
+                    response_body_hash: row.get(26)?,
+                    response_body_size: row.get(27)?,
+                    response_body_hash_raw: row.get(28)?,
+                    response_body_size_raw: row.get(29)?,
+                    response_mime_type: row.get(30)?,
+                    is_redirect: row.get(31)?,
+                    server_ip: row.get(32)?,
+                    connection_id: row.get(33)?,
+                    tls_version: row.get(34)?,
+                    tls_cipher_suite: row.get(35)?,
+                    tls_cert_subject: row.get(36)?,
+                    tls_cert_issuer: row.get(37)?,
+                    tls_cert_expiry: row.get(38)?,
+                    entry_hash: row.get(39)?,
+                    entry_extensions: row.get(40)?,
+                    request_extensions: row.get(41)?,
+                    response_extensions: row.get(42)?,
+                    content_extensions: row.get(43)?,
+                    timings_extensions: row.get(44)?,
+                    post_data_extensions: row.get(45)?,
+                    graphql_operation_type: row.get(46)?,
+                    graphql_operation_name: row.get(47)?,
+                    graphql_top_level_fields: row.get(48)?,
+                },
+            ))
         })?;
 
         for row in rows {
-            let entry = row?;
+            let (entry_id, entry) = row?;
             stats.entries_total += 1;
             let Some(&mapped_import_id) = import_id_map.get(&entry.import_id) else {
                 continue;
@@ -356,12 +370,18 @@ pub fn run_merge(databases: Vec<PathBuf>, options: &MergeOptions) -> Result<()> 
             if let Some(&existing_entry_id) = keys.get(&key) {
                 // Entry already exists. Update TLS fields if they are missing in the existing entry.
                 update_tls_fields(&tx, existing_entry_id, &entry)?;
+                if let Some(fields) = graphql_fields.get(&entry_id) {
+                    insert_graphql_fields(&tx, existing_entry_id, fields)?;
+                }
                 stats.entries_deduped += 1;
                 continue;
             }
 
             let new_entry_id = insert_entry(&tx, mapped_import_id, &entry)?;
             keys.insert(key, new_entry_id);
+            if let Some(fields) = graphql_fields.get(&entry_id) {
+                insert_graphql_fields(&tx, new_entry_id, fields)?;
+            }
             stats.entries_added += 1;
         }
 
@@ -486,7 +506,7 @@ fn entry_select_sql(columns: &HashSet<String>) -> String {
     for col in ENTRY_COLUMNS {
         select_cols.push(select_col(columns, col));
     }
-    format!("SELECT {} FROM entries", select_cols.join(", "))
+    format!("SELECT id, {} FROM entries", select_cols.join(", "))
 }
 
 fn load_existing_imports(conn: &Connection) -> Result<HashMap<(String, String), ImportMeta>> {
@@ -589,6 +609,9 @@ fn load_entry_keys_for_import(
                 content_extensions: row.get(43)?,
                 timings_extensions: row.get(44)?,
                 post_data_extensions: row.get(45)?,
+                graphql_operation_type: row.get(46)?,
+                graphql_operation_name: row.get(47)?,
+                graphql_top_level_fields: row.get(48)?,
             },
         ))
     })?;
@@ -713,13 +736,14 @@ fn insert_entry(conn: &Connection, import_id: i64, entry: &EntryRow) -> Result<i
             status, status_text, response_headers, response_cookies,
             response_body_hash, response_body_size, response_body_hash_raw, response_body_size_raw, response_mime_type,
             is_redirect, server_ip, connection_id, tls_version, tls_cipher_suite, tls_cert_subject, tls_cert_issuer, tls_cert_expiry, entry_hash,
-            entry_extensions, request_extensions, response_extensions, content_extensions, timings_extensions, post_data_extensions
+            entry_extensions, request_extensions, response_extensions, content_extensions, timings_extensions, post_data_extensions,
+            graphql_operation_type, graphql_operation_name, graphql_top_level_fields
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
             ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
             ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40,
-            ?41, ?42, ?43, ?44, ?45
+            ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48
         )",
         params![
             import_id,
@@ -767,6 +791,9 @@ fn insert_entry(conn: &Connection, import_id: i64, entry: &EntryRow) -> Result<i
             entry.content_extensions.as_deref(),
             entry.timings_extensions.as_deref(),
             entry.post_data_extensions.as_deref(),
+            entry.graphql_operation_type.as_deref(),
+            entry.graphql_operation_name.as_deref(),
+            entry.graphql_top_level_fields.as_deref(),
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -898,6 +925,35 @@ fn load_existing_fts_hashes(conn: &Connection) -> Result<HashSet<String>> {
         }
     }
     Ok(out)
+}
+
+fn load_graphql_fields(conn: &Connection) -> Result<HashMap<i64, Vec<String>>> {
+    if !table_exists(conn, "graphql_fields")? {
+        return Ok(HashMap::new());
+    }
+
+    let mut stmt = conn.prepare("SELECT entry_id, field FROM graphql_fields")?;
+    let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?;
+
+    let mut out: HashMap<i64, Vec<String>> = HashMap::new();
+    for row in rows {
+        let (entry_id, field) = row?;
+        out.entry(entry_id).or_default().push(field);
+    }
+    Ok(out)
+}
+
+fn insert_graphql_fields(conn: &Connection, entry_id: i64, fields: &[String]) -> Result<()> {
+    if fields.is_empty() || !table_exists(conn, "graphql_fields")? {
+        return Ok(());
+    }
+
+    let mut stmt =
+        conn.prepare_cached("INSERT OR IGNORE INTO graphql_fields (entry_id, field) VALUES (?1, ?2)")?;
+    for field in fields {
+        stmt.execute(params![entry_id, field])?;
+    }
+    Ok(())
 }
 
 fn table_exists(conn: &Connection, table: &str) -> Result<bool> {

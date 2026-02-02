@@ -41,7 +41,8 @@ Works great with AI coding agents like Codex and Claude — they already know SQ
 - **HAR extensions preserved** — Store and round-trip HAR 1.3 extension fields as JSON
 - **CDP capture** — Capture from Chrome and write directly to HAR or SQLite
 - **Watch mode** — Monitor a directory and auto-import new HAR files (`harlite watch`)
-
+- **OpenTelemetry export** — Export spans to JSON or OTLP (HTTP/gRPC)
+- **GraphQL indexing** — Extract and index operations + top-level fields for filtering
 ## Installation
 
 ### Install with Cargo
@@ -147,6 +148,16 @@ harlite query "SELECT method, url, status, time_ms FROM entries LIMIT 10" traffi
 # sqlite3 traffic.db "SELECT method, url, status, time_ms FROM entries LIMIT 10"
 
 # Or use any SQLite tool: DBeaver, datasette, Python, etc.
+```
+
+### GraphQL examples
+
+```bash
+# List GraphQL operations
+harlite query "SELECT url, graphql_operation_type, graphql_operation_name FROM entries WHERE graphql_operation_type IS NOT NULL" traffic.db
+
+# Find requests that touch a specific top-level field
+harlite query "SELECT e.url, e.graphql_operation_name FROM entries e JOIN graphql_fields gf ON gf.entry_id = e.id WHERE gf.field = 'viewer'" traffic.db
 ```
 
 ## Configuration

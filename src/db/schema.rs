@@ -94,7 +94,12 @@ CREATE TABLE IF NOT EXISTS entries (
     response_extensions TEXT,
     content_extensions TEXT,
     timings_extensions TEXT,
-    post_data_extensions TEXT
+    post_data_extensions TEXT,
+
+    -- GraphQL metadata
+    graphql_operation_type TEXT,
+    graphql_operation_name TEXT,
+    graphql_top_level_fields TEXT
 );
 
 -- Indexes
@@ -106,6 +111,16 @@ CREATE INDEX IF NOT EXISTS idx_entries_mime ON entries(response_mime_type);
 CREATE INDEX IF NOT EXISTS idx_entries_started ON entries(started_at);
 CREATE INDEX IF NOT EXISTS idx_entries_import ON entries(import_id);
 CREATE INDEX IF NOT EXISTS idx_entries_entry_hash ON entries(entry_hash);
+CREATE INDEX IF NOT EXISTS idx_entries_graphql_type ON entries(graphql_operation_type);
+CREATE INDEX IF NOT EXISTS idx_entries_graphql_name ON entries(graphql_operation_name);
+
+-- GraphQL top-level fields
+CREATE TABLE IF NOT EXISTS graphql_fields (
+    entry_id INTEGER REFERENCES entries(id),
+    field TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_graphql_fields_field ON graphql_fields(field);
+CREATE INDEX IF NOT EXISTS idx_graphql_fields_entry ON graphql_fields(entry_id);
 "#;
 
 const SCHEMA_FTS: &str = r#"
@@ -206,7 +221,12 @@ CREATE TABLE IF NOT EXISTS entries (
     response_extensions TEXT,
     content_extensions TEXT,
     timings_extensions TEXT,
-    post_data_extensions TEXT
+    post_data_extensions TEXT,
+
+    -- GraphQL metadata
+    graphql_operation_type TEXT,
+    graphql_operation_name TEXT,
+    graphql_top_level_fields TEXT
 );
 
 -- Indexes
@@ -218,6 +238,16 @@ CREATE INDEX IF NOT EXISTS idx_entries_mime ON entries(response_mime_type);
 CREATE INDEX IF NOT EXISTS idx_entries_started ON entries(started_at);
 CREATE INDEX IF NOT EXISTS idx_entries_import ON entries(import_id);
 CREATE INDEX IF NOT EXISTS idx_entries_entry_hash ON entries(entry_hash);
+CREATE INDEX IF NOT EXISTS idx_entries_graphql_type ON entries(graphql_operation_type);
+CREATE INDEX IF NOT EXISTS idx_entries_graphql_name ON entries(graphql_operation_name);
+
+-- GraphQL top-level fields
+CREATE TABLE IF NOT EXISTS graphql_fields (
+    entry_id INTEGER REFERENCES entries(id),
+    field TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_graphql_fields_field ON graphql_fields(field);
+CREATE INDEX IF NOT EXISTS idx_graphql_fields_entry ON graphql_fields(entry_id);
 
 -- Full-text search over response bodies (text-only, deduped by blob hash)
 CREATE VIRTUAL TABLE IF NOT EXISTS response_body_fts
@@ -329,6 +359,24 @@ pub fn ensure_schema_upgrades(conn: &Connection) -> Result<()> {
             [],
         )?;
     }
+    if !table_has_column(conn, "entries", "graphql_operation_type")? {
+        conn.execute(
+            "ALTER TABLE entries ADD COLUMN graphql_operation_type TEXT",
+            [],
+        )?;
+    }
+    if !table_has_column(conn, "entries", "graphql_operation_name")? {
+        conn.execute(
+            "ALTER TABLE entries ADD COLUMN graphql_operation_name TEXT",
+            [],
+        )?;
+    }
+    if !table_has_column(conn, "entries", "graphql_top_level_fields")? {
+        conn.execute(
+            "ALTER TABLE entries ADD COLUMN graphql_top_level_fields TEXT",
+            [],
+        )?;
+    }
     if !table_has_column(conn, "entries", "entry_hash")? {
         conn.execute("ALTER TABLE entries ADD COLUMN entry_hash TEXT", [])?;
     }
@@ -370,6 +418,20 @@ pub fn ensure_schema_upgrades(conn: &Connection) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_entries_entry_hash ON entries(entry_hash)",
         [],
     )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_entries_graphql_type ON entries(graphql_operation_type)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_entries_graphql_name ON entries(graphql_operation_name)",
+        [],
+    )?;
+
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS graphql_fields (entry_id INTEGER REFERENCES entries(id), field TEXT NOT NULL);
+         CREATE INDEX IF NOT EXISTS idx_graphql_fields_field ON graphql_fields(field);
+         CREATE INDEX IF NOT EXISTS idx_graphql_fields_entry ON graphql_fields(entry_id);",
+    )?;
 
     Ok(())
 }
@@ -382,6 +444,7 @@ fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool
         .collect();
     Ok(names.iter().any(|n| n == column))
 }
+
 
 #[cfg(test)]
 mod tests {
