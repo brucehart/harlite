@@ -1300,6 +1300,7 @@ mod tests {
         assert_eq!(host, "example.com");
     }
 
+    #[cfg(feature = "graphql")]
     #[test]
     fn inserts_graphql_metadata() {
         let conn = Connection::open_in_memory().expect("in-memory db");
