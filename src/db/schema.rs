@@ -518,7 +518,7 @@ fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool
 
 #[cfg(test)]
 mod tests {
-    use super::create_schema;
+    use super::{create_schema, ensure_schema_upgrades, table_has_column};
     use rusqlite::Connection;
     use std::fs;
 
@@ -550,5 +550,113 @@ mod tests {
         let normalized_runtime = super::SCHEMA.trim().to_string();
 
         assert_eq!(normalized_on_disk, normalized_runtime);
+    }
+
+    #[test]
+    fn upgrades_legacy_schema() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE blobs (
+                hash TEXT PRIMARY KEY,
+                content BLOB NOT NULL,
+                size INTEGER NOT NULL,
+                mime_type TEXT
+            );
+            CREATE TABLE imports (
+                id INTEGER PRIMARY KEY,
+                source_file TEXT NOT NULL,
+                imported_at TEXT NOT NULL,
+                entry_count INTEGER
+            );
+            CREATE TABLE pages (
+                id TEXT NOT NULL,
+                import_id INTEGER REFERENCES imports(id),
+                started_at TEXT,
+                title TEXT,
+                on_content_load_ms REAL,
+                on_load_ms REAL,
+                PRIMARY KEY (id, import_id)
+            );
+            CREATE TABLE entries (
+                id INTEGER PRIMARY KEY,
+                import_id INTEGER REFERENCES imports(id),
+                page_id TEXT,
+                started_at TEXT,
+                time_ms REAL,
+                send_ms REAL,
+                wait_ms REAL,
+                receive_ms REAL,
+                method TEXT,
+                url TEXT,
+                host TEXT,
+                path TEXT,
+                query_string TEXT,
+                http_version TEXT,
+                request_headers TEXT,
+                request_cookies TEXT,
+                request_body_hash TEXT REFERENCES blobs(hash),
+                request_body_size INTEGER,
+                status INTEGER,
+                status_text TEXT,
+                response_headers TEXT,
+                response_cookies TEXT,
+                response_body_hash TEXT REFERENCES blobs(hash),
+                response_body_size INTEGER,
+                response_mime_type TEXT,
+                is_redirect INTEGER,
+                server_ip TEXT,
+                connection_id TEXT
+            );
+            "#,
+        )
+        .expect("legacy schema created");
+
+        ensure_schema_upgrades(&conn).expect("schema upgraded");
+
+        assert!(table_has_column(&conn, "blobs", "external_path").unwrap());
+        assert!(table_has_column(&conn, "imports", "log_extensions").unwrap());
+        assert!(table_has_column(&conn, "imports", "status").unwrap());
+        assert!(table_has_column(&conn, "imports", "entries_total").unwrap());
+        assert!(table_has_column(&conn, "imports", "entries_skipped").unwrap());
+        assert!(table_has_column(&conn, "pages", "page_extensions").unwrap());
+        assert!(table_has_column(&conn, "pages", "page_timings_extensions").unwrap());
+        assert!(table_has_column(&conn, "entries", "response_body_hash_raw").unwrap());
+        assert!(table_has_column(&conn, "entries", "response_body_size_raw").unwrap());
+        assert!(table_has_column(&conn, "entries", "blocked_ms").unwrap());
+        assert!(table_has_column(&conn, "entries", "dns_ms").unwrap());
+        assert!(table_has_column(&conn, "entries", "connect_ms").unwrap());
+        assert!(table_has_column(&conn, "entries", "ssl_ms").unwrap());
+        assert!(table_has_column(&conn, "entries", "entry_extensions").unwrap());
+        assert!(table_has_column(&conn, "entries", "request_extensions").unwrap());
+        assert!(table_has_column(&conn, "entries", "response_extensions").unwrap());
+        assert!(table_has_column(&conn, "entries", "content_extensions").unwrap());
+        assert!(table_has_column(&conn, "entries", "timings_extensions").unwrap());
+        assert!(table_has_column(&conn, "entries", "post_data_extensions").unwrap());
+        assert!(table_has_column(&conn, "entries", "graphql_operation_type").unwrap());
+        assert!(table_has_column(&conn, "entries", "graphql_operation_name").unwrap());
+        assert!(table_has_column(&conn, "entries", "graphql_top_level_fields").unwrap());
+        assert!(table_has_column(&conn, "entries", "entry_hash").unwrap());
+        assert!(table_has_column(&conn, "entries", "request_id").unwrap());
+        assert!(table_has_column(&conn, "entries", "parent_request_id").unwrap());
+        assert!(table_has_column(&conn, "entries", "initiator_type").unwrap());
+        assert!(table_has_column(&conn, "entries", "initiator_url").unwrap());
+        assert!(table_has_column(&conn, "entries", "initiator_line").unwrap());
+        assert!(table_has_column(&conn, "entries", "initiator_column").unwrap());
+        assert!(table_has_column(&conn, "entries", "redirect_url").unwrap());
+        assert!(table_has_column(&conn, "entries", "tls_version").unwrap());
+        assert!(table_has_column(&conn, "entries", "tls_cipher_suite").unwrap());
+        assert!(table_has_column(&conn, "entries", "tls_cert_subject").unwrap());
+        assert!(table_has_column(&conn, "entries", "tls_cert_issuer").unwrap());
+        assert!(table_has_column(&conn, "entries", "tls_cert_expiry").unwrap());
+
+        let fts_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='response_body_fts'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("fts table lookup");
+        assert_eq!(fts_exists, 1);
     }
 }

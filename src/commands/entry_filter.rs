@@ -207,3 +207,33 @@ fn url_extension(url: &str) -> Option<String> {
     }
     Some(ext.to_lowercase())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_started_at_bound, url_extension};
+
+    #[test]
+    fn parses_rfc3339_and_date_bounds() {
+        let start = parse_started_at_bound("2024-01-15", false).expect("start");
+        let end = parse_started_at_bound("2024-01-15", true).expect("end");
+        assert_eq!(start, "2024-01-15T00:00:00.000Z");
+        assert_eq!(end, "2024-01-15T23:59:59.999Z");
+
+        let rfc = parse_started_at_bound("2024-01-15T12:34:56-05:00", false).expect("rfc");
+        assert_eq!(rfc, "2024-01-15T17:34:56.000Z");
+    }
+
+    #[test]
+    fn extracts_url_extensions() {
+        assert_eq!(
+            url_extension("https://example.com/assets/app.min.JS"),
+            Some("js".to_string())
+        );
+        assert_eq!(
+            url_extension("https://example.com/archive.tar.gz"),
+            Some("gz".to_string())
+        );
+        assert_eq!(url_extension("https://example.com/dir/"), None);
+        assert_eq!(url_extension("https://example.com/noext"), None);
+    }
+}
