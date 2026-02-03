@@ -116,7 +116,7 @@ impl EntryLinkState {
     }
 }
 
-const DEFAULT_BATCH_SIZE: usize = 500;
+const DEFAULT_BATCH_SIZE: usize = 2000;
 const BACKFILL_BATCH_SIZE: usize = 1000;
 
 #[derive(Clone, Copy)]
@@ -445,7 +445,14 @@ fn import_single_file(
 fn setup_connection(conn: &Connection) -> Result<()> {
     conn.busy_timeout(Duration::from_secs(30))?;
     create_schema(conn)?;
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL;\
+         PRAGMA synchronous=NORMAL;\
+         PRAGMA temp_store=MEMORY;\
+         PRAGMA cache_size=-65536;\
+         PRAGMA wal_autocheckpoint=1000;\
+         PRAGMA journal_size_limit=67108864;",
+    )?;
     Ok(())
 }
 
