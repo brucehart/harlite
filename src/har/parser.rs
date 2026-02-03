@@ -9,6 +9,8 @@ use std::sync::mpsc;
 use std::thread;
 
 use crate::error::Result;
+#[cfg(not(feature = "compression"))]
+use crate::error::HarliteError;
 
 pub type Extensions = serde_json::Map<String, serde_json::Value>;
 
@@ -191,8 +193,30 @@ pub fn parse_har_file(path: &Path) -> Result<Har> {
     let chained = prefix_reader.chain(file);
 
     let reader: Box<dyn Read> = match detect_compression(path, &prefix[..prefix_len]) {
-        Compression::Gzip => Box::new(flate2::read::GzDecoder::new(chained)),
-        Compression::Brotli => Box::new(brotli::Decompressor::new(chained, 4096)),
+        Compression::Gzip => {
+            #[cfg(feature = "compression")]
+            {
+                Box::new(flate2::read::GzDecoder::new(chained))
+            }
+            #[cfg(not(feature = "compression"))]
+            {
+                return Err(HarliteError::InvalidArgs(
+                    "Gzip-compressed HAR files require the 'compression' feature".to_string(),
+                ));
+            }
+        }
+        Compression::Brotli => {
+            #[cfg(feature = "compression")]
+            {
+                Box::new(brotli::Decompressor::new(chained, 4096))
+            }
+            #[cfg(not(feature = "compression"))]
+            {
+                return Err(HarliteError::InvalidArgs(
+                    "Brotli-compressed HAR files require the 'compression' feature".to_string(),
+                ));
+            }
+        }
         Compression::None => Box::new(chained),
     };
 
@@ -211,13 +235,35 @@ pub fn parse_har_file_async(path: &Path) -> Result<Har> {
     let prefix_vec = prefix[..prefix_len].to_vec();
 
     let reader: Box<dyn Read> = match detect_compression(path, &prefix[..prefix_len]) {
-        Compression::Gzip => Box::new(flate2::read::GzDecoder::new(AsyncFileReader::new(
-            file, prefix_vec,
-        ))),
-        Compression::Brotli => Box::new(brotli::Decompressor::new(
-            AsyncFileReader::new(file, prefix_vec),
-            4096,
-        )),
+        Compression::Gzip => {
+            #[cfg(feature = "compression")]
+            {
+                Box::new(flate2::read::GzDecoder::new(AsyncFileReader::new(
+                    file, prefix_vec,
+                )))
+            }
+            #[cfg(not(feature = "compression"))]
+            {
+                return Err(HarliteError::InvalidArgs(
+                    "Gzip-compressed HAR files require the 'compression' feature".to_string(),
+                ));
+            }
+        }
+        Compression::Brotli => {
+            #[cfg(feature = "compression")]
+            {
+                Box::new(brotli::Decompressor::new(
+                    AsyncFileReader::new(file, prefix_vec),
+                    4096,
+                ))
+            }
+            #[cfg(not(feature = "compression"))]
+            {
+                return Err(HarliteError::InvalidArgs(
+                    "Brotli-compressed HAR files require the 'compression' feature".to_string(),
+                ));
+            }
+        }
         Compression::None => Box::new(AsyncFileReader::new(file, prefix_vec)),
     };
 

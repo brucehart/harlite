@@ -1,15 +1,27 @@
+#[cfg(feature = "completions")]
 use clap::CommandFactory;
 
 use crate::cli::{Cli, Commands};
 use crate::commands::{
-    run_analyze, run_cdp, run_diff, run_export, run_export_data, run_fts_rebuild, run_import,
-    run_imports, run_info, run_merge, run_openapi, run_otel, run_pii, run_prune, run_query,
-    run_redact, run_repl, run_replay, run_schema, run_search, run_serve, run_stats, run_watch,
-    run_waterfall, AnalyzeOptions, CdpOptions, DiffOptions, EntryFilterOptions, ExportDataOptions,
-    ExportOptions, ImportOptions, InfoOptions, MergeOptions, OpenApiOptions, OtelExportOptions,
-    PiiOptions, QueryOptions, RedactOptions, ReplOptions, ReplayOptions, ServeOptions,
-    StatsOptions, WatchOptions, WaterfallFormat, WaterfallGroupBy, WaterfallOptions,
+    run_analyze, run_diff, run_export, run_export_data, run_fts_rebuild, run_import, run_imports,
+    run_info, run_merge, run_openapi, run_pii, run_prune, run_query, run_redact, run_schema,
+    run_search, run_stats, run_waterfall, AnalyzeOptions, DiffOptions, EntryFilterOptions,
+    ExportDataOptions, ExportOptions, ImportOptions, InfoOptions, MergeOptions, OpenApiOptions,
+    PiiOptions, QueryOptions, RedactOptions, StatsOptions, WaterfallFormat, WaterfallGroupBy,
+    WaterfallOptions,
 };
+#[cfg(feature = "cdp")]
+use crate::commands::{run_cdp, CdpOptions};
+#[cfg(feature = "otel")]
+use crate::commands::{run_otel, OtelExportOptions};
+#[cfg(feature = "repl")]
+use crate::commands::{run_repl, ReplOptions};
+#[cfg(feature = "replay")]
+use crate::commands::{run_replay, ReplayOptions};
+#[cfg(feature = "serve")]
+use crate::commands::{run_serve, ServeOptions};
+#[cfg(feature = "watch")]
+use crate::commands::{run_watch, WatchOptions};
 use crate::config::{load_config, render_config, ResolvedConfig};
 use crate::error::Result;
 use crate::plugins::resolve_plugins;
@@ -54,6 +66,13 @@ pub fn run(cli: Cli) -> Result<()> {
             let max_body_size = size::parse_size_bytes_usize(
                 &max_body_size.unwrap_or_else(|| defaults.max_body_size.clone()),
             )?;
+            let decompress_bodies = decompress_bodies.unwrap_or(defaults.decompress_bodies);
+            #[cfg(not(feature = "compression"))]
+            if decompress_bodies {
+                return Err(crate::error::HarliteError::InvalidArgs(
+                    "Body decompression requires the 'compression' feature".to_string(),
+                ));
+            }
             let options = ImportOptions {
                 output: output.or_else(|| defaults.output.clone()),
                 store_bodies: bodies.unwrap_or(defaults.bodies),
@@ -64,7 +83,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 resume: resume.unwrap_or(defaults.resume),
                 jobs: jobs.unwrap_or(defaults.jobs),
                 async_read: async_read.unwrap_or(defaults.async_read),
-                decompress_bodies: decompress_bodies.unwrap_or(defaults.decompress_bodies),
+                decompress_bodies,
                 keep_compressed: keep_compressed.unwrap_or(defaults.keep_compressed),
                 extract_bodies_dir: extract_bodies.or_else(|| defaults.extract_bodies.clone()),
                 extract_bodies_kind: extract_bodies_kind.unwrap_or(defaults.extract_bodies_kind),
@@ -81,6 +100,7 @@ pub fn run(cli: Cli) -> Result<()> {
             run_import(&files, &options).map(|_| ())
         }
 
+        #[cfg(feature = "cdp")]
         Commands::Cdp {
             host,
             port,
@@ -110,6 +130,7 @@ pub fn run(cli: Cli) -> Result<()> {
             run_cdp(&options)
         }
 
+        #[cfg(feature = "watch")]
         Commands::Watch {
             directory,
             output,
@@ -151,6 +172,13 @@ pub fn run(cli: Cli) -> Result<()> {
             let max_body_size = size::parse_size_bytes_usize(
                 &max_body_size.unwrap_or_else(|| defaults.max_body_size.clone()),
             )?;
+            let decompress_bodies = decompress_bodies.unwrap_or(defaults.decompress_bodies);
+            #[cfg(not(feature = "compression"))]
+            if decompress_bodies {
+                return Err(crate::error::HarliteError::InvalidArgs(
+                    "Body decompression requires the 'compression' feature".to_string(),
+                ));
+            }
             let import_options = ImportOptions {
                 output: output_override.clone().or_else(|| defaults.output.clone()),
                 store_bodies: bodies.unwrap_or(defaults.bodies),
@@ -161,7 +189,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 resume: resume.unwrap_or(defaults.resume),
                 jobs: 1,
                 async_read: async_read.unwrap_or(defaults.async_read),
-                decompress_bodies: decompress_bodies.unwrap_or(defaults.decompress_bodies),
+                decompress_bodies,
                 keep_compressed: keep_compressed.unwrap_or(defaults.keep_compressed),
                 extract_bodies_dir: extract_bodies.or_else(|| defaults.extract_bodies.clone()),
                 extract_bodies_kind: extract_bodies_kind.unwrap_or(defaults.extract_bodies_kind),
@@ -366,6 +394,7 @@ pub fn run(cli: Cli) -> Result<()> {
             run_export_data(database, &options)
         }
 
+        #[cfg(feature = "otel")]
         Commands::Otel {
             database,
             format,
@@ -595,6 +624,7 @@ pub fn run(cli: Cli) -> Result<()> {
             run_diff(left, right, &options)
         }
 
+        #[cfg(feature = "replay")]
         Commands::Replay {
             input,
             format,
@@ -636,6 +666,7 @@ pub fn run(cli: Cli) -> Result<()> {
             run_replay(input, &options)
         }
 
+        #[cfg(feature = "serve")]
         Commands::Serve {
             input,
             bind,
@@ -713,6 +744,7 @@ pub fn run(cli: Cli) -> Result<()> {
             run_search(query, database, &options)
         }
 
+        #[cfg(feature = "repl")]
         Commands::Repl { database, format } => {
             let defaults = &resolved.repl;
             let options = ReplOptions {
@@ -740,6 +772,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 external_path_root.or_else(|| defaults.external_path_root.clone()),
             )
         }
+        #[cfg(feature = "completions")]
         Commands::Completions { shell } => {
             let mut cmd = Cli::command();
             clap_complete::generate(shell, &mut cmd, "harlite", &mut std::io::stdout());

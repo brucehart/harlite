@@ -3,9 +3,13 @@ use std::path::PathBuf;
 
 use crate::commands;
 use crate::commands::{
-    DataExportFormat, DedupStrategy, MatchMode, NameMatchMode, OtelExportFormat, OutputFormat,
-    WaterfallFormat, WaterfallGroupBy,
+    DataExportFormat, DedupStrategy, NameMatchMode, OutputFormat, WaterfallFormat,
+    WaterfallGroupBy,
 };
+#[cfg(feature = "otel")]
+use crate::commands::OtelExportFormat;
+#[cfg(feature = "serve")]
+use crate::commands::MatchMode;
 use crate::db::ExtractBodiesKind;
 
 #[derive(Parser)]
@@ -115,6 +119,7 @@ pub enum Commands {
     },
 
     /// Capture network traffic from Chrome via CDP
+    #[cfg(feature = "cdp")]
     Cdp {
         /// Chrome host (CDP remote debugging address)
         #[arg(long)]
@@ -154,6 +159,7 @@ pub enum Commands {
     },
 
     /// Watch a directory for new HAR files and auto-import
+    #[cfg(feature = "watch")]
     Watch {
         /// Directory to watch for HAR files
         directory: PathBuf,
@@ -545,6 +551,7 @@ pub enum Commands {
     },
 
     /// Export entries as OpenTelemetry spans
+    #[cfg(feature = "otel")]
     #[command(name = "otel")]
     Otel {
         /// Database file to export
@@ -926,6 +933,7 @@ pub enum Commands {
     },
 
     /// Replay requests against live servers and compare responses
+    #[cfg(feature = "replay")]
     Replay {
         /// HAR file or SQLite database to replay
         input: PathBuf,
@@ -992,6 +1000,7 @@ pub enum Commands {
     },
 
     /// Serve recorded responses as a mock API server
+    #[cfg(feature = "serve")]
     Serve {
         /// HAR file or SQLite database to serve
         input: PathBuf,
@@ -1075,6 +1084,7 @@ pub enum Commands {
     },
 
     /// Start an interactive SQL REPL
+    #[cfg(feature = "repl")]
     Repl {
         /// Database file to open (default: the only *.db in the current directory)
         database: Option<PathBuf>,
@@ -1137,6 +1147,7 @@ pub enum Commands {
     },
 
     /// Generate shell completions
+    #[cfg(feature = "completions")]
     Completions {
         /// Shell to generate completions for
         #[arg(value_enum)]

@@ -21,7 +21,7 @@ include = [
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-clap_complete = "4"
+clap_complete = { version = "4", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
@@ -34,26 +34,46 @@ indicatif = "0.17"
 base64 = "0.22"
 bytes = "1"
 regex = "1"
-graphql-parser = "0.4"
-flate2 = "1"
-brotli = "3"
-ctrlc = "3"
-notify = "6"
-tungstenite = "0.21"
-ureq = { version = "2", features = ["json"] }
-rustyline = "14"
+graphql-parser = { version = "0.4", optional = true }
+flate2 = { version = "1", optional = true }
+brotli = { version = "3", optional = true }
+ctrlc = { version = "3", optional = true }
+notify = { version = "6", optional = true }
+tungstenite = { version = "0.21", optional = true }
+ureq = { version = "2", features = ["json"], optional = true }
+rustyline = { version = "14", optional = true }
 parquet = { version = "57.2.0", optional = true }
-opentelemetry-proto = { version = "0.6", features = ["gen-tonic", "trace"] }
-prost = "0.12"
-tonic = "0.11"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-hyper = { version = "0.14", features = ["full"] }
-rustls = "0.23"
-rustls-pemfile = "2"
-tokio-rustls = "0.26"
+opentelemetry-proto = { version = "0.6", features = ["gen-tonic", "trace"], optional = true }
+prost = { version = "0.12", optional = true }
+tonic = { version = "0.11", optional = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"], optional = true }
+hyper = { version = "0.14", features = ["full"], optional = true }
+rustls = { version = "0.23", optional = true }
+rustls-pemfile = { version = "2", optional = true }
+tokio-rustls = { version = "0.26", optional = true }
 
 [features]
-default = []
+default = ["full"]
+full = [
+    "cdp",
+    "compression",
+    "completions",
+    "graphql",
+    "otel",
+    "repl",
+    "replay",
+    "serve",
+    "watch",
+]
+cdp = ["dep:ctrlc", "dep:tungstenite", "dep:ureq"]
+compression = ["dep:brotli", "dep:flate2"]
+completions = ["dep:clap_complete"]
+graphql = ["dep:graphql-parser"]
+otel = ["dep:opentelemetry-proto", "dep:prost", "dep:tokio", "dep:tonic", "dep:ureq"]
+repl = ["dep:rustyline"]
+replay = ["dep:ureq"]
+serve = ["dep:ctrlc", "dep:hyper", "dep:rustls", "dep:rustls-pemfile", "dep:tokio", "dep:tokio-rustls"]
+watch = ["dep:ctrlc", "dep:notify"]
 parquet = ["dep:parquet"]
 
 [dev-dependencies]
