@@ -1,5 +1,7 @@
+#[cfg(feature = "graphql")]
 use std::collections::{HashMap, HashSet};
 
+#[cfg(feature = "graphql")]
 use graphql_parser::query::{parse_query, Definition, OperationDefinition, Selection, SelectionSet};
 use serde_json::Value;
 use url::Url;
@@ -177,6 +179,7 @@ fn apply_graphql_json(value: &Value, payload: &mut GraphQLPayload) {
     }
 }
 
+#[cfg(feature = "graphql")]
 fn parse_graphql_query(query: &str, operation_name: Option<&str>) -> Option<GraphQLInfo> {
     let document = parse_query::<String>(query).ok()?;
 
@@ -221,6 +224,12 @@ fn parse_graphql_query(query: &str, operation_name: Option<&str>) -> Option<Grap
     })
 }
 
+#[cfg(not(feature = "graphql"))]
+fn parse_graphql_query(_query: &str, _operation_name: Option<&str>) -> Option<GraphQLInfo> {
+    None
+}
+
+#[cfg(feature = "graphql")]
 fn op_name<'a>(op: &'a OperationDefinition<'a, String>) -> Option<&'a String> {
     match op {
         OperationDefinition::Query(q) => q.name.as_ref(),
@@ -230,6 +239,7 @@ fn op_name<'a>(op: &'a OperationDefinition<'a, String>) -> Option<&'a String> {
     }
 }
 
+#[cfg(feature = "graphql")]
 fn op_selection_set<'a>(op: &'a OperationDefinition<'a, String>) -> &'a SelectionSet<'a, String> {
     match op {
         OperationDefinition::Query(q) => &q.selection_set,
@@ -239,6 +249,7 @@ fn op_selection_set<'a>(op: &'a OperationDefinition<'a, String>) -> &'a Selectio
     }
 }
 
+#[cfg(feature = "graphql")]
 fn operation_type(op: &OperationDefinition<'_, String>) -> &'static str {
     match op {
         OperationDefinition::Query(_) | OperationDefinition::SelectionSet(_) => "query",
@@ -247,6 +258,7 @@ fn operation_type(op: &OperationDefinition<'_, String>) -> &'static str {
     }
 }
 
+#[cfg(feature = "graphql")]
 fn collect_top_level_fields<'a>(
     selection_set: &'a SelectionSet<'a, String>,
     fragments: &'a HashMap<String, SelectionSet<'a, String>>,
@@ -257,6 +269,7 @@ fn collect_top_level_fields<'a>(
     out
 }
 
+#[cfg(feature = "graphql")]
 fn collect_fields<'a>(
     selection_set: &'a SelectionSet<'a, String>,
     fragments: &'a HashMap<String, SelectionSet<'a, String>>,
@@ -327,7 +340,7 @@ fn header_value(headers: &[Header], name: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "graphql"))]
 mod tests {
     use super::extract_graphql_info;
     use crate::har::Har;

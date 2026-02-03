@@ -7,6 +7,7 @@ use crate::error::Result;
 use crate::graphql::extract_graphql_info;
 use crate::har::{Cookie, Entry, Header, Page};
 use std::fs;
+#[cfg(feature = "compression")]
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -722,6 +723,7 @@ fn synthesize_post_params(post_data: &crate::har::PostData) -> Option<(Vec<u8>, 
     Some((body.into_bytes(), mime))
 }
 
+#[cfg(feature = "compression")]
 fn read_to_end_limited<R: Read>(mut r: R, max: Option<usize>) -> std::io::Result<Vec<u8>> {
     let mut out: Vec<u8> = Vec::new();
     let mut buf = [0u8; 16 * 1024];
@@ -745,6 +747,7 @@ fn read_to_end_limited<R: Read>(mut r: R, max: Option<usize>) -> std::io::Result
     Ok(out)
 }
 
+#[cfg(feature = "compression")]
 fn decompress_body(
     body: &[u8],
     content_encoding: &str,
@@ -777,6 +780,15 @@ fn decompress_body(
     }
 
     Some(current)
+}
+
+#[cfg(not(feature = "compression"))]
+fn decompress_body(
+    _body: &[u8],
+    _content_encoding: &str,
+    _max_output: Option<usize>,
+) -> Option<Vec<u8>> {
+    None
 }
 
 fn blob_path(root: &Path, hash: &str, shard_depth: u8) -> PathBuf {
@@ -1288,6 +1300,7 @@ mod tests {
         assert_eq!(host, "example.com");
     }
 
+    #[cfg(feature = "graphql")]
     #[test]
     fn inserts_graphql_metadata() {
         let conn = Connection::open_in_memory().expect("in-memory db");

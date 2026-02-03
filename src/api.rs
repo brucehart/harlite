@@ -4,15 +4,25 @@
 //! Treat the contents of this module as SemVer-stable.
 
 pub use crate::commands::{
-    run_analyze, run_cdp, run_diff, run_export, run_export_data, run_fts_rebuild, run_import,
-    run_imports, run_info, run_merge, run_openapi, run_otel, run_pii, run_prune, run_query,
-    run_redact, run_repl, run_replay, run_schema, run_search, run_serve, run_stats, run_watch,
-    run_waterfall, AnalyzeOptions, CdpOptions, DataExportFormat, DedupStrategy, DiffOptions,
-    EntryFilterOptions, ExportDataOptions, ExportOptions, FtsTokenizer, ImportOptions, InfoOptions,
-    MatchMode, NameMatchMode, OpenApiOptions, OtelExportFormat, OtelExportOptions, OutputFormat,
-    PiiOptions, QueryOptions, RedactOptions, ReplOptions, ReplayOptions, ServeOptions, StatsOptions,
-    WaterfallFormat, WaterfallGroupBy, WaterfallOptions, WatchOptions,
+    run_analyze, run_diff, run_export, run_export_data, run_fts_rebuild, run_import, run_imports,
+    run_info, run_merge, run_openapi, run_pii, run_prune, run_query, run_redact, run_schema,
+    run_search, run_stats, run_waterfall, AnalyzeOptions, DataExportFormat, DedupStrategy,
+    DiffOptions, EntryFilterOptions, ExportDataOptions, ExportOptions, FtsTokenizer, ImportOptions,
+    InfoOptions, NameMatchMode, OpenApiOptions, OutputFormat, PiiOptions, QueryOptions,
+    RedactOptions, StatsOptions, WaterfallFormat, WaterfallGroupBy, WaterfallOptions,
 };
+#[cfg(feature = "cdp")]
+pub use crate::commands::{run_cdp, CdpOptions};
+#[cfg(feature = "otel")]
+pub use crate::commands::{run_otel, OtelExportFormat, OtelExportOptions};
+#[cfg(feature = "repl")]
+pub use crate::commands::{run_repl, ReplOptions};
+#[cfg(feature = "replay")]
+pub use crate::commands::{run_replay, ReplayOptions};
+#[cfg(feature = "serve")]
+pub use crate::commands::{run_serve, MatchMode, ServeOptions};
+#[cfg(feature = "watch")]
+pub use crate::commands::{run_watch, WatchOptions};
 pub use crate::db::{
     create_import, create_import_with_status, create_schema, ensure_schema_upgrades,
     entry_content_hash, entry_hash_from_fields, insert_entry, insert_entry_with_hash, insert_page,

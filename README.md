@@ -53,6 +53,27 @@ cargo install harlite
 
 Published on crates.io as `harlite`.
 
+## Feature flags
+
+By default, builds use the `full` feature (all optional commands enabled). To build a smaller binary, disable default features and opt in to what you need:
+
+```bash
+cargo build --release --no-default-features --features "compression,graphql"
+```
+
+Available features:
+- `full`: enable all optional commands (default)
+- `compression`: parse `.har.gz`/`.har.br` and support `--decompress-bodies`
+- `graphql`: parse GraphQL operations and index top-level fields
+- `cdp`: Chrome DevTools Protocol capture (`harlite cdp`)
+- `watch`: directory watcher imports (`harlite watch`)
+- `repl`: interactive SQL REPL (`harlite repl`)
+- `serve`: mock HTTP server (`harlite serve`)
+- `replay`: replay requests (`harlite replay`)
+- `otel`: OpenTelemetry export (`harlite otel`)
+- `completions`: shell completions (`harlite completions`)
+- `parquet`: Parquet export for `harlite export-data`
+
 ## Capture from Chrome (CDP)
 
 You can capture network traffic directly from a running Chrome instance using the Chrome DevTools Protocol (CDP).
