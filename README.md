@@ -269,6 +269,22 @@ Exporter response (optional):
 
 Sample plugins are in `plugins/`.
 
+## Library Usage
+
+The supported, SemVer-stable API for embedding is exposed via `harlite::api`
+and the convenience `harlite::prelude`.
+
+```rust
+use harlite::prelude::*;
+use std::path::PathBuf;
+
+fn main() -> Result<()> {
+    let input = PathBuf::from("capture.har");
+    let _stats = run_import(&[input], &ImportOptions::default())?;
+    Ok(())
+}
+```
+
 ## Usage
 
 ### Import HAR files
