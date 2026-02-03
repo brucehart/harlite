@@ -414,6 +414,90 @@ fn upsert_response_fts(conn: &Connection, hash: &str, text: &str) -> Result<()> 
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{
+        redact_body_text, redact_cookies_json, redact_headers_json, redact_url_params, NameMatcher,
+        NameMatchMode,
+    };
+    use std::collections::HashSet;
+
+    #[test]
+    fn redacts_headers_with_exact_match() {
+        let matcher = NameMatcher::new(
+            NameMatchMode::Exact,
+            &vec!["authorization".to_string(), "x-api-key".to_string()],
+        )
+        .expect("matcher");
+        let mut matched = HashSet::new();
+        let json = r#"{"Authorization":"secret","x-api-key":"abc","other":"keep"}"#;
+        let (out, count) =
+            redact_headers_json(json, &matcher, "REDACTED", &mut matched).expect("redact");
+
+        assert_eq!(count, 2);
+        assert!(matched.contains("Authorization"));
+        assert!(matched.contains("x-api-key"));
+        let value: serde_json::Value = serde_json::from_str(&out).expect("json");
+        assert_eq!(value.get("Authorization").and_then(|v| v.as_str()), Some("REDACTED"));
+        assert_eq!(value.get("x-api-key").and_then(|v| v.as_str()), Some("REDACTED"));
+        assert_eq!(value.get("other").and_then(|v| v.as_str()), Some("keep"));
+    }
+
+    #[test]
+    fn redacts_cookies_with_wildcard_match() {
+        let matcher =
+            NameMatcher::new(NameMatchMode::Wildcard, &vec!["sess*".to_string()])
+                .expect("matcher");
+        let mut matched = HashSet::new();
+        let json = r#"[{"name":"sessionid","value":"abc"},{"name":"pref","value":"1"}]"#;
+        let (out, count) =
+            redact_cookies_json(json, &matcher, "REDACTED", &mut matched).expect("redact");
+
+        assert_eq!(count, 1);
+        assert!(matched.contains("sessionid"));
+        let value: serde_json::Value = serde_json::from_str(&out).expect("json");
+        let items = value.as_array().expect("array");
+        assert_eq!(
+            items[0].get("value").and_then(|v| v.as_str()),
+            Some("REDACTED")
+        );
+        assert_eq!(items[1].get("value").and_then(|v| v.as_str()), Some("1"));
+    }
+
+    #[test]
+    fn redacts_url_params_and_preserves_query() {
+        let matcher = NameMatcher::new(
+            NameMatchMode::Exact,
+            &vec!["token".to_string(), "secret".to_string()],
+        )
+        .expect("matcher");
+        let mut matched = HashSet::new();
+        let url = "https://example.com/path?token=abc&keep=1&secret=REDACTED";
+        let (new_url, new_query, count) =
+            redact_url_params(url, &matcher, "REDACTED", &mut matched)
+                .expect("should redact");
+
+        assert_eq!(count, 1);
+        assert!(matched.contains("token"));
+        assert!(matched.contains("secret"));
+        assert!(new_url.contains("token=REDACTED"));
+        assert!(new_url.contains("keep=1"));
+        assert!(new_query.unwrap_or_default().contains("secret=REDACTED"));
+    }
+
+    #[test]
+    fn redacts_body_text_with_regexes() {
+        let regexes = vec![regex::Regex::new("secret").expect("regex")];
+        let out = redact_body_text("secret token", &regexes, "REDACTED")
+            .expect("redacted");
+        assert_eq!(out.0, "REDACTED token");
+        assert_eq!(out.1, 1);
+
+        let no_change = redact_body_text("no match", &regexes, "REDACTED");
+        assert!(no_change.is_none());
+    }
+}
+
 fn redact_entries(
     conn: &Connection,
     header_matcher: &NameMatcher,

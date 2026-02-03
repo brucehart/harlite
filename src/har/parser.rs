@@ -543,7 +543,8 @@ impl<'de> Visitor<'de> for EntriesVisitor {
 
 #[cfg(test)]
 mod tests {
-    use super::Har;
+    use super::{detect_compression, Compression, Har};
+    use std::path::Path;
 
     #[test]
     fn parses_minimal_har() {
@@ -642,6 +643,64 @@ mod tests {
                 .get("_contentExt")
                 .and_then(|v| v.as_str()),
             Some("x")
+        );
+    }
+
+    #[test]
+    fn parses_alias_fields() {
+        let json = r#"
+        {
+          "log": {
+            "entries": [
+              {
+                "startedDateTime": "2024-01-15T10:30:00.000Z",
+                "time": 10.0,
+                "serverIpAddress": "203.0.113.10",
+                "request": {
+                  "method": "GET",
+                  "url": "https://example.com/",
+                  "httpVersion": "HTTP/1.1",
+                  "headers": []
+                },
+                "response": {
+                  "status": 302,
+                  "statusText": "Found",
+                  "httpVersion": "HTTP/1.1",
+                  "headers": [],
+                  "redirectUrl": "https://example.com/next",
+                  "content": {
+                    "size": 0
+                  }
+                }
+              }
+            ]
+          }
+        }
+        "#;
+
+        let har: Har = serde_json::from_str(json).expect("HAR should parse");
+        let entry = &har.log.entries[0];
+        assert_eq!(entry.server_ip_address.as_deref(), Some("203.0.113.10"));
+        assert_eq!(
+            entry.response.redirect_url.as_deref(),
+            Some("https://example.com/next")
+        );
+    }
+
+    #[test]
+    fn detects_compression_from_extension_and_magic() {
+        let gzip_magic = [0x1f, 0x8b, 0x08, 0x00];
+        assert_eq!(
+            detect_compression(Path::new("trace.har"), &gzip_magic),
+            Compression::Gzip
+        );
+        assert_eq!(
+            detect_compression(Path::new("trace.har.gz"), &[0u8, 0u8, 0u8, 0u8]),
+            Compression::Gzip
+        );
+        assert_eq!(
+            detect_compression(Path::new("trace.har.br"), &[0u8, 0u8, 0u8, 0u8]),
+            Compression::Brotli
         );
     }
 }
