@@ -958,33 +958,33 @@ function renderOverview(d){
   setText("slow-ttfb-th", fmtMs(d.slow.slow_ttfb_threshold_ms));
 }
 
-	function clearChildren(el){
-	  // replaceChildren() isn't supported in some older browsers; this is tiny and safe.
-	  while (el.firstChild) el.removeChild(el.firstChild);
-	}
-	function appendTd(tr, className, txt){
-	  const td = document.createElement("td");
-	  if (className) td.className = className;
-	  td.textContent = txt;
-	  tr.appendChild(td);
-	}
+function clearChildren(el){
+  // replaceChildren() isn't supported in some older browsers; this is tiny and safe.
+  while (el.firstChild) el.removeChild(el.firstChild);
+}
+function appendTd(tr, className, txt){
+  const td = document.createElement("td");
+  if (className) td.className = className;
+  td.textContent = txt;
+  tr.appendChild(td);
+}
 
-	function renderTable(tableId, rows){
-	  const tbody = $(tableId).querySelector("tbody");
-	  clearChildren(tbody);
-	  for (const r of rows){
-	    const tr = document.createElement("tr");
-	    const status = r.status == null ? "-" : String(r.status);
-	    appendTd(tr, "mono", String(r.started_at));
-	    appendTd(tr, "mono", String(r.method));
-	    appendTd(tr, "mono", status);
-	    appendTd(tr, "mono", String(r.host));
-	    appendTd(tr, "url", String(r.url));
-	    appendTd(tr, "mono", fmtMs(r.total_ms));
-	    appendTd(tr, "mono", fmtMs(r.ttfb_ms));
-	    tbody.appendChild(tr);
-	  }
-	}
+function renderTable(tableId, rows){
+  const tbody = $(tableId).querySelector("tbody");
+  clearChildren(tbody);
+  for (const r of rows){
+    const tr = document.createElement("tr");
+    const status = r.status == null ? "-" : String(r.status);
+    appendTd(tr, "mono", String(r.started_at));
+    appendTd(tr, "mono", String(r.method));
+    appendTd(tr, "mono", status);
+    appendTd(tr, "mono", String(r.host));
+    appendTd(tr, "url", String(r.url));
+    appendTd(tr, "mono", fmtMs(r.total_ms));
+    appendTd(tr, "mono", fmtMs(r.ttfb_ms));
+    tbody.appendChild(tr);
+  }
+}
 
 function makeSortable(table){
   const ths = table.querySelectorAll("th");
@@ -1010,39 +1010,39 @@ function makeSortable(table){
 }
 
 function boot(){
-	  const d = parseData();
-	  renderOverview(d);
-	  renderTable("tbl-slow-total", d.top_slowest_total);
-	  renderTable("tbl-slow-ttfb", d.top_slowest_ttfb);
-	
-	  // error endpoints
-	  {
-	    const tbody = $("tbl-errors").querySelector("tbody");
-	    clearChildren(tbody);
-	    for (const r of d.top_error_endpoints){
-	      const tr = document.createElement("tr");
-	      appendTd(tr, "mono", String(r.count));
-	      appendTd(tr, "mono", String(r.host));
-	      appendTd(tr, "mono", String(r.path));
-	      appendTd(tr, "url", String(r.sample_url));
-	      tbody.appendChild(tr);
-	    }
-	  }
-	
-	  // pages
-	  {
-	    const tbody = $("tbl-pages").querySelector("tbody");
-	    clearChildren(tbody);
-	    for (const p of d.pages){
-	      const tr = document.createElement("tr");
-	      appendTd(tr, "mono", String(p.id));
-	      appendTd(tr, "", String(p.title ?? ""));
-	      appendTd(tr, "mono", String(p.started_at ?? ""));
-	      appendTd(tr, "mono", fmtMs(p.on_content_load_ms));
-	      appendTd(tr, "mono", fmtMs(p.on_load_ms));
-	      tbody.appendChild(tr);
-	    }
-	  }
+  const d = parseData();
+  renderOverview(d);
+  renderTable("tbl-slow-total", d.top_slowest_total);
+  renderTable("tbl-slow-ttfb", d.top_slowest_ttfb);
+
+  // error endpoints
+  {
+    const tbody = $("tbl-errors").querySelector("tbody");
+    clearChildren(tbody);
+    for (const r of d.top_error_endpoints){
+      const tr = document.createElement("tr");
+      appendTd(tr, "mono", String(r.count));
+      appendTd(tr, "mono", String(r.host));
+      appendTd(tr, "mono", String(r.path));
+      appendTd(tr, "url", String(r.sample_url));
+      tbody.appendChild(tr);
+    }
+  }
+
+  // pages
+  {
+    const tbody = $("tbl-pages").querySelector("tbody");
+    clearChildren(tbody);
+    for (const p of d.pages){
+      const tr = document.createElement("tr");
+      appendTd(tr, "mono", String(p.id));
+      appendTd(tr, "", String(p.title ?? ""));
+      appendTd(tr, "mono", String(p.started_at ?? ""));
+      appendTd(tr, "mono", fmtMs(p.on_content_load_ms));
+      appendTd(tr, "mono", fmtMs(p.on_load_ms));
+      tbody.appendChild(tr);
+    }
+  }
 
   document.querySelectorAll("table").forEach(makeSortable);
 }
