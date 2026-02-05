@@ -5,10 +5,10 @@ use crate::cli::{Cli, Commands};
 use crate::commands::{
     run_analyze, run_diff, run_export, run_export_data, run_fts_rebuild, run_import, run_imports,
     run_info, run_merge, run_openapi, run_pii, run_prune, run_query, run_redact, run_schema,
-    run_search, run_stats, run_waterfall, AnalyzeOptions, DiffOptions, EntryFilterOptions,
+    run_report, run_search, run_stats, run_waterfall, AnalyzeOptions, DiffOptions, EntryFilterOptions,
     ExportDataOptions, ExportOptions, ImportOptions, InfoOptions, MergeOptions, OpenApiOptions,
-    PiiOptions, QueryOptions, RedactOptions, StatsOptions, WaterfallFormat, WaterfallGroupBy,
-    WaterfallOptions,
+    PiiOptions, QueryOptions, RedactOptions, ReportOptions, StatsOptions, WaterfallFormat,
+    WaterfallGroupBy, WaterfallOptions,
 };
 #[cfg(feature = "cdp")]
 use crate::commands::{run_cdp, CdpOptions};
@@ -533,6 +533,65 @@ pub fn run(cli: Cli) -> Result<()> {
                 width,
             };
             run_waterfall(database, &options)
+        }
+
+        Commands::Report {
+            input,
+            output,
+            title,
+            top,
+            slow_total_ms,
+            slow_ttfb_ms,
+            waterfall_limit,
+            group_by,
+            page,
+            url,
+            url_contains,
+            url_regex,
+            host,
+            method,
+            status,
+            mime,
+            ext,
+            source,
+            source_contains,
+            from,
+            to,
+            min_request_size,
+            max_request_size,
+            min_response_size,
+            max_response_size,
+        } => {
+            let filters = EntryFilterOptions {
+                url: url.unwrap_or_default(),
+                url_contains: url_contains.unwrap_or_default(),
+                url_regex: url_regex.unwrap_or_default(),
+                host: host.unwrap_or_default(),
+                method: method.unwrap_or_default(),
+                status: status.unwrap_or_default(),
+                mime_contains: mime.unwrap_or_default(),
+                ext: ext.unwrap_or_default(),
+                source: source.unwrap_or_default(),
+                source_contains: source_contains.unwrap_or_default(),
+                from,
+                to,
+                min_request_size,
+                max_request_size,
+                min_response_size,
+                max_response_size,
+            };
+            let options = ReportOptions {
+                output,
+                title,
+                top: top.unwrap_or(20),
+                slow_total_ms: slow_total_ms.unwrap_or(1000.0),
+                slow_ttfb_ms: slow_ttfb_ms.unwrap_or(500.0),
+                waterfall_limit: waterfall_limit.unwrap_or(500),
+                group_by: group_by.unwrap_or(WaterfallGroupBy::Page),
+                page: page.unwrap_or_default(),
+                filters,
+            };
+            run_report(input, &options)
         }
 
         Commands::Redact {

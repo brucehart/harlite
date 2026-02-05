@@ -11,6 +11,7 @@ mod info;
 mod merge;
 #[cfg(feature = "otel")]
 mod otel;
+mod report;
 mod prune;
 mod query;
 mod pii;
@@ -41,6 +42,7 @@ pub use info::{run_info, InfoOptions};
 pub use merge::{run_merge, DedupStrategy, MergeOptions};
 #[cfg(feature = "otel")]
 pub use otel::{run_otel, OtelExportFormat, OtelExportOptions};
+pub use report::{run_report, ReportOptions};
 pub use prune::run_prune;
 pub use query::{run_query, OutputFormat, QueryOptions};
 pub use pii::{run_pii, PiiOptions};

@@ -30,6 +30,7 @@ Use the `harlite` binary to import HAR files into SQLite databases, then query/e
 - `merge` — merge multiple databases into one
 - `redact` — redact sensitive headers/cookies/params/bodies
 - `diff` — compare two HAR files or two databases
+- `report` — generate a self-contained HTML report (waterfall/slow/errors)
 
 ## Flags by command
 ### `import`
@@ -147,6 +148,7 @@ Use the `harlite` binary to import HAR files into SQLite databases, then query/e
 2) `harlite info traffic.db`
 3) `harlite query "<SQL>" traffic.db` or `harlite search "<fts query>" traffic.db`
 4) (Optional) `harlite export traffic.db -o filtered.har`
+5) (Optional) `harlite report traffic.db -o report.html`
 
 ## Example prompts for agents
 - “Import this HAR, find all 4xx/5xx requests, and summarize the endpoints.”
