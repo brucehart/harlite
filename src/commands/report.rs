@@ -293,12 +293,28 @@ fn escape_html(s: &str) -> Cow<'_, str> {
 }
 
 fn escape_script_json(json: &str) -> Cow<'_, str> {
-    // Prevent accidental </script> termination; keep it minimal.
-    if json.contains("</") {
-        Cow::Owned(json.replace("</", "<\\/"))
-    } else {
-        Cow::Borrowed(json)
+    // Make JSON safe for embedding in a <script type="application/json"> tag.
+    //
+    // - Escape '<'/'>' to avoid forming HTML tags like </script>.
+    // - Escape U+2028/U+2029 since they are treated as line terminators in JS contexts.
+    if !json
+        .chars()
+        .any(|ch| matches!(ch, '<' | '>' | '\u{2028}' | '\u{2029}'))
+    {
+        return Cow::Borrowed(json);
     }
+
+    let mut out = String::with_capacity(json.len() + 16);
+    for ch in json.chars() {
+        match ch {
+            '<' => out.push_str("\\u003c"),
+            '>' => out.push_str("\\u003e"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            _ => out.push(ch),
+        }
+    }
+    Cow::Owned(out)
 }
 
 fn url_extension(url: &str) -> Option<String> {
@@ -359,7 +375,6 @@ fn build_groups(
 
     entries.sort_by(|a, b| a.started_at_dt.cmp(&b.started_at_dt).then_with(|| a.url.cmp(&b.url)));
 
-    let multi_page = entries.iter().any(|e| e.page_id.is_some());
     let mut groups: Vec<WaterfallGroup> = Vec::new();
     let mut group_map: HashMap<String, usize> = HashMap::new();
     let mut nav_index = 0usize;
@@ -401,12 +416,7 @@ fn build_groups(
                 WaterfallGroupBy::None => "All Requests".to_string(),
                 WaterfallGroupBy::Page | WaterfallGroupBy::Navigation => {
                     if let Some(pid) = entry.page_id.as_deref() {
-                        let title = entry.page_title.clone().unwrap_or_else(|| pid.to_string());
-                        if multi_page {
-                            title
-                        } else {
-                            title
-                        }
+                        entry.page_title.clone().unwrap_or_else(|| pid.to_string())
                     } else if key.starts_with("nav-") {
                         if entry.url.is_empty() {
                             format!("Navigation {nav_index}")
@@ -948,21 +958,30 @@ function renderOverview(d){
   setText("slow-ttfb-th", fmtMs(d.slow.slow_ttfb_threshold_ms));
 }
 
-function renderTable(tableId, rows, kind){
+function clearChildren(el){
+  // replaceChildren() isn't supported in some older browsers; this is tiny and safe.
+  while (el.firstChild) el.removeChild(el.firstChild);
+}
+function appendTd(tr, className, txt){
+  const td = document.createElement("td");
+  if (className) td.className = className;
+  td.textContent = txt;
+  tr.appendChild(td);
+}
+
+function renderTable(tableId, rows){
   const tbody = $(tableId).querySelector("tbody");
-  tbody.innerHTML = "";
+  clearChildren(tbody);
   for (const r of rows){
     const tr = document.createElement("tr");
     const status = r.status == null ? "-" : String(r.status);
-    tr.innerHTML = `
-      <td class="mono">${r.started_at}</td>
-      <td class="mono">${r.method}</td>
-      <td class="mono">${status}</td>
-      <td class="mono">${r.host}</td>
-      <td class="url">${r.url}</td>
-      <td class="mono">${fmtMs(r.total_ms)}</td>
-      <td class="mono">${fmtMs(r.ttfb_ms)}</td>
-    `;
+    appendTd(tr, "mono", String(r.started_at));
+    appendTd(tr, "mono", String(r.method));
+    appendTd(tr, "mono", status);
+    appendTd(tr, "mono", String(r.host));
+    appendTd(tr, "url", String(r.url));
+    appendTd(tr, "mono", fmtMs(r.total_ms));
+    appendTd(tr, "mono", fmtMs(r.ttfb_ms));
     tbody.appendChild(tr);
   }
 }
@@ -984,7 +1003,7 @@ function makeSortable(table){
         if (bothNum) return asc ? (an - bn) : (bn - an);
         return asc ? av.localeCompare(bv) : bv.localeCompare(av);
       });
-      tbody.innerHTML = "";
+      clearChildren(tbody);
       for (const r of rows) tbody.appendChild(r);
     });
   });
@@ -993,21 +1012,19 @@ function makeSortable(table){
 function boot(){
   const d = parseData();
   renderOverview(d);
-  renderTable("tbl-slow-total", d.top_slowest_total, "total");
-  renderTable("tbl-slow-ttfb", d.top_slowest_ttfb, "ttfb");
+  renderTable("tbl-slow-total", d.top_slowest_total);
+  renderTable("tbl-slow-ttfb", d.top_slowest_ttfb);
 
   // error endpoints
   {
     const tbody = $("tbl-errors").querySelector("tbody");
-    tbody.innerHTML = "";
+    clearChildren(tbody);
     for (const r of d.top_error_endpoints){
       const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td class="mono">${r.count}</td>
-        <td class="mono">${r.host}</td>
-        <td class="mono">${r.path}</td>
-        <td class="url">${r.sample_url}</td>
-      `;
+      appendTd(tr, "mono", String(r.count));
+      appendTd(tr, "mono", String(r.host));
+      appendTd(tr, "mono", String(r.path));
+      appendTd(tr, "url", String(r.sample_url));
       tbody.appendChild(tr);
     }
   }
@@ -1015,16 +1032,14 @@ function boot(){
   // pages
   {
     const tbody = $("tbl-pages").querySelector("tbody");
-    tbody.innerHTML = "";
+    clearChildren(tbody);
     for (const p of d.pages){
       const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td class="mono">${p.id}</td>
-        <td>${p.title ?? ""}</td>
-        <td class="mono">${p.started_at ?? ""}</td>
-        <td class="mono">${fmtMs(p.on_content_load_ms)}</td>
-        <td class="mono">${fmtMs(p.on_load_ms)}</td>
-      `;
+      appendTd(tr, "mono", String(p.id));
+      appendTd(tr, "", String(p.title ?? ""));
+      appendTd(tr, "mono", String(p.started_at ?? ""));
+      appendTd(tr, "mono", fmtMs(p.on_content_load_ms));
+      appendTd(tr, "mono", fmtMs(p.on_load_ms));
       tbody.appendChild(tr);
     }
   }
@@ -1357,14 +1372,17 @@ pub fn run_report(input: PathBuf, options: &ReportOptions) -> Result<()> {
     let top_error_endpoints = top_error_endpoints(&entries, options.top);
 
     // Waterfall rendering can be expensive for huge traces. Render the first N entries by start time.
-    let mut render_entries = entries.clone();
-    render_entries.sort_by(|a, b| a.started_at_dt.cmp(&b.started_at_dt).then_with(|| a.url.cmp(&b.url)));
-    if render_entries.len() > options.waterfall_limit {
-        render_entries.truncate(options.waterfall_limit);
+    entries.sort_by(|a, b| {
+        a.started_at_dt
+            .cmp(&b.started_at_dt)
+            .then_with(|| a.url.cmp(&b.url))
+    });
+    if entries.len() > options.waterfall_limit {
+        entries.truncate(options.waterfall_limit);
     }
-    let rendered_entries = render_entries.len();
+    let rendered_entries = entries.len();
 
-    let groups = build_groups(render_entries, options.group_by, &options.page);
+    let groups = build_groups(entries, options.group_by, &options.page);
 
     let wf_total_ms = time_range.as_ref().map(|r| r.total_ms).unwrap_or(0.0);
     let waterfall_groups = groups
@@ -1428,14 +1446,34 @@ fn report_page_from_har_page(p: HarPage) -> ReportPage {
 
 #[cfg(test)]
 mod tests {
-    use super::{escape_script_json, render_html, JsonReport, StatusCounts, SlowSummary, WaterfallSummary};
+    use std::collections::HashSet;
+
+    use chrono::{DateTime, Utc};
+    use regex::Regex;
+
+    use super::{
+        build_groups, entry_matches_filters_har, escape_script_json, render_html, JsonReport,
+        ReportEntry, ReportOptions, SlowSummary, StatusCounts, TimingsMs, WaterfallSummary,
+    };
+    use crate::commands::entry_filter::EntryFilterOptions;
+    use crate::commands::waterfall::WaterfallGroupBy;
+    use crate::error::Result;
+    use crate::size;
 
     #[test]
     fn escapes_script_termination_in_embedded_json() {
         let input = r#"{"x":"</script><script>alert(1)</script>"}"#;
         let escaped = escape_script_json(input);
         assert!(!escaped.contains("</script>"));
-        assert!(escaped.contains("<\\/script>"));
+        assert!(escaped.contains("\\u003c/script\\u003e"));
+    }
+
+    #[test]
+    fn escapes_js_line_separators_in_embedded_json() {
+        let input = format!("{{\"x\":\"a{}\u{2029}b\"}}", '\u{2028}');
+        let escaped = escape_script_json(&input);
+        assert!(escaped.contains("\\u2028"));
+        assert!(escaped.contains("\\u2029"));
     }
 
     #[test]
@@ -1467,5 +1505,117 @@ mod tests {
         let html = render_html(&report).expect("html");
         assert!(html.contains("id=\"harlite-data\""));
         assert!(html.contains("<title>"));
+        // Guard against obvious XSS sinks in the rendering script.
+        assert!(!html.contains("tr.innerHTML"));
+    }
+
+    fn dt(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    }
+
+    fn entry(started_at: &str, start_ms: f64, url: &str) -> ReportEntry {
+        ReportEntry {
+            started_at: started_at.to_string(),
+            started_at_dt: dt(started_at),
+            start_ms,
+            total_ms: 10.0,
+            timings: TimingsMs::default(),
+            method: "GET".to_string(),
+            url: url.to_string(),
+            host: "example.com".to_string(),
+            path: None,
+            status: Some(200),
+            mime: Some("text/html".to_string()),
+            request_body_size: Some(0),
+            response_body_size: Some(0),
+            page_id: None,
+            page_title: None,
+        }
+    }
+
+    #[test]
+    fn build_groups_none_puts_everything_in_one_group_sorted_by_start() {
+        let e1 = entry("2024-01-15T00:00:01.000Z", 100.0, "https://example.com/a");
+        let e2 = entry("2024-01-15T00:00:00.000Z", 0.0, "https://example.com/b");
+        let groups = build_groups(vec![e1, e2], WaterfallGroupBy::None, &[]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "All Requests");
+        assert_eq!(groups[0].entries.len(), 2);
+        assert_eq!(groups[0].entries[0].url, "https://example.com/b");
+    }
+
+    #[test]
+    fn build_groups_page_filters_match_title_and_id() {
+        let mut e1 = entry("2024-01-15T00:00:00.000Z", 0.0, "https://example.com/a");
+        e1.page_id = Some("p1".to_string());
+        e1.page_title = Some("Home".to_string());
+        let mut e2 = entry("2024-01-15T00:00:01.000Z", 10.0, "https://example.com/b");
+        e2.page_id = Some("p2".to_string());
+        e2.page_title = Some("Other".to_string());
+
+        let groups = build_groups(
+            vec![e1, e2],
+            WaterfallGroupBy::Page,
+            &["home".to_string()],
+        );
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].entries.len(), 1);
+        assert_eq!(groups[0].entries[0].page_id.as_deref(), Some("p1"));
+    }
+
+    #[test]
+    fn entry_matches_filters_har_ext_mime_and_size_filters() -> Result<()> {
+        let mut e = entry("2024-01-15T00:00:00.000Z", 0.0, "https://example.com/app.js");
+        e.mime = Some("application/json; charset=utf-8".to_string());
+        e.request_body_size = Some(100);
+        e.response_body_size = Some(200);
+
+        let mut filters = EntryFilterOptions::default();
+        filters.ext = vec!["js".to_string()];
+        filters.mime_contains = vec!["JSON".to_string()];
+        filters.min_request_size = Some("50".to_string());
+        filters.max_request_size = Some("150".to_string());
+        filters.min_response_size = Some("100".to_string());
+        filters.max_response_size = Some("250".to_string());
+
+        // Sanity check size parsing; these should all be valid.
+        let _ = size::parse_size_bytes_i64(filters.min_request_size.as_deref().unwrap())?;
+
+        let options = ReportOptions {
+            output: None,
+            title: None,
+            top: 10,
+            slow_total_ms: 1000.0,
+            slow_ttfb_ms: 500.0,
+            waterfall_limit: 500,
+            group_by: WaterfallGroupBy::None,
+            page: Vec::new(),
+            filters,
+        };
+
+        let url_regexes: Vec<Regex> = Vec::new();
+        let exts: HashSet<String> = ["js".to_string()].into_iter().collect();
+
+        assert!(entry_matches_filters_har(
+            &e,
+            &options,
+            &url_regexes,
+            &exts,
+            None,
+            None,
+            "trace.har"
+        ));
+
+        e.url = "https://example.com/app.css".to_string();
+        assert!(!entry_matches_filters_har(
+            &e,
+            &options,
+            &url_regexes,
+            &exts,
+            None,
+            None,
+            "trace.har"
+        ));
+        Ok(())
     }
 }
