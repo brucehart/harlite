@@ -907,7 +907,8 @@ details > summary{
 details > summary::-webkit-details-marker{display:none}
 .wf-row{
   display:grid;
-  grid-template-columns: 110px 54px 1fr 900px;
+  /* Make the timeline column responsive so the URL column stays readable. */
+  grid-template-columns: 110px 54px minmax(0, 3fr) minmax(0, 2fr);
   gap: 10px;
   align-items:center;
   padding: 6px 12px;
@@ -916,7 +917,7 @@ details > summary::-webkit-details-marker{display:none}
 .wf-row:hover{background: rgba(90,166,255,.05)}
 .wf-method{font-family:var(--mono)}
 .wf-status{font-family:var(--mono); text-align:right}
-.wf-bar{width: 900px; height: 18px}
+.wf-bar{width: 100%; max-width: 900px; height: 18px; justify-self:end}
 .wf-small{font-size:12px; color: var(--muted)}
 @media (max-width: 1050px){
   .grid{grid-template-columns: repeat(2, minmax(0,1fr))}
