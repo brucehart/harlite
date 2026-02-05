@@ -5,11 +5,12 @@
 
 pub use crate::commands::{
     run_analyze, run_diff, run_export, run_export_data, run_fts_rebuild, run_import, run_imports,
-    run_info, run_merge, run_openapi, run_pii, run_prune, run_query, run_redact, run_schema,
-    run_search, run_stats, run_waterfall, AnalyzeOptions, DataExportFormat, DedupStrategy,
-    DiffOptions, EntryFilterOptions, ExportDataOptions, ExportOptions, FtsTokenizer, ImportOptions,
-    InfoOptions, NameMatchMode, OpenApiOptions, OutputFormat, PiiOptions, QueryOptions,
-    RedactOptions, StatsOptions, WaterfallFormat, WaterfallGroupBy, WaterfallOptions,
+    run_info, run_merge, run_openapi, run_pii, run_prune, run_query, run_redact, run_report,
+    run_schema, run_search, run_stats, run_waterfall, AnalyzeOptions, DataExportFormat,
+    DedupStrategy, DiffOptions, EntryFilterOptions, ExportDataOptions, ExportOptions, FtsTokenizer,
+    ImportOptions, InfoOptions, NameMatchMode, OpenApiOptions, OutputFormat, PiiOptions,
+    QueryOptions, RedactOptions, ReportOptions, StatsOptions, WaterfallFormat, WaterfallGroupBy,
+    WaterfallOptions,
 };
 #[cfg(feature = "cdp")]
 pub use crate::commands::{run_cdp, CdpOptions};

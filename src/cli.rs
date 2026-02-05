@@ -791,6 +791,108 @@ pub enum Commands {
         width: Option<usize>,
     },
 
+    /// Generate a self-contained HTML report (waterfall, slowest requests, errors)
+    Report {
+        /// Input SQLite database or HAR file
+        input: PathBuf,
+
+        /// Output HTML file (default: <input>.html). Use '-' for stdout.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Report title
+        #[arg(long)]
+        title: Option<String>,
+
+        /// Top N rows for slow/error tables
+        #[arg(long)]
+        top: Option<usize>,
+
+        /// Threshold for slow requests by total time (ms)
+        #[arg(long)]
+        slow_total_ms: Option<f64>,
+
+        /// Threshold for slow requests by TTFB (ms)
+        #[arg(long)]
+        slow_ttfb_ms: Option<f64>,
+
+        /// Max number of entries rendered in the waterfall (stats still computed over all filtered entries)
+        #[arg(long)]
+        waterfall_limit: Option<usize>,
+
+        /// Group waterfall requests by page, navigation, or none
+        #[arg(long, value_enum)]
+        group_by: Option<WaterfallGroupBy>,
+
+        /// Page id or title substring filter (repeatable; DB uses pages table, HAR uses pageref/page title)
+        #[arg(long, action = clap::ArgAction::Append)]
+        page: Option<Vec<String>>,
+
+        /// Exact URL match (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        url: Option<Vec<String>>,
+
+        /// URL substring match (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        url_contains: Option<Vec<String>>,
+
+        /// URL regex match (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        url_regex: Option<Vec<String>>,
+
+        /// Hostname filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        host: Option<Vec<String>>,
+
+        /// HTTP method filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        method: Option<Vec<String>>,
+
+        /// HTTP status filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        status: Option<Vec<i32>>,
+
+        /// Response MIME type substring match (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        mime: Option<Vec<String>>,
+
+        /// URL extension filter (repeatable, comma-separated allowed; e.g. 'js,css,json')
+        #[arg(long, value_delimiter = ',', action = clap::ArgAction::Append)]
+        ext: Option<Vec<String>>,
+
+        /// Filter by import source filename (repeatable; DB only)
+        #[arg(long, action = clap::ArgAction::Append)]
+        source: Option<Vec<String>>,
+
+        /// Filter by import source filename substring match (repeatable; DB only)
+        #[arg(long, action = clap::ArgAction::Append)]
+        source_contains: Option<Vec<String>>,
+
+        /// Only include entries on/after this timestamp (RFC3339) or date (YYYY-MM-DD)
+        #[arg(long)]
+        from: Option<String>,
+
+        /// Only include entries on/before this timestamp (RFC3339) or date (YYYY-MM-DD)
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Minimum request body size (e.g., '1KB', '1.5MB', '1M', '100k', '500B')
+        #[arg(long)]
+        min_request_size: Option<String>,
+
+        /// Maximum request body size (e.g., '100KB', '1.5MB', '1M', '100k', 'unlimited')
+        #[arg(long)]
+        max_request_size: Option<String>,
+
+        /// Minimum response body size (e.g., '1KB', '1.5MB', '1M', '100k', '500B')
+        #[arg(long)]
+        min_response_size: Option<String>,
+
+        /// Maximum response body size (e.g., '100KB', '1.5MB', '1M', '100k', 'unlimited')
+        #[arg(long)]
+        max_response_size: Option<String>,
+    },
+
     /// Redact sensitive headers/cookies in a harlite SQLite database
     Redact {
         /// Output database file (default: modify in-place)

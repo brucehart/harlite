@@ -931,6 +931,51 @@ fn test_analyze_command_json() {
 }
 
 #[test]
+fn test_report_from_db_generates_html() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("report.db");
+    let html_path = tmp.path().join("report.html");
+
+    harlite()
+        .args(["import", "tests/fixtures/with_pages.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args(["report"])
+        .arg(&db_path)
+        .args(["-o"])
+        .arg(&html_path)
+        .assert()
+        .success();
+
+    let html = fs::read_to_string(&html_path).unwrap();
+    assert!(html.contains("id=\"harlite-data\""));
+    assert!(html.contains("Slow Requests"));
+    assert!(html.contains("Error Summary"));
+    assert!(html.contains("Waterfall"));
+}
+
+#[test]
+fn test_report_from_har_generates_html() {
+    let tmp = TempDir::new().unwrap();
+    let html_path = tmp.path().join("report.html");
+
+    harlite()
+        .args(["report", "tests/fixtures/with_pages.har", "-o"])
+        .arg(&html_path)
+        .assert()
+        .success();
+
+    let html = fs::read_to_string(&html_path).unwrap();
+    assert!(html.contains("id=\"harlite-data\""));
+    assert!(html.contains("Slow Requests"));
+    assert!(html.contains("Error Summary"));
+    assert!(html.contains("Waterfall"));
+}
+
+#[test]
 fn test_stats_command_with_null_entry_count() {
     // This test verifies the fallback path where entry_count is NULL,
     // simulating databases created by other tools or older versions.

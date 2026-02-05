@@ -33,6 +33,7 @@ Works great with AI coding agents like Codex and Claude — they already know SQ
 - **Database merge** — Combine multiple harlite databases with deduplication (`harlite merge`)
 - **Queryable headers** — Headers stored as JSON, queryable with SQLite JSON functions
 - **Performance analysis** — Built-in timing analysis and caching insights (`harlite analyze`)
+- **HTML reports** — Self-contained HTML report with waterfall + slow/errors (`harlite report`)
 - **Interactive REPL** — Explore databases with history, completions, and shortcuts (`harlite repl`)
 - **Safe sharing** — Redact sensitive headers/cookies before sharing a database
 - **PII scanning** — Find emails/phones/SSNs/credit cards in URLs and bodies (`harlite pii`)
