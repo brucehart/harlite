@@ -1575,6 +1575,30 @@ fn test_export_direct_har_filter() {
 }
 
 #[test]
+fn test_export_har_filter_defaults_to_non_overwriting_output() {
+    let tmp = TempDir::new().unwrap();
+    let input = tmp.path().join("capture.har");
+    let expected_output = tmp.path().join("capture.filtered.har");
+
+    fs::copy("tests/fixtures/simple.har", &input).unwrap();
+    let original = fs::read_to_string(&input).unwrap();
+
+    harlite()
+        .args([
+            "export",
+            input.to_string_lossy().as_ref(),
+            "--method",
+            "GET",
+        ])
+        .assert()
+        .success();
+
+    assert!(expected_output.exists());
+    let preserved = fs::read_to_string(&input).unwrap();
+    assert_eq!(preserved, original);
+}
+
+#[test]
 fn test_export_with_format_override_on_extensionless_input() {
     let tmp = TempDir::new().unwrap();
     let input = tmp.path().join("session");
@@ -1607,6 +1631,109 @@ fn test_export_with_format_override_on_extensionless_input() {
         .as_str()
         .expect("method should be set");
     assert_eq!(method, "GET");
+}
+
+#[test]
+fn test_export_time_filter_with_timezone_offsets() {
+    let tmp = TempDir::new().unwrap();
+    let input = tmp.path().join("timezone.har");
+    let output = tmp.path().join("timezone.filtered.har");
+    let har = r#"{
+      "log": {
+        "version": "1.2",
+        "creator": {"name": "test", "version": "1.0"},
+        "entries": [
+          {
+            "startedDateTime": "2024-01-01T00:00:00-05:00",
+            "time": 10,
+            "request": {
+              "method": "GET",
+              "url": "https://example.com/early",
+              "httpVersion": "HTTP/1.1",
+              "headers": [],
+              "cookies": [],
+              "queryString": [],
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "response": {
+              "status": 200,
+              "statusText": "OK",
+              "httpVersion": "HTTP/1.1",
+              "cookies": [],
+              "headers": [],
+              "content": {
+                "size": 0,
+                "mimeType": "application/json",
+                "text": "{}"
+              },
+              "redirectURL": "",
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "cache": {},
+            "timings": {"send": 1, "wait": 1, "receive": 1}
+          },
+          {
+            "startedDateTime": "2024-01-01T00:00:00Z",
+            "time": 10,
+            "request": {
+              "method": "GET",
+              "url": "https://example.com/late",
+              "httpVersion": "HTTP/1.1",
+              "headers": [],
+              "cookies": [],
+              "queryString": [],
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "response": {
+              "status": 200,
+              "statusText": "OK",
+              "httpVersion": "HTTP/1.1",
+              "cookies": [],
+              "headers": [],
+              "content": {
+                "size": 0,
+                "mimeType": "application/json",
+                "text": "{}"
+              },
+              "redirectURL": "",
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "cache": {},
+            "timings": {"send": 1, "wait": 1, "receive": 1}
+          }
+        ]
+      }
+    }"#;
+
+    fs::write(&input, har).unwrap();
+
+    harlite()
+        .args([
+            "export",
+            input.to_string_lossy().as_ref(),
+            "--from",
+            "2024-01-01T04:00:00Z",
+        ])
+        .args(["--format", "har"])
+        .args(["-o"])
+        .arg(&output)
+        .assert()
+        .success();
+
+    let exported: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(&output).unwrap()).unwrap();
+    let entries = exported["log"]["entries"]
+        .as_array()
+        .expect("entries array should exist");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0]["request"]["url"].as_str().unwrap(),
+        "https://example.com/early"
+    );
 }
 
 #[test]

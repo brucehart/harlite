@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use clap::ValueEnum;
 use regex::Regex;
 use rusqlite::Connection;
@@ -223,18 +223,40 @@ fn open_output(path: &Path) -> Result<Box<dyn Write>> {
 
 /// Export a harlite database or HAR back to a HAR file.
 pub fn run_export(database: PathBuf, options: &ExportOptions) -> Result<()> {
-    let output_path = options.output.clone().unwrap_or_else(|| {
-        let stem = database
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("export");
-        PathBuf::from(format!("{stem}.har"))
-    });
-
     let input_format = resolve_export_format(&database, options.format)?;
+    let output_path = options
+        .output
+        .clone()
+        .unwrap_or_else(|| default_export_output_path(&database, input_format));
+
     match input_format {
         ExportInputFormat::Db => run_export_from_db(&database, &output_path, options),
         ExportInputFormat::Har => run_export_from_har(&database, &output_path, options),
+    }
+}
+
+fn default_export_output_path(database: &Path, format: ExportInputFormat) -> PathBuf {
+    match format {
+        ExportInputFormat::Db => {
+            let stem = database
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("export");
+            database.with_file_name(format!("{stem}.har"))
+        }
+        ExportInputFormat::Har => {
+            let file_name = database
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("export");
+            let base = file_name
+                .trim_end_matches(".har.br")
+                .trim_end_matches(".har.gz")
+                .trim_end_matches(".har")
+                .trim_end_matches(".json");
+            let default = format!("{base}.filtered.har");
+            database.with_file_name(default)
+        }
     }
 }
 
@@ -655,8 +677,8 @@ fn run_export_from_har(database: &Path, output_path: &Path, options: &ExportOpti
             &options.status,
             &options.mime_contains,
             &ext_filters,
-            from.as_deref(),
-            to.as_deref(),
+            from,
+            to,
             min_request_size,
             max_request_size,
             min_response_size,
@@ -708,8 +730,8 @@ fn matches_har_filters(
     status: &[i32],
     mime_contains: &[String],
     exts: &HashSet<String>,
-    from: Option<&str>,
-    to: Option<&str>,
+    from: Option<DateTime<Utc>>,
+    to: Option<DateTime<Utc>>,
     min_request_size: Option<i64>,
     max_request_size: Option<i64>,
     min_response_size: Option<i64>,
@@ -765,13 +787,16 @@ fn matches_har_filters(
             return false;
         }
     }
+    let Some(started_at) = parse_started_at(&entry.started_date_time) else {
+        return from.is_none() && to.is_none();
+    };
     if let Some(from) = from {
-        if entry.started_date_time.as_str() < from {
+        if started_at < from {
             return false;
         }
     }
     if let Some(to) = to {
-        if entry.started_date_time.as_str() > to {
+        if started_at > to {
             return false;
         }
     }
@@ -880,7 +905,7 @@ fn write_exported_har(
     Ok(())
 }
 
-fn parse_started_at_bound(value: &str, is_end: bool) -> Result<String> {
+fn parse_started_at_bound(value: &str, is_end: bool) -> Result<DateTime<Utc>> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err(HarliteError::InvalidHar(
@@ -889,9 +914,7 @@ fn parse_started_at_bound(value: &str, is_end: bool) -> Result<String> {
     }
 
     if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(trimmed) {
-        return Ok(parsed
-            .with_timezone(&chrono::Utc)
-            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+        return Ok(parsed.with_timezone(&Utc));
     }
     let date = chrono::NaiveDate::parse_from_str(trimmed, "%Y-%m-%d")?;
     let dt = if is_end {
@@ -903,7 +926,13 @@ fn parse_started_at_bound(value: &str, is_end: bool) -> Result<String> {
             .and_then(|d| d.and_local_timezone(chrono::Utc).single())
             .ok_or_else(|| HarliteError::InvalidHar("Invalid start date".to_string()))?
     };
-    Ok(dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+    Ok(dt)
+}
+
+fn parse_started_at(value: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|value| value.with_timezone(&Utc))
 }
 
 fn resolve_export_format(
