@@ -1599,6 +1599,143 @@ fn test_export_har_filter_defaults_to_non_overwriting_output() {
 }
 
 #[test]
+fn test_export_db_defaults_to_current_directory_output() {
+    let tmp = TempDir::new().unwrap();
+    let stem = format!(
+        "issue119-export-default-{}",
+        tmp.path().file_name().unwrap().to_string_lossy()
+    );
+    let db_path = tmp.path().join(format!("{stem}.db"));
+    let expected_output = std::env::current_dir().unwrap().join(format!("{stem}.har"));
+    let _ = fs::remove_file(&expected_output);
+    let output_in_db_dir = tmp.path().join(format!("{stem}.har"));
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args(["export", &db_path.to_string_lossy()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Exported 2 entries"));
+
+    assert!(expected_output.exists());
+    assert!(!output_in_db_dir.exists());
+
+    let _ = fs::remove_file(&expected_output);
+}
+
+#[test]
+fn test_export_har_url_contains_is_case_insensitive() {
+    let tmp = TempDir::new().unwrap();
+    let input = tmp.path().join("case-insensitive.har");
+    let output = tmp.path().join("case-insensitive.filtered.har");
+    let har = r#"{
+      "log": {
+        "version": "1.2",
+        "creator": {"name": "test", "version": "1.0"},
+        "entries": [
+          {
+            "startedDateTime": "2024-01-15T10:30:00.000Z",
+            "time": 10,
+            "request": {
+              "method": "GET",
+              "url": "https://api.example.com/Users",
+              "httpVersion": "HTTP/1.1",
+              "headers": [],
+              "cookies": [],
+              "queryString": [],
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "response": {
+              "status": 200,
+              "statusText": "OK",
+              "httpVersion": "HTTP/1.1",
+              "cookies": [],
+              "headers": [],
+              "content": {
+                "size": 0,
+                "mimeType": "application/json",
+                "text": "{}"
+              },
+              "redirectURL": "",
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "cache": {},
+            "timings": {"send": 1, "wait": 1, "receive": 1}
+          },
+          {
+            "startedDateTime": "2024-01-15T10:30:01.000Z",
+            "time": 10,
+            "request": {
+              "method": "GET",
+              "url": "https://api.example.com/notes",
+              "httpVersion": "HTTP/1.1",
+              "headers": [],
+              "cookies": [],
+              "queryString": [],
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "response": {
+              "status": 200,
+              "statusText": "OK",
+              "httpVersion": "HTTP/1.1",
+              "cookies": [],
+              "headers": [],
+              "content": {
+                "size": 0,
+                "mimeType": "application/json",
+                "text": "{}"
+              },
+              "redirectURL": "",
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "cache": {},
+            "timings": {"send": 1, "wait": 1, "receive": 1}
+          }
+        ]
+      }
+    }"#;
+
+    fs::write(&input, har).unwrap();
+
+    harlite()
+        .args([
+            "export",
+            input.to_string_lossy().as_ref(),
+            "--url-contains",
+            "users",
+            "--method",
+            "GET",
+        ])
+        .args(["-o"])
+        .arg(&output)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Exported 1 entries"));
+
+    let exported: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(&output).unwrap()).unwrap();
+    let entries = exported["log"]["entries"]
+        .as_array()
+        .expect("entries array should exist");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0]["request"]["url"]
+            .as_str()
+            .expect("url should be set"),
+        "https://api.example.com/Users"
+    );
+}
+
+#[test]
 fn test_export_with_format_override_on_extensionless_input() {
     let tmp = TempDir::new().unwrap();
     let input = tmp.path().join("session");

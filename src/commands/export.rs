@@ -242,7 +242,7 @@ fn default_export_output_path(database: &Path, format: ExportInputFormat) -> Pat
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("export");
-            database.with_file_name(format!("{stem}.har"))
+            PathBuf::from(format!("{stem}.har"))
         }
         ExportInputFormat::Har => {
             let file_name = database
@@ -737,13 +737,14 @@ fn matches_har_filters(
     min_response_size: Option<i64>,
     max_response_size: Option<i64>,
 ) -> bool {
+    let entry_url = entry.request.url.to_ascii_lowercase();
     if !url.is_empty() && !url.iter().any(|value| value == &entry.request.url) {
         return false;
     }
     if !url_contains.is_empty()
         && !url_contains
             .iter()
-            .any(|value| entry.request.url.contains(value))
+            .any(|value| entry_url.contains(&value.to_ascii_lowercase()))
     {
         return false;
     }
