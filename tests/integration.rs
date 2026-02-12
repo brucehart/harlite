@@ -243,7 +243,14 @@ fn test_export_data_source_filter_no_match() {
         .success();
 
     harlite()
-        .args(["export-data", "--format", "jsonl", "--source", "missing.har", "-o"])
+        .args([
+            "export-data",
+            "--format",
+            "jsonl",
+            "--source",
+            "missing.har",
+            "-o",
+        ])
         .arg(&out_path)
         .arg(&db_path)
         .assert()
@@ -278,7 +285,10 @@ fn test_openapi_basic() {
         .read_to_string(&mut contents)
         .unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&contents).unwrap();
-    assert_eq!(parsed.get("openapi").and_then(|v| v.as_str()), Some("3.0.3"));
+    assert_eq!(
+        parsed.get("openapi").and_then(|v| v.as_str()),
+        Some("3.0.3")
+    );
     assert!(parsed.get("paths").is_some());
 }
 
@@ -296,8 +306,7 @@ fn test_replay_har_with_override() {
                     Ok(0) => break,
                     Ok(n) => {
                         read_total += n;
-                        if read_total >= 4
-                            && buf[..read_total].windows(4).any(|w| w == b"\r\n\r\n")
+                        if read_total >= 4 && buf[..read_total].windows(4).any(|w| w == b"\r\n\r\n")
                         {
                             break;
                         }
@@ -309,7 +318,8 @@ fn test_replay_har_with_override() {
                 }
             }
 
-            let response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: text/plain\r\n\r\nOK";
+            let response =
+                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: text/plain\r\n\r\nOK";
             let _ = stream.write_all(response);
         }
     });
@@ -357,7 +367,15 @@ fn test_replay_har_with_override() {
 
     let override_host = format!(".*=127.0.0.1:{}", addr.port());
     harlite()
-        .args(["replay", "--format", "json", "--method", "GET", "--concurrency", "1"])
+        .args([
+            "replay",
+            "--format",
+            "json",
+            "--method",
+            "GET",
+            "--concurrency",
+            "1",
+        ])
         .arg(&har_path)
         .args(["--override-host", &override_host])
         .assert()
@@ -1523,6 +1541,72 @@ fn test_export_roundtrip_with_bodies() {
         .query_row("SELECT COUNT(*) FROM blobs", [], |r| r.get(0))
         .unwrap();
     assert!(blob_count > 0);
+}
+
+#[test]
+fn test_export_direct_har_filter() {
+    let tmp = TempDir::new().unwrap();
+    let filtered_path = tmp.path().join("filtered.har");
+
+    harlite()
+        .args([
+            "export",
+            "tests/fixtures/simple.har",
+            "--method",
+            "POST",
+            "--bodies",
+        ])
+        .args(["-o"])
+        .arg(&filtered_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Exported 1 entries"));
+
+    let exported: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(&filtered_path).unwrap()).unwrap();
+    let entries = exported["log"]["entries"]
+        .as_array()
+        .expect("entries array should exist");
+    assert_eq!(entries.len(), 1);
+    let method = entries[0]["request"]["method"]
+        .as_str()
+        .expect("method should be set");
+    assert_eq!(method, "POST");
+}
+
+#[test]
+fn test_export_with_format_override_on_extensionless_input() {
+    let tmp = TempDir::new().unwrap();
+    let input = tmp.path().join("session");
+    let output = tmp.path().join("session_filtered.har");
+
+    fs::copy("tests/fixtures/simple.har", &input).unwrap();
+
+    harlite()
+        .args([
+            "export",
+            input.to_string_lossy().as_ref(),
+            "--format",
+            "har",
+            "--method",
+            "GET",
+        ])
+        .args(["--bodies", "-o"])
+        .arg(&output)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Exported 1 entries"));
+
+    let exported: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(&output).unwrap()).unwrap();
+    let entries = exported["log"]["entries"]
+        .as_array()
+        .expect("entries array should exist");
+    assert_eq!(entries.len(), 1);
+    let method = entries[0]["request"]["method"]
+        .as_str()
+        .expect("method should be set");
+    assert_eq!(method, "GET");
 }
 
 #[test]

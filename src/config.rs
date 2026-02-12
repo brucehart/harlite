@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::commands::{DedupStrategy, FtsTokenizer, NameMatchMode, OutputFormat};
+use crate::commands::{
+    DedupStrategy, ExportInputFormat, FtsTokenizer, NameMatchMode, OutputFormat,
+};
 use crate::db::ExtractBodiesKind;
 use crate::error::{HarliteError, Result};
 use crate::plugins::PluginConfig;
@@ -102,6 +104,7 @@ pub struct ReplayConfig {
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct ExportConfig {
     pub output: Option<PathBuf>,
+    pub format: Option<ExportInputFormat>,
     pub bodies: Option<bool>,
     pub bodies_raw: Option<bool>,
     pub allow_external_paths: Option<bool>,
@@ -289,6 +292,7 @@ pub struct ResolvedReplayConfig {
 #[derive(Clone, Debug, Serialize)]
 pub struct ResolvedExportConfig {
     pub output: Option<PathBuf>,
+    pub format: Option<ExportInputFormat>,
     pub bodies: bool,
     pub bodies_raw: bool,
     pub allow_external_paths: bool,
@@ -487,6 +491,7 @@ impl Default for ResolvedExportConfig {
     fn default() -> Self {
         Self {
             output: None,
+            format: None,
             bodies: false,
             bodies_raw: false,
             allow_external_paths: false,
@@ -818,6 +823,9 @@ impl ResolvedReplayConfig {
 
 impl ResolvedExportConfig {
     fn apply(&mut self, cfg: &ExportConfig) {
+        if let Some(value) = cfg.format {
+            self.format = Some(value);
+        }
         if let Some(value) = cfg.output.clone() {
             self.output = Some(value);
         }
@@ -1169,6 +1177,7 @@ impl CdpConfig {
 
 impl ExportConfig {
     fn merge(&mut self, other: ExportConfig) {
+        merge_opt(&mut self.format, other.format);
         merge_opt(&mut self.output, other.output);
         merge_opt(&mut self.bodies, other.bodies);
         merge_opt(&mut self.bodies_raw, other.bodies_raw);

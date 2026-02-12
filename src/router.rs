@@ -4,11 +4,11 @@ use clap::CommandFactory;
 use crate::cli::{Cli, Commands};
 use crate::commands::{
     run_analyze, run_diff, run_export, run_export_data, run_fts_rebuild, run_import, run_imports,
-    run_info, run_merge, run_openapi, run_pii, run_prune, run_query, run_redact, run_schema,
-    run_report, run_search, run_stats, run_waterfall, AnalyzeOptions, DiffOptions, EntryFilterOptions,
-    ExportDataOptions, ExportOptions, ImportOptions, InfoOptions, MergeOptions, OpenApiOptions,
-    PiiOptions, QueryOptions, RedactOptions, ReportOptions, StatsOptions, WaterfallFormat,
-    WaterfallGroupBy, WaterfallOptions,
+    run_info, run_merge, run_openapi, run_pii, run_prune, run_query, run_redact, run_report,
+    run_schema, run_search, run_stats, run_waterfall, AnalyzeOptions, DiffOptions,
+    EntryFilterOptions, ExportDataOptions, ExportOptions, ImportOptions, InfoOptions, MergeOptions,
+    OpenApiOptions, PiiOptions, QueryOptions, RedactOptions, ReportOptions, StatsOptions,
+    WaterfallFormat, WaterfallGroupBy, WaterfallOptions,
 };
 #[cfg(feature = "cdp")]
 use crate::commands::{run_cdp, CdpOptions};
@@ -283,6 +283,7 @@ pub fn run(cli: Cli) -> Result<()> {
 
         Commands::Export {
             database,
+            format,
             output,
             bodies,
             bodies_raw,
@@ -325,6 +326,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 allow_external_paths: allow_external_paths.unwrap_or(defaults.allow_external_paths),
                 external_path_root: external_path_root
                     .or_else(|| defaults.external_path_root.clone()),
+                format: format.or(defaults.format),
                 url: url.unwrap_or_else(|| defaults.url.clone()),
                 url_contains: url_contains.unwrap_or_else(|| defaults.url_contains.clone()),
                 url_regex: url_regex.unwrap_or_else(|| defaults.url_regex.clone()),
