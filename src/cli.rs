@@ -2,14 +2,14 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 use crate::commands;
-use crate::commands::{
-    DataExportFormat, DedupStrategy, NameMatchMode, OutputFormat, WaterfallFormat,
-    WaterfallGroupBy,
-};
-#[cfg(feature = "otel")]
-use crate::commands::OtelExportFormat;
 #[cfg(feature = "serve")]
 use crate::commands::MatchMode;
+#[cfg(feature = "otel")]
+use crate::commands::OtelExportFormat;
+use crate::commands::{
+    DataExportFormat, DedupStrategy, ExportInputFormat, NameMatchMode, OutputFormat,
+    WaterfallFormat, WaterfallGroupBy,
+};
 use crate::db::ExtractBodiesKind;
 
 #[derive(Parser)]
@@ -369,10 +369,15 @@ pub enum Commands {
         top: Option<usize>,
     },
 
-    /// Export a SQLite database back to HAR format
+    /// Export a HAR or harlite DB back to a HAR file
     Export {
-        /// Database file to export
+        /// Database or HAR file to export
         database: PathBuf,
+
+        /// Input format override (`har` or `db`)
+        /// (takes precedence over extension-based inference)
+        #[arg(long, value_enum)]
+        format: Option<ExportInputFormat>,
 
         /// Output HAR file (default: <database>.har). Use '-' for stdout.
         #[arg(short, long)]

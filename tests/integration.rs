@@ -243,7 +243,14 @@ fn test_export_data_source_filter_no_match() {
         .success();
 
     harlite()
-        .args(["export-data", "--format", "jsonl", "--source", "missing.har", "-o"])
+        .args([
+            "export-data",
+            "--format",
+            "jsonl",
+            "--source",
+            "missing.har",
+            "-o",
+        ])
         .arg(&out_path)
         .arg(&db_path)
         .assert()
@@ -278,7 +285,10 @@ fn test_openapi_basic() {
         .read_to_string(&mut contents)
         .unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&contents).unwrap();
-    assert_eq!(parsed.get("openapi").and_then(|v| v.as_str()), Some("3.0.3"));
+    assert_eq!(
+        parsed.get("openapi").and_then(|v| v.as_str()),
+        Some("3.0.3")
+    );
     assert!(parsed.get("paths").is_some());
 }
 
@@ -296,8 +306,7 @@ fn test_replay_har_with_override() {
                     Ok(0) => break,
                     Ok(n) => {
                         read_total += n;
-                        if read_total >= 4
-                            && buf[..read_total].windows(4).any(|w| w == b"\r\n\r\n")
+                        if read_total >= 4 && buf[..read_total].windows(4).any(|w| w == b"\r\n\r\n")
                         {
                             break;
                         }
@@ -309,7 +318,8 @@ fn test_replay_har_with_override() {
                 }
             }
 
-            let response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: text/plain\r\n\r\nOK";
+            let response =
+                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: text/plain\r\n\r\nOK";
             let _ = stream.write_all(response);
         }
     });
@@ -357,7 +367,15 @@ fn test_replay_har_with_override() {
 
     let override_host = format!(".*=127.0.0.1:{}", addr.port());
     harlite()
-        .args(["replay", "--format", "json", "--method", "GET", "--concurrency", "1"])
+        .args([
+            "replay",
+            "--format",
+            "json",
+            "--method",
+            "GET",
+            "--concurrency",
+            "1",
+        ])
         .arg(&har_path)
         .args(["--override-host", &override_host])
         .assert()
@@ -1523,6 +1541,725 @@ fn test_export_roundtrip_with_bodies() {
         .query_row("SELECT COUNT(*) FROM blobs", [], |r| r.get(0))
         .unwrap();
     assert!(blob_count > 0);
+}
+
+#[test]
+fn test_export_direct_har_filter() {
+    let tmp = TempDir::new().unwrap();
+    let filtered_path = tmp.path().join("filtered.har");
+
+    harlite()
+        .args([
+            "export",
+            "tests/fixtures/simple.har",
+            "--method",
+            "POST",
+            "--bodies",
+        ])
+        .args(["-o"])
+        .arg(&filtered_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Exported 1 entries"));
+
+    let exported: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(&filtered_path).unwrap()).unwrap();
+    let entries = exported["log"]["entries"]
+        .as_array()
+        .expect("entries array should exist");
+    assert_eq!(entries.len(), 1);
+    let method = entries[0]["request"]["method"]
+        .as_str()
+        .expect("method should be set");
+    assert_eq!(method, "POST");
+}
+
+#[test]
+fn test_export_har_filter_defaults_to_non_overwriting_output() {
+    let tmp = TempDir::new().unwrap();
+    let input = tmp.path().join("capture.har");
+    let expected_output = tmp.path().join("capture.filtered.har");
+
+    fs::copy("tests/fixtures/simple.har", &input).unwrap();
+    let original = fs::read_to_string(&input).unwrap();
+
+    harlite()
+        .args([
+            "export",
+            input.to_string_lossy().as_ref(),
+            "--method",
+            "GET",
+        ])
+        .assert()
+        .success();
+
+    assert!(expected_output.exists());
+    let preserved = fs::read_to_string(&input).unwrap();
+    assert_eq!(preserved, original);
+}
+
+#[test]
+fn test_export_db_defaults_to_current_directory_output() {
+    let tmp = TempDir::new().unwrap();
+    let stem = format!(
+        "issue119-export-default-{}",
+        tmp.path().file_name().unwrap().to_string_lossy()
+    );
+    let db_path = tmp.path().join(format!("{stem}.db"));
+    let expected_output = std::env::current_dir().unwrap().join(format!("{stem}.har"));
+    let _ = fs::remove_file(&expected_output);
+    let output_in_db_dir = tmp.path().join(format!("{stem}.har"));
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .args(["export", &db_path.to_string_lossy()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Exported 2 entries"));
+
+    assert!(expected_output.exists());
+    assert!(!output_in_db_dir.exists());
+
+    let _ = fs::remove_file(&expected_output);
+}
+
+#[test]
+fn test_export_har_url_contains_is_case_insensitive() {
+    let tmp = TempDir::new().unwrap();
+    let input = tmp.path().join("case-insensitive.har");
+    let output = tmp.path().join("case-insensitive.filtered.har");
+    let har = r#"{
+      "log": {
+        "version": "1.2",
+        "creator": {"name": "test", "version": "1.0"},
+        "entries": [
+          {
+            "startedDateTime": "2024-01-15T10:30:00.000Z",
+            "time": 10,
+            "request": {
+              "method": "GET",
+              "url": "https://api.example.com/Users",
+              "httpVersion": "HTTP/1.1",
+              "headers": [],
+              "cookies": [],
+              "queryString": [],
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "response": {
+              "status": 200,
+              "statusText": "OK",
+              "httpVersion": "HTTP/1.1",
+              "cookies": [],
+              "headers": [],
+              "content": {
+                "size": 0,
+                "mimeType": "application/json",
+                "text": "{}"
+              },
+              "redirectURL": "",
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "cache": {},
+            "timings": {"send": 1, "wait": 1, "receive": 1}
+          },
+          {
+            "startedDateTime": "2024-01-15T10:30:01.000Z",
+            "time": 10,
+            "request": {
+              "method": "GET",
+              "url": "https://api.example.com/notes",
+              "httpVersion": "HTTP/1.1",
+              "headers": [],
+              "cookies": [],
+              "queryString": [],
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "response": {
+              "status": 200,
+              "statusText": "OK",
+              "httpVersion": "HTTP/1.1",
+              "cookies": [],
+              "headers": [],
+              "content": {
+                "size": 0,
+                "mimeType": "application/json",
+                "text": "{}"
+              },
+              "redirectURL": "",
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "cache": {},
+            "timings": {"send": 1, "wait": 1, "receive": 1}
+          }
+        ]
+      }
+    }"#;
+
+    fs::write(&input, har).unwrap();
+
+    harlite()
+        .args([
+            "export",
+            input.to_string_lossy().as_ref(),
+            "--url-contains",
+            "users",
+            "--method",
+            "GET",
+        ])
+        .args(["-o"])
+        .arg(&output)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Exported 1 entries"));
+
+    let exported: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(&output).unwrap()).unwrap();
+    let entries = exported["log"]["entries"]
+        .as_array()
+        .expect("entries array should exist");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0]["request"]["url"]
+            .as_str()
+            .expect("url should be set"),
+        "https://api.example.com/Users"
+    );
+}
+
+#[test]
+fn test_export_har_omits_form_params_without_bodies() {
+    let tmp = TempDir::new().unwrap();
+    let input = tmp.path().join("form-param.har");
+    let output = tmp.path().join("form-param.filtered.har");
+    let har = r#"{
+      "log": {
+        "version": "1.2",
+        "creator": {"name": "test", "version": "1.0"},
+        "entries": [
+          {
+            "startedDateTime": "2024-01-15T10:30:00.000Z",
+            "time": 10,
+            "request": {
+              "method": "POST",
+              "url": "https://api.example.com/login",
+              "httpVersion": "HTTP/1.1",
+              "headers": [],
+              "cookies": [],
+              "queryString": [],
+              "postData": {
+                "mimeType": "application/x-www-form-urlencoded",
+                "text": "username=bob&password=secret",
+                "params": [
+                  {"name": "username", "value": "bob"},
+                  {"name": "password", "value": "secret"}
+                ]
+              },
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "response": {
+              "status": 200,
+              "statusText": "OK",
+              "httpVersion": "HTTP/1.1",
+              "cookies": [],
+              "headers": [],
+              "content": {
+                "size": 13,
+                "mimeType": "text/plain",
+                "text": "logged in"
+              },
+              "redirectURL": "",
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "cache": {},
+            "timings": {"send": 1, "wait": 1, "receive": 1}
+          }
+        ]
+      }
+    }"#;
+
+    fs::write(&input, har).unwrap();
+
+    harlite()
+        .args(["export", input.to_string_lossy().as_ref()])
+        .args(["--method", "POST"])
+        .args(["-o"])
+        .arg(&output)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Exported 1 entries"));
+
+    let exported: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(&output).unwrap()).unwrap();
+    let entry = exported["log"]["entries"][0]
+        .as_object()
+        .expect("entry should be an object");
+    let request = entry["request"]
+        .as_object()
+        .expect("request should be an object");
+    let post_data = request["postData"]
+        .as_object()
+        .expect("postData should be set");
+    assert!(post_data.get("text").is_none() || post_data["text"].is_null());
+    assert!(post_data.get("params").is_none() || post_data["params"].is_null());
+}
+
+#[test]
+fn test_export_har_unknown_response_size_treated_as_zero_for_filtering() {
+    let tmp = TempDir::new().unwrap();
+    let input = tmp.path().join("unknown-size.har");
+    let output = tmp.path().join("unknown-size.filtered.har");
+    let har = r#"{
+      "log": {
+        "version": "1.2",
+        "creator": {"name": "test", "version": "1.0"},
+        "entries": [
+          {
+            "startedDateTime": "2024-01-15T10:30:00.000Z",
+            "time": 10,
+            "request": {
+              "method": "GET",
+              "url": "https://api.example.com/known",
+              "httpVersion": "HTTP/1.1",
+              "headers": [],
+              "cookies": [],
+              "queryString": [],
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "response": {
+              "status": 200,
+              "statusText": "OK",
+              "httpVersion": "HTTP/1.1",
+              "cookies": [],
+              "headers": [],
+              "content": {
+                "size": -1,
+                "mimeType": "application/json",
+                "text": "{}"
+              },
+              "redirectURL": "",
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "cache": {},
+            "timings": {"send": 1, "wait": 1, "receive": 1}
+          },
+          {
+            "startedDateTime": "2024-01-15T10:30:01.000Z",
+            "time": 10,
+            "request": {
+              "method": "GET",
+              "url": "https://api.example.com/small",
+              "httpVersion": "HTTP/1.1",
+              "headers": [],
+              "cookies": [],
+              "queryString": [],
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "response": {
+              "status": 200,
+              "statusText": "OK",
+              "httpVersion": "HTTP/1.1",
+              "cookies": [],
+              "headers": [],
+              "content": {
+                "size": 10,
+                "mimeType": "application/json",
+                "text": "{}"
+              },
+              "redirectURL": "",
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "cache": {},
+            "timings": {"send": 1, "wait": 1, "receive": 1}
+          }
+        ]
+      }
+    }"#;
+
+    fs::write(&input, har).unwrap();
+
+    harlite()
+        .args([
+            "export",
+            input.to_string_lossy().as_ref(),
+            "--min-response-size",
+            "0",
+        ])
+        .args(["--method", "GET"])
+        .args(["-o"])
+        .arg(&output)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Exported 2 entries"));
+
+    let exported: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(&output).unwrap()).unwrap();
+    let entries = exported["log"]["entries"]
+        .as_array()
+        .expect("entries array should exist");
+    assert_eq!(entries.len(), 2);
+}
+
+#[test]
+fn test_export_har_invalid_request_size_still_applies_size_filters() {
+    let tmp = TempDir::new().unwrap();
+    let input = tmp.path().join("invalid-request-size.har");
+    let output = tmp.path().join("invalid-request-size.filtered.har");
+    let har = r#"{
+      "log": {
+        "version": "1.2",
+        "creator": {"name": "test", "version": "1.0"},
+        "entries": [
+          {
+            "startedDateTime": "2024-01-15T10:30:00.000Z",
+            "time": 10,
+            "request": {
+              "method": "GET",
+              "url": "https://api.example.com/unknown",
+              "httpVersion": "HTTP/1.1",
+              "headers": [],
+              "cookies": [],
+              "queryString": [],
+              "headersSize": 0,
+              "bodySize": -1
+            },
+            "response": {
+              "status": 200,
+              "statusText": "OK",
+              "httpVersion": "HTTP/1.1",
+              "cookies": [],
+              "headers": [],
+              "content": {
+                "size": 5,
+                "mimeType": "application/json",
+                "text": "{}"
+              },
+              "redirectURL": "",
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "cache": {},
+            "timings": {"send": 1, "wait": 1, "receive": 1}
+          }
+        ]
+      }
+    }"#;
+
+    fs::write(&input, har).unwrap();
+
+    harlite()
+        .args([
+            "export",
+            input.to_string_lossy().as_ref(),
+            "--method",
+            "GET",
+            "--min-request-size",
+            "0",
+        ])
+        .args(["-o"])
+        .arg(&output)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Exported 1 entries"));
+
+    let exported: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(&output).unwrap()).unwrap();
+    let entries = exported["log"]["entries"]
+        .as_array()
+        .expect("entries array should exist");
+    assert_eq!(entries.len(), 1);
+}
+
+#[test]
+fn test_export_har_source_matches_only_exact_path_or_basename() {
+    let tmp = TempDir::new().unwrap();
+    let input = tmp.path().join("keep.har");
+    let output = tmp.path().join("keep.filtered.har");
+
+    fs::copy("tests/fixtures/simple.har", &input).unwrap();
+
+    harlite()
+        .args([
+            "export",
+            input.to_string_lossy().as_ref(),
+            "--source",
+            "keep.har",
+            "--method",
+            "GET",
+        ])
+        .args(["-o"])
+        .arg(&output)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Exported 1 entries"));
+
+    let exported: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(&output).unwrap()).unwrap();
+    let entries = exported["log"]["entries"]
+        .as_array()
+        .expect("entries array should exist");
+    assert_eq!(entries.len(), 1);
+
+    harlite()
+        .args([
+            "export",
+            input.to_string_lossy().as_ref(),
+            "--source",
+            "eep.har",
+            "--method",
+            "GET",
+        ])
+        .args(["-o"])
+        .arg(&output)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Exported 0 entries"));
+}
+
+#[test]
+fn test_export_har_invalid_started_date_still_applies_size_filters() {
+    let tmp = TempDir::new().unwrap();
+    let input = tmp.path().join("invalid-date.har");
+    let output = tmp.path().join("invalid-date.filtered.har");
+    let har = r#"{
+      "log": {
+        "version": "1.2",
+        "creator": {"name": "test", "version": "1.0"},
+        "entries": [
+          {
+            "startedDateTime": "not-a-date",
+            "time": 10,
+            "request": {
+              "method": "GET",
+              "url": "https://api.example.com/invalid",
+              "httpVersion": "HTTP/1.1",
+              "headers": [],
+              "cookies": [],
+              "queryString": [],
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "response": {
+              "status": 200,
+              "statusText": "OK",
+              "httpVersion": "HTTP/1.1",
+              "cookies": [],
+              "headers": [],
+              "content": {
+                "size": 5,
+                "mimeType": "application/json",
+                "text": "{}"
+              },
+              "redirectURL": "",
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "cache": {},
+            "timings": {"send": 1, "wait": 1, "receive": 1}
+          },
+          {
+            "startedDateTime": "2024-01-15T10:30:01.000Z",
+            "time": 10,
+            "request": {
+              "method": "GET",
+              "url": "https://api.example.com/valid",
+              "httpVersion": "HTTP/1.1",
+              "headers": [],
+              "cookies": [],
+              "queryString": [],
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "response": {
+              "status": 200,
+              "statusText": "OK",
+              "httpVersion": "HTTP/1.1",
+              "cookies": [],
+              "headers": [],
+              "content": {
+                "size": 25,
+                "mimeType": "application/json",
+                "text": "{}"
+              },
+              "redirectURL": "",
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "cache": {},
+            "timings": {"send": 1, "wait": 1, "receive": 1}
+          }
+        ]
+      }
+    }"#;
+
+    fs::write(&input, har).unwrap();
+
+    harlite()
+        .args([
+            "export",
+            input.to_string_lossy().as_ref(),
+            "--method",
+            "GET",
+            "--min-response-size",
+            "10",
+        ])
+        .args(["-o"])
+        .arg(&output)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Exported 1 entries"));
+}
+
+#[test]
+fn test_export_with_format_override_on_extensionless_input() {
+    let tmp = TempDir::new().unwrap();
+    let input = tmp.path().join("session");
+    let output = tmp.path().join("session_filtered.har");
+
+    fs::copy("tests/fixtures/simple.har", &input).unwrap();
+
+    harlite()
+        .args([
+            "export",
+            input.to_string_lossy().as_ref(),
+            "--format",
+            "har",
+            "--method",
+            "GET",
+        ])
+        .args(["--bodies", "-o"])
+        .arg(&output)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Exported 1 entries"));
+
+    let exported: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(&output).unwrap()).unwrap();
+    let entries = exported["log"]["entries"]
+        .as_array()
+        .expect("entries array should exist");
+    assert_eq!(entries.len(), 1);
+    let method = entries[0]["request"]["method"]
+        .as_str()
+        .expect("method should be set");
+    assert_eq!(method, "GET");
+}
+
+#[test]
+fn test_export_time_filter_with_timezone_offsets() {
+    let tmp = TempDir::new().unwrap();
+    let input = tmp.path().join("timezone.har");
+    let output = tmp.path().join("timezone.filtered.har");
+    let har = r#"{
+      "log": {
+        "version": "1.2",
+        "creator": {"name": "test", "version": "1.0"},
+        "entries": [
+          {
+            "startedDateTime": "2024-01-01T00:00:00-05:00",
+            "time": 10,
+            "request": {
+              "method": "GET",
+              "url": "https://example.com/early",
+              "httpVersion": "HTTP/1.1",
+              "headers": [],
+              "cookies": [],
+              "queryString": [],
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "response": {
+              "status": 200,
+              "statusText": "OK",
+              "httpVersion": "HTTP/1.1",
+              "cookies": [],
+              "headers": [],
+              "content": {
+                "size": 0,
+                "mimeType": "application/json",
+                "text": "{}"
+              },
+              "redirectURL": "",
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "cache": {},
+            "timings": {"send": 1, "wait": 1, "receive": 1}
+          },
+          {
+            "startedDateTime": "2024-01-01T00:00:00Z",
+            "time": 10,
+            "request": {
+              "method": "GET",
+              "url": "https://example.com/late",
+              "httpVersion": "HTTP/1.1",
+              "headers": [],
+              "cookies": [],
+              "queryString": [],
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "response": {
+              "status": 200,
+              "statusText": "OK",
+              "httpVersion": "HTTP/1.1",
+              "cookies": [],
+              "headers": [],
+              "content": {
+                "size": 0,
+                "mimeType": "application/json",
+                "text": "{}"
+              },
+              "redirectURL": "",
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "cache": {},
+            "timings": {"send": 1, "wait": 1, "receive": 1}
+          }
+        ]
+      }
+    }"#;
+
+    fs::write(&input, har).unwrap();
+
+    harlite()
+        .args([
+            "export",
+            input.to_string_lossy().as_ref(),
+            "--from",
+            "2024-01-01T04:00:00Z",
+        ])
+        .args(["--format", "har"])
+        .args(["-o"])
+        .arg(&output)
+        .assert()
+        .success();
+
+    let exported: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(&output).unwrap()).unwrap();
+    let entries = exported["log"]["entries"]
+        .as_array()
+        .expect("entries array should exist");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0]["request"]["url"].as_str().unwrap(),
+        "https://example.com/early"
+    );
 }
 
 #[test]

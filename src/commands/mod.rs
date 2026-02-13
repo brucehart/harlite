@@ -33,7 +33,7 @@ mod waterfall;
 pub use diff::{run_diff, DiffOptions};
 pub use analyze::{run_analyze, AnalyzeOptions};
 pub use entry_filter::EntryFilterOptions;
-pub use export::{run_export, ExportOptions};
+pub use export::{run_export, ExportInputFormat, ExportOptions};
 pub use export_data::{run_export_data, DataExportFormat, ExportDataOptions};
 pub use fts::{run_fts_rebuild, FtsTokenizer};
 pub use import::{run_import, ImportOptions};
