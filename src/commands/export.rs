@@ -802,6 +802,7 @@ fn matches_har_filters(
     }
 
     let request_size = entry.request.body_size.unwrap_or(0);
+    let request_size = if request_size < 0 { 0 } else { request_size };
     if let Some(min) = min_request_size {
         if request_size < min {
             return false;
