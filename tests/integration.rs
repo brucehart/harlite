@@ -1915,6 +1915,76 @@ fn test_export_har_unknown_response_size_treated_as_zero_for_filtering() {
 }
 
 #[test]
+fn test_export_har_invalid_request_size_still_applies_size_filters() {
+    let tmp = TempDir::new().unwrap();
+    let input = tmp.path().join("invalid-request-size.har");
+    let output = tmp.path().join("invalid-request-size.filtered.har");
+    let har = r#"{
+      "log": {
+        "version": "1.2",
+        "creator": {"name": "test", "version": "1.0"},
+        "entries": [
+          {
+            "startedDateTime": "2024-01-15T10:30:00.000Z",
+            "time": 10,
+            "request": {
+              "method": "GET",
+              "url": "https://api.example.com/unknown",
+              "httpVersion": "HTTP/1.1",
+              "headers": [],
+              "cookies": [],
+              "queryString": [],
+              "headersSize": 0,
+              "bodySize": -1
+            },
+            "response": {
+              "status": 200,
+              "statusText": "OK",
+              "httpVersion": "HTTP/1.1",
+              "cookies": [],
+              "headers": [],
+              "content": {
+                "size": 5,
+                "mimeType": "application/json",
+                "text": "{}"
+              },
+              "redirectURL": "",
+              "headersSize": 0,
+              "bodySize": 0
+            },
+            "cache": {},
+            "timings": {"send": 1, "wait": 1, "receive": 1}
+          }
+        ]
+      }
+    }"#;
+
+    fs::write(&input, har).unwrap();
+
+    harlite()
+        .args([
+            "export",
+            input.to_string_lossy().as_ref(),
+            "--method",
+            "GET",
+            "--min-request-size",
+            "0",
+        ])
+        .args(["-o"])
+        .arg(&output)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Exported 1 entries"));
+
+    let exported: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(&output).unwrap()).unwrap();
+    let entries = exported["log"]["entries"]
+        .as_array()
+        .expect("entries array should exist");
+    assert_eq!(entries.len(), 1);
+}
+
+#[test]
 fn test_export_har_source_matches_only_exact_path_or_basename() {
     let tmp = TempDir::new().unwrap();
     let input = tmp.path().join("keep.har");
