@@ -814,6 +814,7 @@ fn matches_har_filters(
         }
     }
     let response_size = entry.response.content.size;
+    let response_size = if response_size < 0 { 0 } else { response_size };
     if let Some(min) = min_response_size {
         if response_size < min {
             return false;
@@ -856,6 +857,7 @@ fn apply_har_body_inclusion(mut entry: Entry, include_bodies: bool) -> Entry {
 
     if let Some(post_data) = entry.request.post_data.as_mut() {
         post_data.text = None;
+        post_data.params = None;
     }
     entry.response.content.text = None;
     entry.response.content.encoding = None;
