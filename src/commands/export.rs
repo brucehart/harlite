@@ -788,17 +788,16 @@ fn matches_har_filters(
             return false;
         }
     }
-    let Some(started_at) = parse_started_at(&entry.started_date_time) else {
-        return from.is_none() && to.is_none();
-    };
-    if let Some(from) = from {
-        if started_at < from {
-            return false;
+    if let Some(started_at) = parse_started_at(&entry.started_date_time) {
+        if let Some(from) = from {
+            if started_at < from {
+                return false;
+            }
         }
-    }
-    if let Some(to) = to {
-        if started_at > to {
-            return false;
+        if let Some(to) = to {
+            if started_at > to {
+                return false;
+            }
         }
     }
 
@@ -834,9 +833,12 @@ fn matches_har_source_filter(path: &str, source: &[String], source_contains: &[S
         return true;
     }
     if !source.is_empty() {
+        let path_filename = std::path::Path::new(path)
+            .file_name()
+            .and_then(|value| value.to_str());
         let has_exact_match = source
             .iter()
-            .any(|value| value == path || path.ends_with(value));
+            .any(|value| value == path || path_filename == Some(value.as_str()));
         if !has_exact_match {
             return false;
         }
