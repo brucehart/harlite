@@ -511,6 +511,42 @@ mod tests {
     }
 
     #[test]
+    fn staged_database_restores_existing_files_when_install_fails() {
+        let tmp = TempDir::new().unwrap();
+        let source = tmp.path().join("source.db");
+        let destination = tmp.path().join("destination.db");
+        let conn = rusqlite::Connection::open(&source).unwrap();
+        conn.execute_batch("CREATE TABLE value (number INTEGER);")
+            .unwrap();
+        drop(conn);
+        std::fs::write(&destination, b"previous database").unwrap();
+        for suffix in ["-journal", "-wal", "-shm"] {
+            std::fs::write(
+                tmp.path().join(format!("destination.db{suffix}")),
+                suffix.as_bytes(),
+            )
+            .unwrap();
+        }
+
+        let staged = StagedDatabase::copy_from(&source, &destination, true).unwrap();
+        std::fs::remove_file(staged.path()).unwrap();
+        assert!(staged.publish().is_err());
+
+        assert_eq!(std::fs::read(&destination).unwrap(), b"previous database");
+        for suffix in ["-journal", "-wal", "-shm"] {
+            assert_eq!(
+                std::fs::read(tmp.path().join(format!("destination.db{suffix}"))).unwrap(),
+                suffix.as_bytes()
+            );
+        }
+        assert!(!std::fs::read_dir(tmp.path()).unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("harlite-backup")));
+    }
+
+    #[test]
     fn resolve_database_in_dir_errors_when_missing() {
         let tmp = TempDir::new().unwrap();
         let err = resolve_database_in_dir(tmp.path()).unwrap_err();
