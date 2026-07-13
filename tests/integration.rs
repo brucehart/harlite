@@ -352,6 +352,83 @@ fn test_prune_preserves_external_file_referenced_by_surviving_blob() {
     assert_eq!(surviving_refs, 1);
 }
 
+#[test]
+fn test_prune_rolls_back_on_malformed_surviving_external_path() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+    let bodies_dir = tmp.path().join("bodies");
+    let shared_path = bodies_dir.join("shared-body");
+    fs::create_dir(&bodies_dir).unwrap();
+    fs::write(&shared_path, b"shared").unwrap();
+
+    for _ in 0..2 {
+        harlite()
+            .args(["import", "tests/fixtures/simple.har", "--bodies", "-o"])
+            .arg(&db_path)
+            .assert()
+            .success();
+    }
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let import_ids: Vec<i64> = conn
+        .prepare("SELECT id FROM imports ORDER BY id")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect();
+    let shared = shared_path.to_string_lossy();
+    conn.execute(
+        "INSERT INTO blobs(hash, content, size, mime_type, external_path) VALUES('orphan', X'', 6, 'text/plain', ?1)",
+        [shared.as_ref()],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO blobs(hash, content, size, mime_type, external_path) VALUES('keeper', X'', 6, 'text/plain', CAST(?1 AS BLOB))",
+        [shared.as_ref()],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE entries SET request_body_hash='orphan', request_body_size=6 WHERE id=(SELECT MIN(id) FROM entries WHERE import_id=?1)",
+        [import_ids[0]],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE entries SET request_body_hash='keeper', request_body_size=6 WHERE id=(SELECT MIN(id) FROM entries WHERE import_id=?1)",
+        [import_ids[1]],
+    )
+    .unwrap();
+    drop(conn);
+
+    harlite()
+        .args([
+            "prune",
+            "--import-id",
+            &import_ids[0].to_string(),
+            "--allow-external-paths",
+            "--external-path-root",
+        ])
+        .arg(&bodies_dir)
+        .arg(&db_path)
+        .assert()
+        .failure();
+
+    assert!(shared_path.exists());
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let import_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM imports", [], |row| row.get(0))
+        .unwrap();
+    let orphan_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM blobs WHERE hash='orphan'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(import_count, 2);
+    assert_eq!(orphan_count, 1);
+}
+
 #[cfg(unix)]
 #[test]
 fn test_project_config_cannot_implicitly_execute_plugin() {

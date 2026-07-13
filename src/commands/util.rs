@@ -177,7 +177,7 @@ pub fn remove_database_with_sidecars(database: &Path) -> Result<()> {
 }
 
 fn remove_database_sidecars(database: &Path) -> Result<()> {
-    for suffix in ["-wal", "-shm"] {
+    for suffix in ["-journal", "-wal", "-shm"] {
         let mut sidecar = database.as_os_str().to_os_string();
         sidecar.push(suffix);
         let sidecar = PathBuf::from(sidecar);
@@ -313,7 +313,7 @@ fn resolve_database_in_dir(dir: &Path) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_database_in_dir, ExternalPathPolicy};
+    use super::{remove_database_with_sidecars, resolve_database_in_dir, ExternalPathPolicy};
     use crate::error::HarliteError;
     use tempfile::TempDir;
 
@@ -325,6 +325,23 @@ mod tests {
 
         let resolved = resolve_database_in_dir(tmp.path()).unwrap();
         assert_eq!(resolved, db_path);
+    }
+
+    #[test]
+    fn remove_database_cleans_sqlite_sidecars() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("staged.db");
+        std::fs::write(&db_path, b"database").unwrap();
+        for suffix in ["-journal", "-wal", "-shm"] {
+            std::fs::write(tmp.path().join(format!("staged.db{suffix}")), b"sidecar").unwrap();
+        }
+
+        remove_database_with_sidecars(&db_path).unwrap();
+
+        assert!(!db_path.exists());
+        for suffix in ["-journal", "-wal", "-shm"] {
+            assert!(!tmp.path().join(format!("staged.db{suffix}")).exists());
+        }
     }
 
     #[test]
