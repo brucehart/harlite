@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::ValueEnum;
 use regex::{NoExpand, Regex, RegexBuilder};
@@ -10,7 +9,10 @@ use url::Url;
 use crate::db::store_blob;
 use crate::error::{HarliteError, Result};
 
-use super::util::{canonicalize_path_for_compare, resolve_database};
+use super::util::{
+    canonicalize_path_for_compare, copy_database_consistent, finalize_sensitive_write,
+    prepare_sensitive_write, remove_database_with_sidecars, resolve_database, ExternalPathPolicy,
+};
 
 #[derive(Clone, Copy, Debug, ValueEnum, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -315,6 +317,7 @@ fn redact_body_text(text: &str, regexes: &[Regex], token: &str) -> Option<(Strin
 fn load_blob_for_redaction(
     conn: &Connection,
     hash: &str,
+    external_paths: &ExternalPathPolicy,
 ) -> Result<Option<(Vec<u8>, Option<String>)>> {
     let row = conn
         .query_row(
@@ -337,7 +340,8 @@ fn load_blob_for_redaction(
 
     if content.is_empty() && size > 0 {
         if let Some(path) = external_path {
-            if let Ok(bytes) = std::fs::read(path) {
+            if let Some(path) = external_paths.resolve_file(&path) {
+                let bytes = std::fs::read(path)?;
                 content = bytes;
             }
         }
@@ -357,12 +361,13 @@ fn redact_blob_cached(
     token: &str,
     write: bool,
     cache: &mut HashMap<String, Option<RedactedBlob>>,
+    external_paths: &ExternalPathPolicy,
 ) -> Result<(Option<RedactedBlob>, bool)> {
     if let Some(existing) = cache.get(hash) {
         return Ok((existing.clone(), false));
     }
 
-    let Some((content, mime_type)) = load_blob_for_redaction(conn, hash)? else {
+    let Some((content, mime_type)) = load_blob_for_redaction(conn, hash, external_paths)? else {
         cache.insert(hash.to_string(), None);
         return Ok((None, true));
     };
@@ -506,6 +511,7 @@ fn redact_entries(
     body_regexes: &[Regex],
     token: &str,
     write: bool,
+    external_paths: &ExternalPathPolicy,
 ) -> Result<RedactionReport> {
     let mut stmt = conn.prepare(
         "SELECT id, url, query_string, request_headers, response_headers, request_cookies, response_cookies, request_body_hash, request_body_size, response_body_hash, response_body_size, response_body_hash_raw, response_body_size_raw FROM entries ORDER BY id",
@@ -648,7 +654,15 @@ fn redact_entries(
         if !body_regexes.is_empty() {
             if let Some(hash) = req_body_hash.as_deref() {
                 let (redacted, counted) =
-                    redact_blob_cached(conn, hash, body_regexes, token, write, &mut blob_cache)?;
+                    redact_blob_cached(
+                        conn,
+                        hash,
+                        body_regexes,
+                        token,
+                        write,
+                        &mut blob_cache,
+                        external_paths,
+                    )?;
                 if let Some(redacted) = redacted {
                     if counted {
                         report.body_matches += redacted.matches;
@@ -663,7 +677,15 @@ fn redact_entries(
             }
             if let Some(hash) = resp_body_hash.as_deref() {
                 let (redacted, counted) =
-                    redact_blob_cached(conn, hash, body_regexes, token, write, &mut blob_cache)?;
+                    redact_blob_cached(
+                        conn,
+                        hash,
+                        body_regexes,
+                        token,
+                        write,
+                        &mut blob_cache,
+                        external_paths,
+                    )?;
                 if let Some(redacted) = redacted {
                     if counted {
                         report.body_matches += redacted.matches;
@@ -732,7 +754,22 @@ fn redact_entries(
 }
 
 pub fn run_redact(database: Option<PathBuf>, options: &RedactOptions) -> Result<()> {
+    run_redact_with_external_paths(database, options, false, None)
+}
+
+/// Redact a database with an explicit policy for externally stored bodies.
+pub fn run_redact_with_external_paths(
+    database: Option<PathBuf>,
+    options: &RedactOptions,
+    allow_external_paths: bool,
+    external_path_root: Option<&Path>,
+) -> Result<()> {
     let input_db = resolve_database(database)?;
+    let external_paths = ExternalPathPolicy::new(
+        &input_db,
+        allow_external_paths,
+        external_path_root,
+    )?;
 
     let target_db = if options.dry_run {
         input_db.clone()
@@ -750,10 +787,8 @@ pub fn run_redact(database: Option<PathBuf>, options: &RedactOptions) -> Result<
                 out.display()
             )));
         }
-        if out.exists() {
-            fs::remove_file(out)?;
-        }
-        fs::copy(&input_db, out)?;
+        remove_database_with_sidecars(out)?;
+        copy_database_consistent(&input_db, out)?;
         out.clone()
     } else {
         input_db.clone()
@@ -797,8 +832,13 @@ pub fn run_redact(database: Option<PathBuf>, options: &RedactOptions) -> Result<
         )));
     }
 
-    let mut conn = Connection::open(&target_db)?;
-    conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+    let mut conn = if options.dry_run {
+        super::query::open_readonly_connection(&target_db)?
+    } else {
+        let conn = Connection::open(&target_db)?;
+        prepare_sensitive_write(&conn)?;
+        conn
+    };
 
     let report = if options.dry_run {
         redact_entries(
@@ -809,6 +849,7 @@ pub fn run_redact(database: Option<PathBuf>, options: &RedactOptions) -> Result<
             &body_regexes,
             &options.token,
             false,
+            &external_paths,
         )?
     } else {
         let tx = conn.transaction()?;
@@ -820,8 +861,10 @@ pub fn run_redact(database: Option<PathBuf>, options: &RedactOptions) -> Result<
             &body_regexes,
             &options.token,
             true,
+            &external_paths,
         )?;
         tx.commit()?;
+        finalize_sensitive_write(&conn)?;
         report
     };
 

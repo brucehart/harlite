@@ -24,7 +24,6 @@ name = "sample-filter"
 kind = "filter"
 command = "plugins/sample_filter.py"
 phase = "import"
-enabled = true
 
 [[plugins]]
 name = "sample-transform"
@@ -42,11 +41,12 @@ phase = "export"
 Notes:
 - `name` must be unique.
 - `command` can be absolute or relative to the current working directory.
-- `enabled = false` disables the plugin by default.
+- Plugin definitions are never executed implicitly. Each run must name the plugin with `--plugin`.
+- `enabled = false` is an administrative deny switch and prevents `--plugin` from enabling it.
 
 ## Enabling/disabling per run
 
-You can override config at runtime:
+Plugin execution must be authorized explicitly at runtime:
 
 ```bash
 harlite import capture.har --plugin sample-filter
@@ -178,7 +178,7 @@ Use stderr for debug logs; `harlite` does not parse stderr.
 
 ## Security considerations
 
-Plugins run as separate processes with the same permissions as `harlite`. Treat plugin code as trusted.
+Plugins run as separate processes with the same permissions as `harlite`. Treat plugin code as trusted. Project-local configuration may define plugins, but cannot execute them unless the command line explicitly enables their names.
 
 ## Sample plugins
 

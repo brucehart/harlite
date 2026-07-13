@@ -62,6 +62,8 @@ Use the `harlite` binary to import HAR files into SQLite databases, then query/e
 
 ### `prune`
 - `--import-id <ID>`: import id to remove
+- `--allow-external-paths`: also delete external blob files (off by default)
+- `--external-path-root <DIR>`: restrict external file deletion to this root
 - `<DATABASE>`: database to modify
 
 ### `stats`
@@ -106,6 +108,14 @@ Use the `harlite` binary to import HAR files into SQLite databases, then query/e
 - `--body-regex <REGEX>`: body regex pattern (repeatable)
 - `--match <exact|wildcard|regex>`: pattern match mode
 - `--token <TOKEN>`: replacement token (default: `REDACTED`)
+- `--allow-external-paths`: read external body files (off by default)
+- `--external-path-root <DIR>`: restrict external body reads to this root
+
+### `pii`
+- `--redact`: write redacted findings back to the database
+- `-o, --output <OUTPUT>`: output database when redacting
+- `--allow-external-paths`: scan external body files (off by default)
+- `--external-path-root <DIR>`: restrict external body reads to this root
 
 ### `diff`
 - `<LEFT> <RIGHT>`: two HAR files or two databases to compare

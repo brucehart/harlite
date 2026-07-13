@@ -2,8 +2,126 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
+use rusqlite::{Connection, DatabaseName, OpenFlags};
 
 use crate::error::{HarliteError, Result};
+
+/// Controls whether database-supplied blob paths may be accessed.
+///
+/// Paths are disabled by default. When enabled, both relative and absolute
+/// paths must resolve beneath a canonical root directory.
+#[derive(Clone, Debug)]
+pub struct ExternalPathPolicy {
+    root: Option<PathBuf>,
+}
+
+impl ExternalPathPolicy {
+    pub fn new(
+        database: &Path,
+        allow_external_paths: bool,
+        external_path_root: Option<&Path>,
+    ) -> Result<Self> {
+        if !allow_external_paths {
+            return Ok(Self { root: None });
+        }
+
+        let root = external_path_root
+            .map(Path::to_path_buf)
+            .or_else(|| {
+                database.parent().and_then(|parent| {
+                    (!parent.as_os_str().is_empty()).then(|| parent.to_path_buf())
+                })
+            })
+            .unwrap_or_else(|| PathBuf::from("."));
+        let root = fs::canonicalize(&root).map_err(|err| {
+            HarliteError::InvalidArgs(format!(
+                "External path root could not be resolved ({}): {err}",
+                root.display()
+            ))
+        })?;
+        if !root.is_dir() {
+            return Err(HarliteError::InvalidArgs(format!(
+                "External path root is not a directory: {}",
+                root.display()
+            )));
+        }
+
+        Ok(Self { root: Some(root) })
+    }
+
+    pub fn resolve_file(&self, raw_path: &str) -> Option<PathBuf> {
+        let root = self.root.as_ref()?;
+        let candidate = PathBuf::from(raw_path);
+        let candidate = if candidate.is_absolute() {
+            candidate
+        } else {
+            root.join(candidate)
+        };
+        let resolved = fs::canonicalize(candidate).ok()?;
+        if resolved.starts_with(root) && resolved.is_file() {
+            Some(resolved)
+        } else {
+            None
+        }
+    }
+}
+
+/// Copy a live SQLite database, including committed WAL content, via SQLite's
+/// online backup API rather than a raw filesystem copy.
+pub fn copy_database_consistent(source: &Path, destination: &Path) -> Result<()> {
+    let source_conn = Connection::open_with_flags(source, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    source_conn.backup(DatabaseName::Main, destination, None)?;
+    Ok(())
+}
+
+pub fn remove_database_with_sidecars(database: &Path) -> Result<()> {
+    if database.exists() {
+        fs::remove_file(database)?;
+    }
+    for suffix in ["-wal", "-shm"] {
+        let mut sidecar = database.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        let sidecar = PathBuf::from(sidecar);
+        if sidecar.exists() {
+            fs::remove_file(sidecar)?;
+        }
+    }
+    Ok(())
+}
+
+/// Remove blobs and FTS rows no longer referenced by any entry.
+pub fn delete_orphaned_blobs(conn: &Connection) -> Result<usize> {
+    let has_fts: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='response_body_fts')",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_fts {
+        conn.execute(
+            "DELETE FROM response_body_fts WHERE NOT EXISTS (SELECT 1 FROM entries WHERE response_body_hash = response_body_fts.hash)",
+            [],
+        )?;
+    }
+    Ok(conn.execute(
+        "DELETE FROM blobs WHERE NOT EXISTS (SELECT 1 FROM entries WHERE request_body_hash = blobs.hash OR response_body_hash = blobs.hash OR response_body_hash_raw = blobs.hash)",
+        [],
+    )?)
+}
+
+/// Configure deletion overwrites before sensitive writes and compact the final
+/// database so superseded values are not retained in free pages or WAL files.
+pub fn prepare_sensitive_write(conn: &Connection) -> Result<()> {
+    conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON;")?;
+    Ok(())
+}
+
+pub fn finalize_sensitive_write(conn: &Connection) -> Result<()> {
+    delete_orphaned_blobs(conn)?;
+    conn.execute_batch(
+        "PRAGMA wal_checkpoint(TRUNCATE); VACUUM; PRAGMA wal_checkpoint(TRUNCATE);",
+    )?;
+    Ok(())
+}
 
 pub fn canonicalize_path_for_compare(path: &Path) -> Result<PathBuf> {
     if path.exists() {
@@ -96,7 +214,7 @@ fn resolve_database_in_dir(dir: &Path) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_database_in_dir;
+    use super::{resolve_database_in_dir, ExternalPathPolicy};
     use crate::error::HarliteError;
     use tempfile::TempDir;
 
@@ -135,5 +253,41 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn external_paths_are_disabled_by_default() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("blob");
+        std::fs::write(&file, b"secret").unwrap();
+        let policy = ExternalPathPolicy::new(&tmp.path().join("test.db"), false, None).unwrap();
+        assert!(policy.resolve_file(file.to_str().unwrap()).is_none());
+    }
+
+    #[test]
+    fn external_path_default_root_handles_relative_database() {
+        let policy = ExternalPathPolicy::new(std::path::Path::new("test.db"), true, None);
+        assert!(policy.is_ok());
+    }
+
+    #[test]
+    fn external_paths_must_stay_inside_root() {
+        let root = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let inside_file = root.path().join("blob");
+        let outside_file = outside.path().join("secret");
+        std::fs::write(&inside_file, b"inside").unwrap();
+        std::fs::write(&outside_file, b"outside").unwrap();
+
+        let policy = ExternalPathPolicy::new(
+            &root.path().join("test.db"),
+            true,
+            Some(root.path()),
+        )
+        .unwrap();
+        assert_eq!(policy.resolve_file("blob"), Some(inside_file.canonicalize().unwrap()));
+        assert!(policy
+            .resolve_file(outside_file.to_str().unwrap())
+            .is_none());
     }
 }

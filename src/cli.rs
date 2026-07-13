@@ -311,6 +311,14 @@ pub enum Commands {
         /// Import id to remove
         #[arg(long)]
         import_id: i64,
+
+        /// Allow deleting external blob files (restricted to a root directory)
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        allow_external_paths: bool,
+
+        /// Root directory allowed for external blob file deletion
+        #[arg(long, requires = "allow_external_paths")]
+        external_path_root: Option<PathBuf>,
     },
 
     /// Show lightweight database stats (script-friendly)
@@ -940,6 +948,14 @@ pub enum Commands {
         #[arg(long)]
         token: Option<String>,
 
+        /// Allow reading external blob files (restricted to a root directory)
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        allow_external_paths: bool,
+
+        /// Root directory allowed for external blob file reads
+        #[arg(long, requires = "allow_external_paths")]
+        external_path_root: Option<PathBuf>,
+
         /// Database file to redact (default: the only *.db in the current directory)
         database: Option<PathBuf>,
     },
@@ -1005,6 +1021,14 @@ pub enum Commands {
         /// Replacement token to write for redacted values
         #[arg(long)]
         token: Option<String>,
+
+        /// Allow reading external blob files (restricted to a root directory)
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        allow_external_paths: bool,
+
+        /// Root directory allowed for external blob file reads
+        #[arg(long, requires = "allow_external_paths")]
+        external_path_root: Option<PathBuf>,
 
         /// Database file to scan (default: the only *.db in the current directory)
         database: Option<PathBuf>,

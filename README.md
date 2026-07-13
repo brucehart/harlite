@@ -134,7 +134,7 @@ cargo build --release
 ./target/release/harlite --help
 ```
 
-Performance note: HAR parsing streams entries from disk using `serde_json::Deserializer` to avoid loading the full JSON blob at once; memory still scales with the number of entries imported. Use `--jobs` to parallelize across multiple HAR files (auto by default, capped to limit SQLite contention) and `--async-read` to read large files via a background reader thread (trades RAM for smoother throughput).
+Performance note: HAR parsing streams JSON from disk, but memory still scales with the number and size of entries imported. Decompressed input is capped at 512 MiB to bound compressed-file expansion. Embedders can choose a lower limit with `parse_har_file_with_limit`. Use `--jobs` to parallelize across multiple HAR files (auto by default, capped to limit SQLite contention) and `--async-read` to read large files via a background reader thread.
 
 ### Shell completions
 
@@ -245,7 +245,6 @@ name = "sample-filter"
 kind = "filter"
 command = "plugins/sample_filter.py"
 phase = "import"
-enabled = true
 
 [[plugins]]
 name = "sample-exporter"
@@ -253,6 +252,8 @@ kind = "exporter"
 command = "plugins/sample_exporter.py"
 phase = "export"
 ```
+
+For security, configuration only defines plugins; it never authorizes execution. Every plugin must be explicitly enabled with `--plugin` on each run. `enabled = false` can be used as an administrative deny switch.
 
 Enable/disable per run:
 
@@ -517,6 +518,10 @@ Remove a specific import and its entries/pages/blobs:
 
 ```bash
 harlite prune traffic.db --import-id 2
+
+# Also delete external body files, restricted to a trusted root
+harlite prune traffic.db --import-id 2 --allow-external-paths \
+  --external-path-root ./extracted-bodies
 ```
 
 ### Export HAR files
@@ -682,7 +687,7 @@ harlite replay capture.har --override-header 'Authorization=Bearer token'
 harlite replay capture.har --override-header 'example\\.com:Authorization=Bearer token'
 ```
 
-Safety: unsafe methods are skipped unless `--allow-unsafe` is set.
+Safety: unsafe methods are skipped unless `--allow-unsafe` is set. Automatic redirects are disabled so captured credentials and custom sensitive headers cannot be forwarded to another origin.
 
 ### Redact sensitive data
 
@@ -710,7 +715,13 @@ harlite redact traffic.db --query-param token --query-param session --match wild
 
 # Redact matching patterns in stored bodies (UTF-8 only)
 harlite redact traffic.db --body-regex '(?i)\"password\"\\s*:\\s*\"[^\"]+\"'
+
+# Read externally stored bodies only from an explicit trusted root
+harlite redact traffic.db --body-regex 'secret' --allow-external-paths \
+  --external-path-root ./extracted-bodies
 ```
+
+Redaction removes superseded blobs and compacts the database, including its WAL, so old values are not left in ordinary SQLite free pages. External body paths are ignored unless explicitly enabled and contained by the selected root.
 
 ### Scan for PII
 
@@ -728,6 +739,9 @@ harlite pii traffic.db --no-defaults --email-regex '(?i)\\b.+@example\\.com\\b'
 
 # Auto-redact findings (write a new DB)
 harlite pii traffic.db --redact --output traffic.redacted.db
+
+# Scan trusted externally stored bodies
+harlite pii traffic.db --allow-external-paths --external-path-root ./extracted-bodies
 ```
 
 Defaults are conservative but may still produce false positives; review results before redacting. Use `--no-defaults` to opt out and supply your own regexes.
@@ -750,6 +764,8 @@ harlite query "SELECT * FROM entries ORDER BY started_at" traffic.db --limit 100
 # If you omit the database path, harlite will use the only *.db in the current directory (if exactly one exists)
 harlite query "SELECT COUNT(*) AS entries FROM entries" --format json
 ```
+
+CSV fields beginning with spreadsheet formula characters are emitted as text to prevent formula execution when opened in spreadsheet applications.
 
 ### Interactive REPL
 

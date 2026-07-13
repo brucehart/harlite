@@ -7,6 +7,7 @@ use rusqlite::{params_from_iter, Connection, OpenFlags};
 
 use crate::error::{HarliteError, Result};
 
+use super::csv::write_csv_field;
 use super::query::{OutputFormat, QueryOptions};
 use super::util::resolve_database;
 
@@ -159,25 +160,6 @@ fn write_table(columns: &[&str], rows: &mut rusqlite::Rows<'_>, quiet: bool) -> 
         }
         write_table_row(&mut out, fields.iter().map(|s| s.as_str()), &widths)?;
     }
-    Ok(())
-}
-
-fn write_csv_field(out: &mut impl Write, field: &str) -> Result<()> {
-    let needs_quotes = field.contains([',', '"', '\n', '\r']);
-    if !needs_quotes {
-        out.write_all(field.as_bytes())?;
-        return Ok(());
-    }
-
-    out.write_all(b"\"")?;
-    for b in field.as_bytes() {
-        if *b == b'"' {
-            out.write_all(b"\"\"")?;
-        } else {
-            out.write_all(&[*b])?;
-        }
-    }
-    out.write_all(b"\"")?;
     Ok(())
 }
 

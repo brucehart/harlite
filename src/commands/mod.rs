@@ -1,5 +1,6 @@
 mod diff;
 mod analyze;
+mod csv;
 mod entry_filter;
 mod export;
 mod export_data;
@@ -43,10 +44,10 @@ pub use merge::{run_merge, DedupStrategy, MergeOptions};
 #[cfg(feature = "otel")]
 pub use otel::{run_otel, OtelExportFormat, OtelExportOptions};
 pub use report::{run_report, ReportOptions};
-pub use prune::run_prune;
+pub use prune::{run_prune, run_prune_with_options, PruneOptions};
 pub use query::{run_query, OutputFormat, QueryOptions};
-pub use pii::{run_pii, PiiOptions};
-pub use redact::{run_redact, NameMatchMode, RedactOptions};
+pub use pii::{run_pii, run_pii_with_external_paths, PiiOptions};
+pub use redact::{run_redact, run_redact_with_external_paths, NameMatchMode, RedactOptions};
 #[cfg(feature = "repl")]
 pub use repl::{run_repl, ReplOptions};
 #[cfg(feature = "replay")]

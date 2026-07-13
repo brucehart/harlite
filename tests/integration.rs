@@ -174,6 +174,60 @@ fn test_imports_list_and_prune() {
 }
 
 #[test]
+fn test_prune_does_not_delete_untrusted_external_path_by_default() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+    let protected_path = tmp.path().join("must-survive.txt");
+    fs::write(&protected_path, b"protected").unwrap();
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "--bodies", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let import_id: i64 = conn
+        .query_row("SELECT id FROM imports LIMIT 1", [], |row| row.get(0))
+        .unwrap();
+    conn.execute(
+        "UPDATE blobs SET external_path=?1 WHERE hash=(SELECT hash FROM blobs LIMIT 1)",
+        [protected_path.to_string_lossy().as_ref()],
+    )
+    .unwrap();
+    drop(conn);
+
+    harlite()
+        .args(["prune", "--import-id", &import_id.to_string()])
+        .arg(&db_path)
+        .assert()
+        .success();
+    assert!(protected_path.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_project_config_cannot_implicitly_execute_plugin() {
+    let tmp = TempDir::new().unwrap();
+    let marker = tmp.path().join("plugin-ran");
+    let config = format!(
+        "[[plugins]]\nname='untrusted'\nkind='filter'\ncommand='/usr/bin/touch'\nargs=['{}']\nenabled=true\n",
+        marker.display()
+    );
+    fs::write(tmp.path().join("harlite.toml"), config).unwrap();
+    let har_path = fs::canonicalize("tests/fixtures/simple.har").unwrap();
+
+    harlite()
+        .current_dir(tmp.path())
+        .arg("import")
+        .arg(har_path)
+        .args(["-o", "test.db"])
+        .assert()
+        .success();
+    assert!(!marker.exists());
+}
+
+#[test]
 fn test_import_with_pages() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("test.db");
@@ -228,6 +282,30 @@ fn test_export_data_jsonl() {
     let first_line = contents.lines().next().unwrap_or("");
     let parsed: serde_json::Value = serde_json::from_str(first_line).unwrap();
     assert!(parsed.get("url").is_some());
+}
+
+#[cfg(feature = "parquet")]
+#[test]
+fn test_export_data_parquet() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+    let out_path = tmp.path().join("entries.parquet");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+    harlite()
+        .args(["export-data", "--format", "parquet", "-o"])
+        .arg(&out_path)
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let bytes = fs::read(&out_path).unwrap();
+    assert!(bytes.starts_with(b"PAR1"));
+    assert!(bytes.ends_with(b"PAR1"));
 }
 
 #[test]
@@ -1325,6 +1403,179 @@ fn test_redact_output_database_keeps_input_unchanged() {
         )
         .unwrap();
     assert_eq!(accept, "application/json");
+}
+
+#[test]
+fn test_redact_output_physically_removes_superseded_secrets() {
+    let tmp = TempDir::new().unwrap();
+    let har_path = tmp.path().join("sensitive.har");
+    let db_path = tmp.path().join("source.db");
+    let out_path = tmp.path().join("redacted.db");
+    let header_secret = format!("Bearer {}", "UNIQUE_HEADER_SECRET_".repeat(256));
+    let body_secret = "UNIQUE_BODY_SECRET_".repeat(256);
+    let har = json!({
+        "log": {
+            "version": "1.2",
+            "creator": { "name": "test", "version": "1" },
+            "entries": [{
+                "startedDateTime": "2024-01-01T00:00:00.000Z",
+                "time": 1,
+                "request": {
+                    "method": "POST",
+                    "url": "https://example.test/submit",
+                    "httpVersion": "HTTP/1.1",
+                    "headers": [{ "name": "Authorization", "value": header_secret }],
+                    "cookies": [],
+                    "queryString": [],
+                    "postData": { "mimeType": "text/plain", "text": body_secret },
+                    "headersSize": -1,
+                    "bodySize": -1
+                },
+                "response": {
+                    "status": 200,
+                    "statusText": "OK",
+                    "httpVersion": "HTTP/1.1",
+                    "headers": [],
+                    "cookies": [],
+                    "content": { "size": 0, "mimeType": "text/plain", "text": "" },
+                    "redirectURL": "",
+                    "headersSize": -1,
+                    "bodySize": 0
+                },
+                "cache": {},
+                "timings": { "send": 0, "wait": 1, "receive": 0 }
+            }]
+        }
+    });
+    fs::write(&har_path, serde_json::to_vec(&har).unwrap()).unwrap();
+
+    harlite()
+        .args(["import", "--bodies", "-o"])
+        .arg(&db_path)
+        .arg(&har_path)
+        .assert()
+        .success();
+    harlite()
+        .args(["redact", "--body-regex", "UNIQUE_BODY_SECRET_", "--output"])
+        .arg(&out_path)
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let conn = rusqlite::Connection::open(&out_path).unwrap();
+    let old_blob_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM blobs WHERE CAST(content AS TEXT) LIKE '%UNIQUE_BODY_SECRET_%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(old_blob_count, 0);
+    drop(conn);
+
+    let raw = fs::read(&out_path).unwrap();
+    assert!(!raw
+        .windows(b"UNIQUE_HEADER_SECRET_".len())
+        .any(|window| window == b"UNIQUE_HEADER_SECRET_"));
+    assert!(!raw
+        .windows(b"UNIQUE_BODY_SECRET_".len())
+        .any(|window| window == b"UNIQUE_BODY_SECRET_"));
+}
+
+#[test]
+fn test_redact_ignores_untrusted_external_blob_paths() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("source.db");
+    let out_path = tmp.path().join("redacted.db");
+    let protected_path = tmp.path().join("private.txt");
+    fs::write(&protected_path, b"UNTRUSTED_EXTERNAL_SECRET").unwrap();
+
+    harlite()
+        .args(["import", "tests/fixtures/redact.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute(
+        "INSERT INTO blobs(hash, content, size, mime_type, external_path) VALUES('attacker', X'', 25, 'text/plain', ?1)",
+        [protected_path.to_string_lossy().as_ref()],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE entries SET request_body_hash='attacker', request_body_size=25 WHERE id=(SELECT id FROM entries LIMIT 1)",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    harlite()
+        .args([
+            "redact",
+            "--no-defaults",
+            "--body-regex",
+            "UNTRUSTED_EXTERNAL_SECRET",
+            "--output",
+        ])
+        .arg(&out_path)
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let conn = rusqlite::Connection::open(&out_path).unwrap();
+    let hash: String = conn
+        .query_row("SELECT request_body_hash FROM entries LIMIT 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let content: Vec<u8> = conn
+        .query_row("SELECT content FROM blobs WHERE hash='attacker'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(hash, "attacker");
+    assert!(content.is_empty());
+}
+
+#[test]
+fn test_pii_redaction_physically_removes_superseded_body() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("source.db");
+    let out_path = tmp.path().join("redacted.db");
+    let secret = "physical-secret@example.com";
+
+    harlite()
+        .args(["import", "tests/fixtures/redact.har", "--bodies", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute(
+        "UPDATE blobs SET content=?1, size=?2 WHERE hash=(SELECT response_body_hash FROM entries LIMIT 1)",
+        rusqlite::params![secret.as_bytes(), secret.len() as i64],
+    )
+    .unwrap();
+    drop(conn);
+
+    harlite()
+        .args(["pii", "--redact", "--format", "json", "--output"])
+        .arg(&out_path)
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("email"));
+
+    let conn = rusqlite::Connection::open(&out_path).unwrap();
+    let old_blob_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM blobs WHERE CAST(content AS TEXT) LIKE '%physical-secret@example.com%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(old_blob_count, 0);
+    drop(conn);
+    let raw = fs::read(&out_path).unwrap();
+    assert!(!raw.windows(secret.len()).any(|window| window == secret.as_bytes()));
 }
 
 #[test]

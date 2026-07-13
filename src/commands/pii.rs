@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use regex::{NoExpand, Regex};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -10,7 +10,11 @@ use crate::db::store_blob;
 use crate::error::{HarliteError, Result};
 
 use super::query::OutputFormat;
-use super::util::{canonicalize_path_for_compare, resolve_database};
+use super::csv::write_csv_field;
+use super::util::{
+    canonicalize_path_for_compare, copy_database_consistent, finalize_sensitive_write,
+    prepare_sensitive_write, remove_database_with_sidecars, resolve_database, ExternalPathPolicy,
+};
 
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -101,6 +105,16 @@ struct PiiRedactedBlob {
 }
 
 pub fn run_pii(database: Option<PathBuf>, options: &PiiOptions) -> Result<()> {
+    run_pii_with_external_paths(database, options, false, None)
+}
+
+/// Scan/redact PII with an explicit policy for externally stored bodies.
+pub fn run_pii_with_external_paths(
+    database: Option<PathBuf>,
+    options: &PiiOptions,
+    allow_external_paths: bool,
+    external_path_root: Option<&Path>,
+) -> Result<()> {
     if !options.redact {
         if options.output.is_some() {
             return Err(HarliteError::InvalidArgs(
@@ -120,6 +134,11 @@ pub fn run_pii(database: Option<PathBuf>, options: &PiiOptions) -> Result<()> {
     }
 
     let input_db = resolve_database(database)?;
+    let external_paths = ExternalPathPolicy::new(
+        &input_db,
+        allow_external_paths,
+        external_path_root,
+    )?;
     let write = options.redact && !options.dry_run;
     let target_db = if write {
         if let Some(out) = &options.output {
@@ -136,10 +155,8 @@ pub fn run_pii(database: Option<PathBuf>, options: &PiiOptions) -> Result<()> {
                     out.display()
                 )));
             }
-            if out.exists() {
-                std::fs::remove_file(out)?;
-            }
-            std::fs::copy(&input_db, out)?;
+            remove_database_with_sidecars(out)?;
+            copy_database_consistent(&input_db, out)?;
             out.clone()
         } else {
             input_db.clone()
@@ -157,7 +174,7 @@ pub fn run_pii(database: Option<PathBuf>, options: &PiiOptions) -> Result<()> {
 
     let conn = if write {
         let conn = Connection::open(&target_db)?;
-        conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+        prepare_sensitive_write(&conn)?;
         conn
     } else {
         super::query::open_readonly_connection(&target_db)?
@@ -245,7 +262,9 @@ pub fn run_pii(database: Option<PathBuf>, options: &PiiOptions) -> Result<()> {
         }
 
         if let Some(hash) = req_body_hash.as_deref() {
-            if let Some(text) = load_blob_text(&conn, hash, &mut text_cache)? {
+            if let Some(text) =
+                load_blob_text(&conn, hash, &mut text_cache, &external_paths)?
+            {
                 append_findings(
                     &mut findings,
                     entry_id,
@@ -262,6 +281,7 @@ pub fn run_pii(database: Option<PathBuf>, options: &PiiOptions) -> Result<()> {
                         &options.token,
                         write,
                         &mut redacted_cache,
+                        &external_paths,
                     )? {
                         new_req_body_hash = Some(redacted.new_hash);
                         new_req_body_size = Some(redacted.new_size);
@@ -272,7 +292,9 @@ pub fn run_pii(database: Option<PathBuf>, options: &PiiOptions) -> Result<()> {
         }
 
         if let Some(hash) = resp_body_hash.as_deref() {
-            if let Some(text) = load_blob_text(&conn, hash, &mut text_cache)? {
+            if let Some(text) =
+                load_blob_text(&conn, hash, &mut text_cache, &external_paths)?
+            {
                 append_findings(
                     &mut findings,
                     entry_id,
@@ -289,6 +311,7 @@ pub fn run_pii(database: Option<PathBuf>, options: &PiiOptions) -> Result<()> {
                         &options.token,
                         write,
                         &mut redacted_cache,
+                        &external_paths,
                     )? {
                         new_resp_body_hash = Some(redacted.new_hash.clone());
                         new_resp_body_size = Some(redacted.new_size);
@@ -342,6 +365,12 @@ pub fn run_pii(database: Option<PathBuf>, options: &PiiOptions) -> Result<()> {
                 delete_stmt.execute([hash])?;
             }
         }
+    }
+
+    drop(update);
+    drop(stmt);
+    if write {
+        finalize_sensitive_write(&conn)?;
     }
 
     match options.format {
@@ -489,12 +518,13 @@ fn load_blob_text(
     conn: &Connection,
     hash: &str,
     cache: &mut HashMap<String, Option<String>>,
+    external_paths: &ExternalPathPolicy,
 ) -> Result<Option<String>> {
     if let Some(existing) = cache.get(hash) {
         return Ok(existing.clone());
     }
 
-    let Some((content, _mime_type)) = load_blob_for_pii(conn, hash)? else {
+    let Some((content, _mime_type)) = load_blob_for_pii(conn, hash, external_paths)? else {
         cache.insert(hash.to_string(), None);
         return Ok(None);
     };
@@ -511,7 +541,11 @@ fn load_blob_text(
     Ok(Some(text))
 }
 
-fn load_blob_for_pii(conn: &Connection, hash: &str) -> Result<Option<(Vec<u8>, Option<String>)>> {
+fn load_blob_for_pii(
+    conn: &Connection,
+    hash: &str,
+    external_paths: &ExternalPathPolicy,
+) -> Result<Option<(Vec<u8>, Option<String>)>> {
     let row = conn
         .query_row(
             "SELECT content, size, mime_type, external_path FROM blobs WHERE hash = ?1",
@@ -533,7 +567,8 @@ fn load_blob_for_pii(conn: &Connection, hash: &str) -> Result<Option<(Vec<u8>, O
 
     if content.is_empty() && size > 0 {
         if let Some(path) = external_path {
-            if let Ok(bytes) = std::fs::read(path) {
+            if let Some(path) = external_paths.resolve_file(&path) {
+                let bytes = std::fs::read(path)?;
                 content = bytes;
             }
         }
@@ -553,12 +588,13 @@ fn redact_blob_cached(
     token: &str,
     write: bool,
     cache: &mut HashMap<String, Option<PiiRedactedBlob>>,
+    external_paths: &ExternalPathPolicy,
 ) -> Result<Option<PiiRedactedBlob>> {
     if let Some(existing) = cache.get(hash) {
         return Ok(existing.clone());
     }
 
-    let Some((content, mime_type)) = load_blob_for_pii(conn, hash)? else {
+    let Some((content, mime_type)) = load_blob_for_pii(conn, hash, external_paths)? else {
         cache.insert(hash.to_string(), None);
         return Ok(None);
     };
@@ -764,23 +800,6 @@ where
         write_csv_field(out, field)?;
     }
     out.write_all(b"\n")?;
-    Ok(())
-}
-
-fn write_csv_field(out: &mut impl Write, field: &str) -> Result<()> {
-    if field.contains(',') || field.contains('"') || field.contains('\n') {
-        out.write_all(b"\"")?;
-        for ch in field.chars() {
-            if ch == '"' {
-                out.write_all(b"\"\"")?;
-            } else {
-                out.write_all(ch.to_string().as_bytes())?;
-            }
-        }
-        out.write_all(b"\"")?;
-    } else {
-        out.write_all(field.as_bytes())?;
-    }
     Ok(())
 }
 

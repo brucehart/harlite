@@ -5,15 +5,35 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::{HarliteError, Result};
 
+use super::util::{prepare_sensitive_write, ExternalPathPolicy};
+
 const HASH_CHUNK: usize = 500;
+
+#[derive(Clone, Debug, Default)]
+pub struct PruneOptions {
+    pub allow_external_paths: bool,
+    pub external_path_root: Option<PathBuf>,
+}
 
 /// Remove all records for a specific import and prune orphaned blobs.
 pub fn run_prune(database: PathBuf, import_id: i64) -> Result<()> {
+    run_prune_with_options(database, import_id, &PruneOptions::default())
+}
+
+/// Remove all records for a specific import with an explicit policy for
+/// deleting external blob files.
+pub fn run_prune_with_options(
+    database: PathBuf,
+    import_id: i64,
+    options: &PruneOptions,
+) -> Result<()> {
+    let external_path_policy = ExternalPathPolicy::new(
+        &database,
+        options.allow_external_paths,
+        options.external_path_root.as_deref(),
+    )?;
     let conn = Connection::open(&database)?;
-    let external_root = database
-        .parent()
-        .map(|p| p.to_path_buf())
-        .and_then(|p| p.canonicalize().ok());
+    prepare_sensitive_write(&conn)?;
 
     let import_exists: Option<String> = conn
         .query_row(
@@ -115,29 +135,14 @@ pub fn run_prune(database: PathBuf, import_id: i64) -> Result<()> {
                 .collect();
 
             for raw_path in external_paths {
-                let candidate = PathBuf::from(&raw_path);
-                let resolved = if candidate.is_absolute() {
-                    candidate.canonicalize().ok()
-                } else if let Some(root) = external_root.as_ref() {
-                    let joined = root.join(&candidate);
-                    let resolved = joined.canonicalize().ok();
-                    if let Some(resolved_path) = resolved.as_ref() {
-                        if !resolved_path.starts_with(root) {
-                            external_skipped += 1;
-                            continue;
-                        }
-                    }
-                    resolved
-                } else {
+                let Some(path) = external_path_policy.resolve_file(&raw_path) else {
                     external_skipped += 1;
                     continue;
                 };
-
-                let Some(path) = resolved else {
-                    continue;
-                };
-                if path.is_file() && fs::remove_file(&path).is_ok() {
+                if fs::remove_file(&path).is_ok() {
                     external_deleted += 1;
+                } else {
+                    external_skipped += 1;
                 }
             }
 
