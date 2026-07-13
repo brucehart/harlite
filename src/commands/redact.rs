@@ -10,8 +10,8 @@ use crate::db::store_blob;
 use crate::error::{HarliteError, Result};
 
 use super::util::{
-    canonicalize_path_for_compare, finalize_sensitive_write, prepare_sensitive_write,
-    resolve_database, ExternalPathPolicy, StagedDatabase,
+    canonicalize_path_for_compare, delete_orphaned_blobs, finalize_sensitive_write,
+    prepare_sensitive_write, resolve_database, ExternalPathPolicy, StagedDatabase,
 };
 
 #[derive(Clone, Copy, Debug, ValueEnum, serde::Serialize, serde::Deserialize)]
@@ -865,6 +865,7 @@ pub fn run_redact_with_external_paths(
             true,
             &external_paths,
         )?;
+        delete_orphaned_blobs(&tx)?;
         tx.commit()?;
         finalize_sensitive_write(&conn)?;
         report
