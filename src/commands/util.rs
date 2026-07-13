@@ -1,5 +1,6 @@
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use rusqlite::{Connection, DatabaseName, OpenFlags};
@@ -74,10 +75,108 @@ pub fn copy_database_consistent(source: &Path, destination: &Path) -> Result<()>
     Ok(())
 }
 
+static NEXT_STAGED_DATABASE_ID: AtomicU64 = AtomicU64::new(0);
+
+/// A consistent database copy staged beside its final destination.
+///
+/// The staged database and its sidecars are removed on error or early return.
+/// Publishing uses a same-directory rename so callers never expose an
+/// unredacted source copy at the requested output path.
+pub struct StagedDatabase {
+    path: PathBuf,
+    destination: PathBuf,
+    overwrite: bool,
+    published: bool,
+}
+
+impl StagedDatabase {
+    pub fn copy_from(source: &Path, destination: &Path, overwrite: bool) -> Result<Self> {
+        let parent = destination
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let file_name = destination
+            .file_name()
+            .ok_or_else(|| HarliteError::InvalidArgs("Output path must be a file".to_string()))?
+            .to_string_lossy();
+
+        let path = loop {
+            let id = NEXT_STAGED_DATABASE_ID.fetch_add(1, Ordering::Relaxed);
+            let candidate = parent.join(format!(
+                ".{file_name}.harlite-stage-{}-{id}",
+                std::process::id()
+            ));
+            match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(file) => {
+                    drop(file);
+                    break candidate;
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(err.into()),
+            }
+        };
+
+        let staged = Self {
+            path,
+            destination: destination.to_path_buf(),
+            overwrite,
+            published: false,
+        };
+        copy_database_consistent(source, &staged.path)?;
+        Ok(staged)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn publish(mut self) -> Result<PathBuf> {
+        if self.destination.exists() && !self.overwrite {
+            return Err(HarliteError::InvalidArgs(format!(
+                "Output database already exists: {} (use --force to overwrite)",
+                self.destination.display()
+            )));
+        }
+
+        remove_database_sidecars(&self.path)?;
+        remove_database_sidecars(&self.destination)?;
+        if let Err(err) = fs::rename(&self.path, &self.destination) {
+            // Windows does not replace an existing file with rename. Preserve
+            // atomic replacement where the platform supports it, then fall
+            // back to remove-and-rename only for an explicit overwrite.
+            if self.overwrite && self.destination.exists() {
+                fs::remove_file(&self.destination)?;
+                fs::rename(&self.path, &self.destination)?;
+            } else {
+                return Err(err.into());
+            }
+        }
+        self.published = true;
+        Ok(self.destination.clone())
+    }
+}
+
+impl Drop for StagedDatabase {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = remove_database_with_sidecars(&self.path);
+        }
+    }
+}
+
 pub fn remove_database_with_sidecars(database: &Path) -> Result<()> {
     if database.exists() {
         fs::remove_file(database)?;
     }
+    remove_database_sidecars(database)
+}
+
+fn remove_database_sidecars(database: &Path) -> Result<()> {
     for suffix in ["-wal", "-shm"] {
         let mut sidecar = database.as_os_str().to_os_string();
         sidecar.push(suffix);

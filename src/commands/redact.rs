@@ -10,8 +10,8 @@ use crate::db::store_blob;
 use crate::error::{HarliteError, Result};
 
 use super::util::{
-    canonicalize_path_for_compare, copy_database_consistent, finalize_sensitive_write,
-    prepare_sensitive_write, remove_database_with_sidecars, resolve_database, ExternalPathPolicy,
+    canonicalize_path_for_compare, finalize_sensitive_write, prepare_sensitive_write,
+    resolve_database, ExternalPathPolicy, StagedDatabase,
 };
 
 #[derive(Clone, Copy, Debug, ValueEnum, serde::Serialize, serde::Deserialize)]
@@ -771,29 +771,6 @@ pub fn run_redact_with_external_paths(
         external_path_root,
     )?;
 
-    let target_db = if options.dry_run {
-        input_db.clone()
-    } else if let Some(out) = &options.output {
-        let input_cmp = canonicalize_path_for_compare(&input_db)?;
-        let out_cmp = canonicalize_path_for_compare(out)?;
-        if out_cmp == input_cmp {
-            return Err(HarliteError::InvalidArgs(
-                "Output database must be different from input database".to_string(),
-            ));
-        }
-        if out.exists() && !options.force {
-            return Err(HarliteError::InvalidArgs(format!(
-                "Output database already exists: {} (use --force to overwrite)",
-                out.display()
-            )));
-        }
-        remove_database_with_sidecars(out)?;
-        copy_database_consistent(&input_db, out)?;
-        out.clone()
-    } else {
-        input_db.clone()
-    };
-
     let mut header_patterns: Vec<String> = Vec::new();
     let mut cookie_patterns: Vec<String> = Vec::new();
     let mut query_patterns: Vec<String> = Vec::new();
@@ -832,6 +809,31 @@ pub fn run_redact_with_external_paths(
         )));
     }
 
+    let staged_output = if options.dry_run {
+        None
+    } else if let Some(out) = &options.output {
+        let input_cmp = canonicalize_path_for_compare(&input_db)?;
+        let out_cmp = canonicalize_path_for_compare(out)?;
+        if out_cmp == input_cmp {
+            return Err(HarliteError::InvalidArgs(
+                "Output database must be different from input database".to_string(),
+            ));
+        }
+        if out.exists() && !options.force {
+            return Err(HarliteError::InvalidArgs(format!(
+                "Output database already exists: {} (use --force to overwrite)",
+                out.display()
+            )));
+        }
+        Some(StagedDatabase::copy_from(&input_db, out, options.force)?)
+    } else {
+        None
+    };
+    let target_db = staged_output
+        .as_ref()
+        .map(|staged| staged.path().to_path_buf())
+        .unwrap_or_else(|| input_db.clone());
+
     let mut conn = if options.dry_run {
         super::query::open_readonly_connection(&target_db)?
     } else {
@@ -867,6 +869,13 @@ pub fn run_redact_with_external_paths(
         finalize_sensitive_write(&conn)?;
         report
     };
+    drop(conn);
+
+    let result_db = if let Some(staged) = staged_output {
+        staged.publish()?
+    } else {
+        target_db
+    };
 
     if options.dry_run {
         println!(
@@ -885,7 +894,7 @@ pub fn run_redact_with_external_paths(
             "Redacted {} values across {} entries in {}",
             report.total(),
             report.entries_changed,
-            target_db.display()
+            result_db.display()
         );
     }
 

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 
@@ -88,6 +89,7 @@ pub fn run_prune_with_options(
     let mut fts_deleted = 0usize;
     let mut external_deleted = 0usize;
     let mut external_skipped = 0usize;
+    let mut external_delete_candidates: HashSet<PathBuf> = HashSet::new();
 
     if !hashes.is_empty() {
         let has_fts: i64 = tx.query_row(
@@ -151,11 +153,7 @@ pub fn run_prune_with_options(
                     external_skipped += 1;
                     continue;
                 };
-                if fs::remove_file(&path).is_ok() {
-                    external_deleted += 1;
-                } else {
-                    external_skipped += 1;
-                }
+                external_delete_candidates.insert(path);
             }
 
             if has_fts > 0 {
@@ -169,7 +167,28 @@ pub fn run_prune_with_options(
         }
     }
 
+    let external_paths_in_use: HashSet<PathBuf> = if external_delete_candidates.is_empty() {
+        HashSet::new()
+    } else {
+        let mut stmt =
+            tx.prepare("SELECT DISTINCT external_path FROM blobs WHERE external_path IS NOT NULL")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.filter_map(|row| row.ok())
+            .filter_map(|raw_path| external_path_policy.resolve_file(&raw_path))
+            .collect()
+    };
+
     tx.commit()?;
+
+    for path in external_delete_candidates {
+        if external_paths_in_use.contains(&path) {
+            external_skipped += 1;
+        } else if fs::remove_file(&path).is_ok() {
+            external_deleted += 1;
+        } else {
+            external_skipped += 1;
+        }
+    }
 
     println!(
         "Pruned import {import_id} ({source_file}). Removed {imports_deleted} import record, {entries_deleted} entries, {pages_deleted} pages, {blobs_deleted} blobs, {fts_deleted} FTS rows, deleted {external_deleted} external files (skipped {external_skipped})."
