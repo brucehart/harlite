@@ -12,8 +12,8 @@ use crate::error::{HarliteError, Result};
 use super::csv::write_csv_field;
 use super::query::OutputFormat;
 use super::util::{
-    canonicalize_path_for_compare, finalize_sensitive_write, prepare_sensitive_write,
-    resolve_database, ExternalPathPolicy, StagedDatabase,
+    canonicalize_path_for_compare, delete_orphaned_blobs, finalize_sensitive_write,
+    prepare_sensitive_write, resolve_database, ExternalPathPolicy, StagedDatabase,
 };
 
 #[derive(Clone, Copy, Debug, serde::Serialize)]
@@ -378,6 +378,7 @@ pub fn run_pii_with_external_paths(
     drop(update);
     drop(stmt);
     if write {
+        delete_orphaned_blobs(work_conn)?;
         conn.execute_batch("COMMIT")?;
         finalize_sensitive_write(&conn)?;
     }

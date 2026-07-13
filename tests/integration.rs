@@ -1873,6 +1873,115 @@ fn test_pii_redaction_rolls_back_every_entry_on_failure() {
 }
 
 #[test]
+fn test_pii_redaction_rolls_back_when_orphan_cleanup_fails() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("source.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "--bodies", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let original_hash: String = conn
+        .query_row(
+            "SELECT response_body_hash FROM entries ORDER BY id LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    conn.execute(
+        "UPDATE blobs SET content=?1, size=?2 WHERE hash=?3",
+        rusqlite::params![
+            b"cleanup@example.com".as_slice(),
+            "cleanup@example.com".len() as i64,
+            original_hash.as_str()
+        ],
+    )
+    .unwrap();
+    let blobs_before: i64 = conn
+        .query_row("SELECT COUNT(*) FROM blobs", [], |row| row.get(0))
+        .unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_pii_blob_cleanup BEFORE DELETE ON blobs BEGIN SELECT RAISE(ABORT, 'cleanup blocked'); END;",
+    )
+    .unwrap();
+    drop(conn);
+
+    harlite()
+        .args(["pii", "--redact", "--format", "json"])
+        .arg(&db_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cleanup blocked"));
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let hash_after: String = conn
+        .query_row(
+            "SELECT response_body_hash FROM entries ORDER BY id LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let blobs_after: i64 = conn
+        .query_row("SELECT COUNT(*) FROM blobs", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(hash_after, original_hash);
+    assert_eq!(blobs_after, blobs_before);
+}
+
+#[test]
+fn test_redact_rolls_back_when_orphan_cleanup_fails() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("source.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/redact.har", "--bodies", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let original: (String, String) = conn
+        .query_row(
+            "SELECT request_headers, response_body_hash FROM entries LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let blobs_before: i64 = conn
+        .query_row("SELECT COUNT(*) FROM blobs", [], |row| row.get(0))
+        .unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_redact_blob_cleanup BEFORE DELETE ON blobs BEGIN SELECT RAISE(ABORT, 'cleanup blocked'); END;",
+    )
+    .unwrap();
+    drop(conn);
+
+    harlite()
+        .args(["redact", "--body-regex", "ok"])
+        .arg(&db_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cleanup blocked"));
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let after: (String, String) = conn
+        .query_row(
+            "SELECT request_headers, response_body_hash FROM entries LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let blobs_after: i64 = conn
+        .query_row("SELECT COUNT(*) FROM blobs", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(after, original);
+    assert_eq!(blobs_after, blobs_before);
+}
+
+#[test]
 fn test_redact_failures_do_not_publish_output_database() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("source.db");
