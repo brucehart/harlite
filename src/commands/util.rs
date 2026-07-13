@@ -1,5 +1,6 @@
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use rusqlite::{Connection, DatabaseName, OpenFlags};
@@ -74,19 +75,220 @@ pub fn copy_database_consistent(source: &Path, destination: &Path) -> Result<()>
     Ok(())
 }
 
+static NEXT_STAGED_DATABASE_ID: AtomicU64 = AtomicU64::new(0);
+
+/// A consistent database copy staged beside its final destination.
+///
+/// The staged database and its sidecars are removed on error or early return.
+/// Publishing uses a same-directory rename so callers never expose an
+/// unredacted source copy at the requested output path.
+pub struct StagedDatabase {
+    path: PathBuf,
+    destination: PathBuf,
+    overwrite: bool,
+    published: bool,
+}
+
+struct DestinationBackup {
+    destination: PathBuf,
+    directory: PathBuf,
+    moved_main: bool,
+    moved_sidecars: Vec<&'static str>,
+    active: bool,
+}
+
+impl StagedDatabase {
+    pub fn copy_from(source: &Path, destination: &Path, overwrite: bool) -> Result<Self> {
+        let parent = destination
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let file_name = destination
+            .file_name()
+            .ok_or_else(|| HarliteError::InvalidArgs("Output path must be a file".to_string()))?
+            .to_string_lossy();
+
+        let path = loop {
+            let id = NEXT_STAGED_DATABASE_ID.fetch_add(1, Ordering::Relaxed);
+            let candidate = parent.join(format!(
+                ".{file_name}.harlite-stage-{}-{id}",
+                std::process::id()
+            ));
+            match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(file) => {
+                    drop(file);
+                    break candidate;
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(err.into()),
+            }
+        };
+
+        let staged = Self {
+            path,
+            destination: destination.to_path_buf(),
+            overwrite,
+            published: false,
+        };
+        copy_database_consistent(source, &staged.path)?;
+        Ok(staged)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn publish(mut self) -> Result<PathBuf> {
+        if self.destination.exists() && !self.destination.is_file() {
+            return Err(HarliteError::InvalidArgs(format!(
+                "Output path must be a file: {}",
+                self.destination.display()
+            )));
+        }
+        if self.destination.exists() && !self.overwrite {
+            return Err(HarliteError::InvalidArgs(format!(
+                "Output database already exists: {} (use --force to overwrite)",
+                self.destination.display()
+            )));
+        }
+
+        remove_database_sidecars(&self.path)?;
+        let has_destination_files = self.destination.exists()
+            || database_sidecar_suffixes()
+                .iter()
+                .any(|suffix| database_sidecar_path(&self.destination, suffix).exists());
+        let backup = if has_destination_files {
+            let mut backup = DestinationBackup::new(&self.destination)?;
+            backup.capture()?;
+            Some(backup)
+        } else {
+            None
+        };
+
+        fs::rename(&self.path, &self.destination)?;
+        if let Some(backup) = backup {
+            backup.discard();
+        }
+        self.published = true;
+        Ok(self.destination.clone())
+    }
+}
+
+impl Drop for StagedDatabase {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = remove_database_with_sidecars(&self.path);
+        }
+    }
+}
+
+impl DestinationBackup {
+    fn new(destination: &Path) -> Result<Self> {
+        let parent = destination
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let file_name = destination
+            .file_name()
+            .ok_or_else(|| HarliteError::InvalidArgs("Output path must be a file".to_string()))?
+            .to_string_lossy();
+        let directory = loop {
+            let id = NEXT_STAGED_DATABASE_ID.fetch_add(1, Ordering::Relaxed);
+            let candidate = parent.join(format!(
+                ".{file_name}.harlite-backup-{}-{id}",
+                std::process::id()
+            ));
+            match fs::create_dir(&candidate) {
+                Ok(()) => break candidate,
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(err.into()),
+            }
+        };
+
+        Ok(Self {
+            destination: destination.to_path_buf(),
+            directory,
+            moved_main: false,
+            moved_sidecars: Vec::new(),
+            active: true,
+        })
+    }
+
+    fn capture(&mut self) -> Result<()> {
+        if self.destination.exists() {
+            fs::rename(&self.destination, self.directory.join("database"))?;
+            self.moved_main = true;
+        }
+        for suffix in database_sidecar_suffixes() {
+            let source = database_sidecar_path(&self.destination, suffix);
+            if source.exists() {
+                fs::rename(&source, self.directory.join(format!("database{suffix}")))?;
+                self.moved_sidecars.push(suffix);
+            }
+        }
+        Ok(())
+    }
+
+    fn restore(&mut self) -> Result<()> {
+        while let Some(suffix) = self.moved_sidecars.pop() {
+            fs::rename(
+                self.directory.join(format!("database{suffix}")),
+                database_sidecar_path(&self.destination, suffix),
+            )?;
+        }
+        if self.moved_main {
+            fs::rename(self.directory.join("database"), &self.destination)?;
+            self.moved_main = false;
+        }
+        fs::remove_dir(&self.directory)?;
+        self.active = false;
+        Ok(())
+    }
+
+    fn discard(mut self) {
+        self.active = false;
+        let _ = fs::remove_dir_all(&self.directory);
+    }
+}
+
+impl Drop for DestinationBackup {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = self.restore();
+        }
+    }
+}
+
 pub fn remove_database_with_sidecars(database: &Path) -> Result<()> {
     if database.exists() {
         fs::remove_file(database)?;
     }
-    for suffix in ["-wal", "-shm"] {
-        let mut sidecar = database.as_os_str().to_os_string();
-        sidecar.push(suffix);
-        let sidecar = PathBuf::from(sidecar);
+    remove_database_sidecars(database)
+}
+
+fn remove_database_sidecars(database: &Path) -> Result<()> {
+    for suffix in database_sidecar_suffixes() {
+        let sidecar = database_sidecar_path(database, suffix);
         if sidecar.exists() {
             fs::remove_file(sidecar)?;
         }
     }
     Ok(())
+}
+
+fn database_sidecar_suffixes() -> [&'static str; 3] {
+    ["-journal", "-wal", "-shm"]
+}
+
+fn database_sidecar_path(database: &Path, suffix: &str) -> PathBuf {
+    let mut sidecar = database.as_os_str().to_os_string();
+    sidecar.push(suffix);
+    PathBuf::from(sidecar)
 }
 
 /// Remove blobs and FTS rows no longer referenced by any entry.
@@ -116,7 +318,6 @@ pub fn prepare_sensitive_write(conn: &Connection) -> Result<()> {
 }
 
 pub fn finalize_sensitive_write(conn: &Connection) -> Result<()> {
-    delete_orphaned_blobs(conn)?;
     conn.execute_batch(
         "PRAGMA wal_checkpoint(TRUNCATE); VACUUM; PRAGMA wal_checkpoint(TRUNCATE);",
     )?;
@@ -214,7 +415,10 @@ fn resolve_database_in_dir(dir: &Path) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_database_in_dir, ExternalPathPolicy};
+    use super::{
+        remove_database_with_sidecars, resolve_database_in_dir, DestinationBackup,
+        ExternalPathPolicy, StagedDatabase,
+    };
     use crate::error::HarliteError;
     use tempfile::TempDir;
 
@@ -226,6 +430,120 @@ mod tests {
 
         let resolved = resolve_database_in_dir(tmp.path()).unwrap();
         assert_eq!(resolved, db_path);
+    }
+
+    #[test]
+    fn remove_database_cleans_sqlite_sidecars() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("staged.db");
+        std::fs::write(&db_path, b"database").unwrap();
+        for suffix in ["-journal", "-wal", "-shm"] {
+            std::fs::write(tmp.path().join(format!("staged.db{suffix}")), b"sidecar").unwrap();
+        }
+
+        remove_database_with_sidecars(&db_path).unwrap();
+
+        assert!(!db_path.exists());
+        for suffix in ["-journal", "-wal", "-shm"] {
+            assert!(!tmp.path().join(format!("staged.db{suffix}")).exists());
+        }
+    }
+
+    #[test]
+    fn destination_backup_restores_database_and_sidecars_on_drop() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("existing.db");
+        std::fs::write(&db_path, b"database").unwrap();
+        for suffix in ["-journal", "-wal", "-shm"] {
+            std::fs::write(tmp.path().join(format!("existing.db{suffix}")), suffix).unwrap();
+        }
+
+        {
+            let mut backup = DestinationBackup::new(&db_path).unwrap();
+            backup.capture().unwrap();
+            assert!(!db_path.exists());
+            assert!(!tmp.path().join("existing.db-wal").exists());
+        }
+
+        assert_eq!(std::fs::read(&db_path).unwrap(), b"database");
+        for suffix in ["-journal", "-wal", "-shm"] {
+            assert_eq!(
+                std::fs::read(tmp.path().join(format!("existing.db{suffix}"))).unwrap(),
+                suffix.as_bytes()
+            );
+        }
+    }
+
+    #[test]
+    fn staged_database_replaces_existing_database_and_sidecars() {
+        let tmp = TempDir::new().unwrap();
+        let source = tmp.path().join("source.db");
+        let destination = tmp.path().join("destination.db");
+        let conn = rusqlite::Connection::open(&source).unwrap();
+        conn.execute_batch("CREATE TABLE value (number INTEGER); INSERT INTO value VALUES (42);")
+            .unwrap();
+        drop(conn);
+        std::fs::write(&destination, b"previous database").unwrap();
+        for suffix in ["-journal", "-wal", "-shm"] {
+            std::fs::write(
+                tmp.path().join(format!("destination.db{suffix}")),
+                b"previous sidecar",
+            )
+            .unwrap();
+        }
+
+        let staged = StagedDatabase::copy_from(&source, &destination, true).unwrap();
+        staged.publish().unwrap();
+
+        let conn = rusqlite::Connection::open(&destination).unwrap();
+        let value: i64 = conn
+            .query_row("SELECT number FROM value", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(value, 42);
+        for suffix in ["-journal", "-wal", "-shm"] {
+            assert!(!tmp.path().join(format!("destination.db{suffix}")).exists());
+        }
+        assert!(!std::fs::read_dir(tmp.path()).unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("harlite-backup")));
+    }
+
+    #[test]
+    fn staged_database_restores_existing_files_when_install_fails() {
+        let tmp = TempDir::new().unwrap();
+        let source = tmp.path().join("source.db");
+        let destination = tmp.path().join("destination.db");
+        let conn = rusqlite::Connection::open(&source).unwrap();
+        conn.execute_batch("CREATE TABLE value (number INTEGER);")
+            .unwrap();
+        drop(conn);
+        std::fs::write(&destination, b"previous database").unwrap();
+        for suffix in ["-journal", "-wal", "-shm"] {
+            std::fs::write(
+                tmp.path().join(format!("destination.db{suffix}")),
+                suffix.as_bytes(),
+            )
+            .unwrap();
+        }
+
+        let staged = StagedDatabase::copy_from(&source, &destination, true).unwrap();
+        std::fs::remove_file(staged.path()).unwrap();
+        assert!(staged.publish().is_err());
+
+        assert_eq!(std::fs::read(&destination).unwrap(), b"previous database");
+        for suffix in ["-journal", "-wal", "-shm"] {
+            assert_eq!(
+                std::fs::read(tmp.path().join(format!("destination.db{suffix}"))).unwrap(),
+                suffix.as_bytes()
+            );
+        }
+        assert!(!std::fs::read_dir(tmp.path()).unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("harlite-backup")));
     }
 
     #[test]

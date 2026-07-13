@@ -9,11 +9,11 @@ use url::Url;
 use crate::db::store_blob;
 use crate::error::{HarliteError, Result};
 
-use super::query::OutputFormat;
 use super::csv::write_csv_field;
+use super::query::OutputFormat;
 use super::util::{
-    canonicalize_path_for_compare, copy_database_consistent, finalize_sensitive_write,
-    prepare_sensitive_write, remove_database_with_sidecars, resolve_database, ExternalPathPolicy,
+    canonicalize_path_for_compare, delete_orphaned_blobs, finalize_sensitive_write,
+    prepare_sensitive_write, resolve_database, ExternalPathPolicy, StagedDatabase,
 };
 
 #[derive(Clone, Copy, Debug, serde::Serialize)]
@@ -139,8 +139,16 @@ pub fn run_pii_with_external_paths(
         allow_external_paths,
         external_path_root,
     )?;
+
+    let matchers = build_matchers(options)?;
+    if matchers.is_empty() {
+        return Err(HarliteError::InvalidArgs(
+            "No PII patterns provided".to_string(),
+        ));
+    }
+
     let write = options.redact && !options.dry_run;
-    let target_db = if write {
+    let staged_output = if write {
         if let Some(out) = &options.output {
             let input_cmp = canonicalize_path_for_compare(&input_db)?;
             let out_cmp = canonicalize_path_for_compare(out)?;
@@ -155,22 +163,17 @@ pub fn run_pii_with_external_paths(
                     out.display()
                 )));
             }
-            remove_database_with_sidecars(out)?;
-            copy_database_consistent(&input_db, out)?;
-            out.clone()
+            Some(StagedDatabase::copy_from(&input_db, out, options.force)?)
         } else {
-            input_db.clone()
+            None
         }
     } else {
-        input_db.clone()
+        None
     };
-
-    let matchers = build_matchers(options)?;
-    if matchers.is_empty() {
-        return Err(HarliteError::InvalidArgs(
-            "No PII patterns provided".to_string(),
-        ));
-    }
+    let target_db = staged_output
+        .as_ref()
+        .map(|staged| staged.path().to_path_buf())
+        .unwrap_or_else(|| input_db.clone());
 
     let conn = if write {
         let conn = Connection::open(&target_db)?;
@@ -180,7 +183,12 @@ pub fn run_pii_with_external_paths(
         super::query::open_readonly_connection(&target_db)?
     };
 
-    let mut stmt = conn.prepare(
+    if write {
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+    }
+    let work_conn = &conn;
+
+    let mut stmt = work_conn.prepare(
         "SELECT id, url, query_string, request_body_hash, request_body_size, response_body_hash, response_body_size, response_body_hash_raw, response_body_size_raw FROM entries ORDER BY id",
     )?;
 
@@ -198,11 +206,11 @@ pub fn run_pii_with_external_paths(
         ))
     })?;
 
-    let mut update = conn.prepare(
+    let mut update = work_conn.prepare(
         "UPDATE entries SET url=?1, query_string=?2, request_body_hash=?3, request_body_size=?4, response_body_hash=?5, response_body_size=?6, response_body_hash_raw=?7, response_body_size_raw=?8 WHERE id=?9",
     )?;
 
-    let has_fts: bool = conn
+    let has_fts: bool = work_conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='response_body_fts'",
             [],
@@ -262,9 +270,7 @@ pub fn run_pii_with_external_paths(
         }
 
         if let Some(hash) = req_body_hash.as_deref() {
-            if let Some(text) =
-                load_blob_text(&conn, hash, &mut text_cache, &external_paths)?
-            {
+            if let Some(text) = load_blob_text(work_conn, hash, &mut text_cache, &external_paths)? {
                 append_findings(
                     &mut findings,
                     entry_id,
@@ -275,7 +281,7 @@ pub fn run_pii_with_external_paths(
 
                 if options.redact {
                     if let Some(redacted) = redact_blob_cached(
-                        &conn,
+                        work_conn,
                         hash,
                         &matchers,
                         &options.token,
@@ -292,9 +298,7 @@ pub fn run_pii_with_external_paths(
         }
 
         if let Some(hash) = resp_body_hash.as_deref() {
-            if let Some(text) =
-                load_blob_text(&conn, hash, &mut text_cache, &external_paths)?
-            {
+            if let Some(text) = load_blob_text(work_conn, hash, &mut text_cache, &external_paths)? {
                 append_findings(
                     &mut findings,
                     entry_id,
@@ -305,7 +309,7 @@ pub fn run_pii_with_external_paths(
 
                 if options.redact {
                     if let Some(redacted) = redact_blob_cached(
-                        &conn,
+                        work_conn,
                         hash,
                         &matchers,
                         &options.token,
@@ -322,7 +326,7 @@ pub fn run_pii_with_external_paths(
                         if write {
                             changed_response_hashes.insert(hash.to_string());
                             if has_fts {
-                                let has_old_fts = conn
+                                let has_old_fts = work_conn
                                     .query_row(
                                         "SELECT 1 FROM response_body_fts WHERE hash = ?1 LIMIT 1",
                                         params![hash],
@@ -331,7 +335,11 @@ pub fn run_pii_with_external_paths(
                                     .optional()?
                                     .is_some();
                                 if has_old_fts {
-                                    upsert_response_fts(&conn, &redacted.new_hash, &redacted.text)?;
+                                    upsert_response_fts(
+                                        work_conn,
+                                        &redacted.new_hash,
+                                        &redacted.text,
+                                    )?;
                                 }
                             }
                         }
@@ -357,8 +365,8 @@ pub fn run_pii_with_external_paths(
 
     if write && has_fts && !changed_response_hashes.is_empty() {
         let mut check_stmt =
-            conn.prepare("SELECT COUNT(*) FROM entries WHERE response_body_hash = ?1")?;
-        let mut delete_stmt = conn.prepare("DELETE FROM response_body_fts WHERE hash = ?1")?;
+            work_conn.prepare("SELECT COUNT(*) FROM entries WHERE response_body_hash = ?1")?;
+        let mut delete_stmt = work_conn.prepare("DELETE FROM response_body_fts WHERE hash = ?1")?;
         for hash in changed_response_hashes {
             let count: i64 = check_stmt.query_row([hash.as_str()], |row| row.get(0))?;
             if count == 0 {
@@ -370,7 +378,14 @@ pub fn run_pii_with_external_paths(
     drop(update);
     drop(stmt);
     if write {
+        delete_orphaned_blobs(work_conn)?;
+        conn.execute_batch("COMMIT")?;
         finalize_sensitive_write(&conn)?;
+    }
+    drop(conn);
+
+    if let Some(staged) = staged_output {
+        staged.publish()?;
     }
 
     match options.format {
