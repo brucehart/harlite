@@ -61,8 +61,7 @@ pub fn run_prune_with_options(
         )?;
         let hashes = stmt
             .query_map(params![import_id], |row| row.get(0))?
-            .filter_map(|row| row.ok())
-            .collect();
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         hashes
     };
 
@@ -123,8 +122,7 @@ pub fn run_prune_with_options(
             let orphan_hashes: Vec<String> = tx
                 .prepare(&sql_orphans)?
                 .query_map(params_vec.as_slice(), |row| row.get(0))?
-                .filter_map(|row| row.ok())
-                .collect();
+                .collect::<rusqlite::Result<Vec<_>>>()?;
 
             if orphan_hashes.is_empty() {
                 continue;
@@ -145,8 +143,7 @@ pub fn run_prune_with_options(
                     "SELECT external_path FROM blobs WHERE hash IN ({orphan_placeholders}) AND external_path IS NOT NULL"
                 ))?
                 .query_map(orphan_params.as_slice(), |row| row.get(0))?
-                .filter_map(|row| row.ok())
-                .collect();
+                .collect::<rusqlite::Result<Vec<_>>>()?;
 
             for raw_path in external_paths {
                 let Some(path) = external_path_policy.resolve_file(&raw_path) else {
