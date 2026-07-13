@@ -14,6 +14,9 @@ use crate::error::HarliteError;
 
 pub type Extensions = serde_json::Map<String, serde_json::Value>;
 
+/// Maximum decompressed JSON bytes accepted by the default HAR parsers.
+pub const DEFAULT_MAX_HAR_INPUT_BYTES: usize = 512 * 1024 * 1024;
+
 fn extensions_is_empty(ext: &Extensions) -> bool {
     ext.is_empty()
 }
@@ -186,6 +189,11 @@ pub struct Timings {
 
 /// Parse a HAR file from disk into strongly typed structures.
 pub fn parse_har_file(path: &Path) -> Result<Har> {
+    parse_har_file_with_limit(path, DEFAULT_MAX_HAR_INPUT_BYTES)
+}
+
+/// Parse a HAR with an explicit limit on decompressed JSON bytes.
+pub fn parse_har_file_with_limit(path: &Path, max_input_bytes: usize) -> Result<Har> {
     let mut file = File::open(path)?;
     let mut prefix = [0u8; 4];
     let prefix_len = file.read(&mut prefix)?;
@@ -220,7 +228,7 @@ pub fn parse_har_file(path: &Path) -> Result<Har> {
         Compression::None => Box::new(chained),
     };
 
-    let reader = BufReader::new(reader);
+    let reader = BufReader::new(LimitedReader::new(reader, max_input_bytes));
     let mut deserializer = serde_json::Deserializer::from_reader(reader);
     let har = Har::deserialize(&mut deserializer)?;
     deserializer.end()?;
@@ -229,6 +237,11 @@ pub fn parse_har_file(path: &Path) -> Result<Har> {
 
 /// Parse a HAR file using a background reader thread (async I/O).
 pub fn parse_har_file_async(path: &Path) -> Result<Har> {
+    parse_har_file_async_with_limit(path, DEFAULT_MAX_HAR_INPUT_BYTES)
+}
+
+/// Parse a HAR using a background reader with an explicit decompressed limit.
+pub fn parse_har_file_async_with_limit(path: &Path, max_input_bytes: usize) -> Result<Har> {
     let mut file = File::open(path)?;
     let mut prefix = [0u8; 4];
     let prefix_len = file.read(&mut prefix)?;
@@ -267,7 +280,7 @@ pub fn parse_har_file_async(path: &Path) -> Result<Har> {
         Compression::None => Box::new(AsyncFileReader::new(file, prefix_vec)),
     };
 
-    let reader = BufReader::new(reader);
+    let reader = BufReader::new(LimitedReader::new(reader, max_input_bytes));
     let mut deserializer = serde_json::Deserializer::from_reader(reader);
     let har = Har::deserialize(&mut deserializer)?;
     deserializer.end()?;
@@ -275,6 +288,49 @@ pub fn parse_har_file_async(path: &Path) -> Result<Har> {
 }
 
 const ASYNC_READ_CHUNK_BYTES: usize = 128 * 1024;
+
+struct LimitedReader<R> {
+    inner: R,
+    bytes_read: usize,
+    limit: usize,
+}
+
+impl<R> LimitedReader<R> {
+    fn new(inner: R, limit: usize) -> Self {
+        Self {
+            inner,
+            bytes_read: 0,
+            limit,
+        }
+    }
+}
+
+impl<R: Read> Read for LimitedReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        if self.bytes_read == self.limit {
+            let mut probe = [0u8; 1];
+            return match self.inner.read(&mut probe)? {
+                0 => Ok(0),
+                _ => Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "decompressed HAR input exceeds the {} byte limit",
+                        self.limit
+                    ),
+                )),
+            };
+        }
+
+        let remaining = self.limit - self.bytes_read;
+        let max_read = remaining.min(buf.len());
+        let read = self.inner.read(&mut buf[..max_read])?;
+        self.bytes_read += read;
+        Ok(read)
+    }
+}
 
 struct AsyncFileReader {
     prefix: Cursor<Vec<u8>>,
@@ -285,7 +341,9 @@ struct AsyncFileReader {
 
 impl AsyncFileReader {
     fn new(file: File, prefix: Vec<u8>) -> Self {
-        let (tx, rx) = mpsc::channel();
+        // Bound read-ahead so async parsing cannot queue an entire hostile
+        // input file in memory while decompression/deserialization is slower.
+        let (tx, rx) = mpsc::sync_channel(4);
         thread::spawn(move || {
             let mut file = file;
             let mut buf = vec![0u8; ASYNC_READ_CHUNK_BYTES];
@@ -543,7 +601,7 @@ impl<'de> Visitor<'de> for EntriesVisitor {
 
 #[cfg(test)]
 mod tests {
-    use super::{detect_compression, Compression, Har};
+    use super::{detect_compression, parse_har_file_with_limit, Compression, Har};
     use std::path::Path;
 
     #[test]
@@ -702,5 +760,14 @@ mod tests {
             detect_compression(Path::new("trace.har.br"), &[0u8, 0u8, 0u8, 0u8]),
             Compression::Brotli
         );
+    }
+
+    #[test]
+    fn rejects_decompressed_input_over_limit() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(temp.path(), br#"{"log":{"entries":[]}}"#).unwrap();
+
+        let err = parse_har_file_with_limit(temp.path(), 8).unwrap_err();
+        assert!(err.to_string().contains("exceeds the 8 byte limit"));
     }
 }

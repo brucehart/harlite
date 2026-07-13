@@ -4,10 +4,12 @@ use clap::CommandFactory;
 use crate::cli::{Cli, Commands};
 use crate::commands::{
     run_analyze, run_diff, run_export, run_export_data, run_fts_rebuild, run_import, run_imports,
-    run_info, run_merge, run_openapi, run_pii, run_prune, run_query, run_redact, run_report,
+    run_info, run_merge, run_openapi, run_pii, run_pii_with_external_paths, run_prune,
+    run_prune_with_options, run_query, run_redact, run_redact_with_external_paths,
+    run_report,
     run_schema, run_search, run_stats, run_waterfall, AnalyzeOptions, DiffOptions,
     EntryFilterOptions, ExportDataOptions, ExportOptions, ImportOptions, InfoOptions, MergeOptions,
-    OpenApiOptions, PiiOptions, QueryOptions, RedactOptions, ReportOptions, StatsOptions,
+    OpenApiOptions, PiiOptions, PruneOptions, QueryOptions, RedactOptions, ReportOptions, StatsOptions,
     WaterfallFormat, WaterfallGroupBy, WaterfallOptions,
 };
 #[cfg(feature = "cdp")]
@@ -240,7 +242,22 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::Prune {
             database,
             import_id,
-        } => run_prune(database, import_id),
+            allow_external_paths,
+            external_path_root,
+        } => {
+            if allow_external_paths {
+                run_prune_with_options(
+                    database,
+                    import_id,
+                    &PruneOptions {
+                        allow_external_paths,
+                        external_path_root,
+                    },
+                )
+            } else {
+                run_prune(database, import_id)
+            }
+        }
 
         Commands::Stats {
             database,
@@ -607,6 +624,8 @@ pub fn run(cli: Cli) -> Result<()> {
             body_regex,
             match_mode,
             token,
+            allow_external_paths,
+            external_path_root,
             database,
         } => {
             let defaults = &resolved.redact;
@@ -622,7 +641,16 @@ pub fn run(cli: Cli) -> Result<()> {
                 match_mode: match_mode.unwrap_or(defaults.match_mode),
                 token: token.unwrap_or_else(|| defaults.token.clone()),
             };
-            run_redact(database, &options)
+            if allow_external_paths {
+                run_redact_with_external_paths(
+                    database,
+                    &options,
+                    allow_external_paths,
+                    external_path_root.as_deref(),
+                )
+            } else {
+                run_redact(database, &options)
+            }
         }
 
         Commands::Pii {
@@ -641,6 +669,8 @@ pub fn run(cli: Cli) -> Result<()> {
             ssn_regex,
             credit_card_regex,
             token,
+            allow_external_paths,
+            external_path_root,
             database,
         } => {
             let defaults = &resolved.pii;
@@ -662,7 +692,16 @@ pub fn run(cli: Cli) -> Result<()> {
                     .unwrap_or_else(|| defaults.credit_card_regex.clone()),
                 token: token.unwrap_or_else(|| defaults.token.clone()),
             };
-            run_pii(database, &options)
+            if allow_external_paths {
+                run_pii_with_external_paths(
+                    database,
+                    &options,
+                    allow_external_paths,
+                    external_path_root.as_deref(),
+                )
+            } else {
+                run_pii(database, &options)
+            }
         }
 
         Commands::Diff {

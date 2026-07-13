@@ -12,7 +12,7 @@ use crate::db::{load_entries, EntryQuery, EntryRow};
 use crate::error::{HarliteError, Result};
 use crate::har::{parse_har_file, Entry as HarEntry, Header};
 
-use super::OutputFormat;
+use super::{csv::write_csv_field, OutputFormat};
 
 pub struct DiffOptions {
     pub format: OutputFormat,
@@ -623,25 +623,6 @@ where
         write_csv_field(out, field)?;
     }
     out.write_all(b"\n")?;
-    Ok(())
-}
-
-fn write_csv_field(out: &mut impl Write, field: &str) -> Result<()> {
-    let needs_quotes = field.contains([',', '"', '\n', '\r']);
-    if !needs_quotes {
-        out.write_all(field.as_bytes())?;
-        return Ok(());
-    }
-
-    out.write_all(b"\"")?;
-    for b in field.as_bytes() {
-        if *b == b'"' {
-            out.write_all(b"\"\"")?;
-        } else {
-            out.write_all(&[*b])?;
-        }
-    }
-    out.write_all(b"\"")?;
     Ok(())
 }
 

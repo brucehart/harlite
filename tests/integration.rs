@@ -146,6 +146,14 @@ fn test_imports_list_and_prune() {
     let import_id: i64 = conn
         .query_row("SELECT id FROM imports LIMIT 1", [], |r| r.get(0))
         .unwrap();
+    let graphql_fields_inserted = conn
+        .execute(
+            "INSERT INTO graphql_fields (entry_id, field) SELECT id, 'viewer' FROM entries WHERE import_id = ?1 LIMIT 1",
+            [import_id],
+        )
+        .unwrap();
+    assert_eq!(graphql_fields_inserted, 1);
+    drop(conn);
 
     harlite()
         .args(["prune", "--import-id", &import_id.to_string()])
@@ -166,11 +174,386 @@ fn test_imports_list_and_prune() {
     let blob_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM blobs", [], |r| r.get(0))
         .unwrap();
+    let graphql_field_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM graphql_fields", [], |r| r.get(0))
+        .unwrap();
 
     assert_eq!(entry_count, 0);
     assert_eq!(import_count, 0);
     assert_eq!(page_count, 0);
     assert_eq!(blob_count, 0);
+    assert_eq!(graphql_field_count, 0);
+}
+
+#[test]
+fn test_prune_does_not_delete_untrusted_external_path_by_default() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+    let protected_path = tmp.path().join("must-survive.txt");
+    fs::write(&protected_path, b"protected").unwrap();
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "--bodies", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let import_id: i64 = conn
+        .query_row("SELECT id FROM imports LIMIT 1", [], |row| row.get(0))
+        .unwrap();
+    conn.execute(
+        "UPDATE blobs SET external_path=?1 WHERE hash=(SELECT hash FROM blobs LIMIT 1)",
+        [protected_path.to_string_lossy().as_ref()],
+    )
+    .unwrap();
+    drop(conn);
+
+    harlite()
+        .args(["prune", "--import-id", &import_id.to_string()])
+        .arg(&db_path)
+        .assert()
+        .success();
+    assert!(protected_path.exists());
+}
+
+#[test]
+fn test_prune_external_file_deletion_waits_for_commit() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+    let bodies_dir = tmp.path().join("bodies");
+
+    harlite()
+        .args([
+            "import",
+            "tests/fixtures/simple.har",
+            "--bodies",
+            "--extract-bodies",
+        ])
+        .arg(&bodies_dir)
+        .args(["-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let import_id: i64 = conn
+        .query_row("SELECT id FROM imports LIMIT 1", [], |row| row.get(0))
+        .unwrap();
+    let external_paths: Vec<String> = conn
+        .prepare("SELECT external_path FROM blobs WHERE external_path IS NOT NULL")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect();
+    assert!(!external_paths.is_empty());
+    conn.execute_batch(
+        "CREATE TRIGGER fail_blob_delete BEFORE DELETE ON blobs BEGIN SELECT RAISE(ABORT, 'blocked'); END;",
+    )
+    .unwrap();
+    drop(conn);
+
+    harlite()
+        .args([
+            "prune",
+            "--import-id",
+            &import_id.to_string(),
+            "--allow-external-paths",
+            "--external-path-root",
+        ])
+        .arg(&bodies_dir)
+        .arg(&db_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("blocked"));
+
+    assert!(external_paths
+        .iter()
+        .all(|path| std::path::Path::new(path).exists()));
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let entries: i64 = conn
+        .query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(entries, 2);
+}
+
+#[test]
+fn test_prune_preserves_external_file_referenced_by_surviving_blob() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+    let bodies_dir = tmp.path().join("bodies");
+    let shared_path = bodies_dir.join("shared-body");
+    fs::create_dir(&bodies_dir).unwrap();
+    fs::write(&shared_path, b"shared").unwrap();
+
+    for _ in 0..2 {
+        harlite()
+            .args(["import", "tests/fixtures/simple.har", "--bodies", "-o"])
+            .arg(&db_path)
+            .assert()
+            .success();
+    }
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let import_ids: Vec<i64> = conn
+        .prepare("SELECT id FROM imports ORDER BY id")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect();
+    assert_eq!(import_ids.len(), 2);
+    let shared = shared_path.to_string_lossy();
+    conn.execute(
+        "INSERT INTO blobs(hash, content, size, mime_type, external_path) VALUES('orphan', X'', 6, 'text/plain', ?1)",
+        [shared.as_ref()],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO blobs(hash, content, size, mime_type, external_path) VALUES('keeper', X'', 6, 'text/plain', ?1)",
+        [shared.as_ref()],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE entries SET request_body_hash='orphan', request_body_size=6 WHERE id=(SELECT MIN(id) FROM entries WHERE import_id=?1)",
+        [import_ids[0]],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE entries SET request_body_hash='keeper', request_body_size=6 WHERE id=(SELECT MIN(id) FROM entries WHERE import_id=?1)",
+        [import_ids[1]],
+    )
+    .unwrap();
+    drop(conn);
+
+    harlite()
+        .args([
+            "prune",
+            "--import-id",
+            &import_ids[0].to_string(),
+            "--allow-external-paths",
+            "--external-path-root",
+        ])
+        .arg(&bodies_dir)
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    assert!(shared_path.exists());
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let surviving_refs: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM entries WHERE request_body_hash='keeper'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(surviving_refs, 1);
+}
+
+#[test]
+fn test_prune_rolls_back_on_malformed_surviving_external_path() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+    let bodies_dir = tmp.path().join("bodies");
+    let shared_path = bodies_dir.join("shared-body");
+    fs::create_dir(&bodies_dir).unwrap();
+    fs::write(&shared_path, b"shared").unwrap();
+
+    for _ in 0..2 {
+        harlite()
+            .args(["import", "tests/fixtures/simple.har", "--bodies", "-o"])
+            .arg(&db_path)
+            .assert()
+            .success();
+    }
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let import_ids: Vec<i64> = conn
+        .prepare("SELECT id FROM imports ORDER BY id")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect();
+    let shared = shared_path.to_string_lossy();
+    conn.execute(
+        "INSERT INTO blobs(hash, content, size, mime_type, external_path) VALUES('orphan', X'', 6, 'text/plain', ?1)",
+        [shared.as_ref()],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO blobs(hash, content, size, mime_type, external_path) VALUES('keeper', X'', 6, 'text/plain', CAST(?1 AS BLOB))",
+        [shared.as_ref()],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE entries SET request_body_hash='orphan', request_body_size=6 WHERE id=(SELECT MIN(id) FROM entries WHERE import_id=?1)",
+        [import_ids[0]],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE entries SET request_body_hash='keeper', request_body_size=6 WHERE id=(SELECT MIN(id) FROM entries WHERE import_id=?1)",
+        [import_ids[1]],
+    )
+    .unwrap();
+    drop(conn);
+
+    harlite()
+        .args([
+            "prune",
+            "--import-id",
+            &import_ids[0].to_string(),
+            "--allow-external-paths",
+            "--external-path-root",
+        ])
+        .arg(&bodies_dir)
+        .arg(&db_path)
+        .assert()
+        .failure();
+
+    assert!(shared_path.exists());
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let import_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM imports", [], |row| row.get(0))
+        .unwrap();
+    let orphan_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM blobs WHERE hash='orphan'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(import_count, 2);
+    assert_eq!(orphan_count, 1);
+}
+
+#[test]
+fn test_prune_rolls_back_on_malformed_pruned_external_path() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+    let bodies_dir = tmp.path().join("bodies");
+    let external_path = bodies_dir.join("external-body");
+    fs::create_dir(&bodies_dir).unwrap();
+    fs::write(&external_path, b"external").unwrap();
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "--bodies", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let import_id: i64 = conn
+        .query_row("SELECT id FROM imports LIMIT 1", [], |row| row.get(0))
+        .unwrap();
+    let external = external_path.to_string_lossy();
+    conn.execute(
+        "INSERT INTO blobs(hash, content, size, mime_type, external_path) VALUES('malformed-path', X'', 8, 'text/plain', CAST(?1 AS BLOB))",
+        [external.as_ref()],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE entries SET request_body_hash='malformed-path', request_body_size=8 WHERE id=(SELECT MIN(id) FROM entries)",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    harlite()
+        .args([
+            "prune",
+            "--import-id",
+            &import_id.to_string(),
+            "--allow-external-paths",
+            "--external-path-root",
+        ])
+        .arg(&bodies_dir)
+        .arg(&db_path)
+        .assert()
+        .failure();
+
+    assert!(external_path.exists());
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let import_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM imports", [], |row| row.get(0))
+        .unwrap();
+    let blob_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM blobs WHERE hash='malformed-path'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(import_count, 1);
+    assert_eq!(blob_count, 1);
+}
+
+#[test]
+fn test_prune_rolls_back_on_malformed_entry_hash() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "--bodies", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let import_id: i64 = conn
+        .query_row("SELECT id FROM imports LIMIT 1", [], |row| row.get(0))
+        .unwrap();
+    conn.execute(
+        "INSERT INTO blobs(hash, content, size, mime_type) VALUES(CAST('malformed-hash' AS BLOB), X'', 0, 'text/plain')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE entries SET request_body_hash=CAST('malformed-hash' AS BLOB) WHERE id=(SELECT MIN(id) FROM entries)",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    harlite()
+        .args(["prune", "--import-id", &import_id.to_string()])
+        .arg(&db_path)
+        .assert()
+        .failure();
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let import_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM imports", [], |row| row.get(0))
+        .unwrap();
+    let entry_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(import_count, 1);
+    assert_eq!(entry_count, 2);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_project_config_cannot_implicitly_execute_plugin() {
+    let tmp = TempDir::new().unwrap();
+    let marker = tmp.path().join("plugin-ran");
+    let config = format!(
+        "[[plugins]]\nname='untrusted'\nkind='filter'\ncommand='/usr/bin/touch'\nargs=['{}']\nenabled=true\n",
+        marker.display()
+    );
+    fs::write(tmp.path().join("harlite.toml"), config).unwrap();
+    let har_path = fs::canonicalize("tests/fixtures/simple.har").unwrap();
+
+    harlite()
+        .current_dir(tmp.path())
+        .arg("import")
+        .arg(har_path)
+        .args(["-o", "test.db"])
+        .assert()
+        .success();
+    assert!(!marker.exists());
 }
 
 #[test]
@@ -228,6 +611,30 @@ fn test_export_data_jsonl() {
     let first_line = contents.lines().next().unwrap_or("");
     let parsed: serde_json::Value = serde_json::from_str(first_line).unwrap();
     assert!(parsed.get("url").is_some());
+}
+
+#[cfg(feature = "parquet")]
+#[test]
+fn test_export_data_parquet() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+    let out_path = tmp.path().join("entries.parquet");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+    harlite()
+        .args(["export-data", "--format", "parquet", "-o"])
+        .arg(&out_path)
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let bytes = fs::read(&out_path).unwrap();
+    assert!(bytes.starts_with(b"PAR1"));
+    assert!(bytes.ends_with(b"PAR1"));
 }
 
 #[test]
@@ -1325,6 +1732,447 @@ fn test_redact_output_database_keeps_input_unchanged() {
         )
         .unwrap();
     assert_eq!(accept, "application/json");
+}
+
+#[test]
+fn test_redact_output_physically_removes_superseded_secrets() {
+    let tmp = TempDir::new().unwrap();
+    let har_path = tmp.path().join("sensitive.har");
+    let db_path = tmp.path().join("source.db");
+    let out_path = tmp.path().join("redacted.db");
+    let header_secret = format!("Bearer {}", "UNIQUE_HEADER_SECRET_".repeat(256));
+    let body_secret = "UNIQUE_BODY_SECRET_".repeat(256);
+    let har = json!({
+        "log": {
+            "version": "1.2",
+            "creator": { "name": "test", "version": "1" },
+            "entries": [{
+                "startedDateTime": "2024-01-01T00:00:00.000Z",
+                "time": 1,
+                "request": {
+                    "method": "POST",
+                    "url": "https://example.test/submit",
+                    "httpVersion": "HTTP/1.1",
+                    "headers": [{ "name": "Authorization", "value": header_secret }],
+                    "cookies": [],
+                    "queryString": [],
+                    "postData": { "mimeType": "text/plain", "text": body_secret },
+                    "headersSize": -1,
+                    "bodySize": -1
+                },
+                "response": {
+                    "status": 200,
+                    "statusText": "OK",
+                    "httpVersion": "HTTP/1.1",
+                    "headers": [],
+                    "cookies": [],
+                    "content": { "size": 0, "mimeType": "text/plain", "text": "" },
+                    "redirectURL": "",
+                    "headersSize": -1,
+                    "bodySize": 0
+                },
+                "cache": {},
+                "timings": { "send": 0, "wait": 1, "receive": 0 }
+            }]
+        }
+    });
+    fs::write(&har_path, serde_json::to_vec(&har).unwrap()).unwrap();
+
+    harlite()
+        .args(["import", "--bodies", "-o"])
+        .arg(&db_path)
+        .arg(&har_path)
+        .assert()
+        .success();
+    harlite()
+        .args(["redact", "--body-regex", "UNIQUE_BODY_SECRET_", "--output"])
+        .arg(&out_path)
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let conn = rusqlite::Connection::open(&out_path).unwrap();
+    let old_blob_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM blobs WHERE CAST(content AS TEXT) LIKE '%UNIQUE_BODY_SECRET_%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(old_blob_count, 0);
+    drop(conn);
+
+    let raw = fs::read(&out_path).unwrap();
+    assert!(!raw
+        .windows(b"UNIQUE_HEADER_SECRET_".len())
+        .any(|window| window == b"UNIQUE_HEADER_SECRET_"));
+    assert!(!raw
+        .windows(b"UNIQUE_BODY_SECRET_".len())
+        .any(|window| window == b"UNIQUE_BODY_SECRET_"));
+}
+
+#[test]
+fn test_redact_ignores_untrusted_external_blob_paths() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("source.db");
+    let out_path = tmp.path().join("redacted.db");
+    let protected_path = tmp.path().join("private.txt");
+    fs::write(&protected_path, b"UNTRUSTED_EXTERNAL_SECRET").unwrap();
+
+    harlite()
+        .args(["import", "tests/fixtures/redact.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute(
+        "INSERT INTO blobs(hash, content, size, mime_type, external_path) VALUES('attacker', X'', 25, 'text/plain', ?1)",
+        [protected_path.to_string_lossy().as_ref()],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE entries SET request_body_hash='attacker', request_body_size=25 WHERE id=(SELECT id FROM entries LIMIT 1)",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    harlite()
+        .args([
+            "redact",
+            "--no-defaults",
+            "--body-regex",
+            "UNTRUSTED_EXTERNAL_SECRET",
+            "--output",
+        ])
+        .arg(&out_path)
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let conn = rusqlite::Connection::open(&out_path).unwrap();
+    let hash: String = conn
+        .query_row("SELECT request_body_hash FROM entries LIMIT 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let content: Vec<u8> = conn
+        .query_row("SELECT content FROM blobs WHERE hash='attacker'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(hash, "attacker");
+    assert!(content.is_empty());
+}
+
+#[test]
+fn test_pii_redaction_physically_removes_superseded_body() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("source.db");
+    let out_path = tmp.path().join("redacted.db");
+    let secret = "physical-secret@example.com";
+    fs::write(&out_path, b"previous output").unwrap();
+
+    harlite()
+        .args(["import", "tests/fixtures/redact.har", "--bodies", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute(
+        "UPDATE blobs SET content=?1, size=?2 WHERE hash=(SELECT response_body_hash FROM entries LIMIT 1)",
+        rusqlite::params![secret.as_bytes(), secret.len() as i64],
+    )
+    .unwrap();
+    drop(conn);
+
+    harlite()
+        .args(["pii", "--redact", "--format", "json", "--force", "--output"])
+        .arg(&out_path)
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("email"));
+
+    let conn = rusqlite::Connection::open(&out_path).unwrap();
+    let old_blob_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM blobs WHERE CAST(content AS TEXT) LIKE '%physical-secret@example.com%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(old_blob_count, 0);
+    drop(conn);
+    let raw = fs::read(&out_path).unwrap();
+    assert!(!raw.windows(secret.len()).any(|window| window == secret.as_bytes()));
+}
+
+#[test]
+fn test_pii_redaction_rolls_back_every_entry_on_failure() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("source.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "--bodies", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let original_hashes: Vec<String> = conn
+        .prepare("SELECT response_body_hash FROM entries ORDER BY id")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect();
+    assert_eq!(original_hashes.len(), 2);
+    conn.execute(
+        "UPDATE blobs SET content=?1, size=?2 WHERE hash=?3",
+        rusqlite::params![
+            b"first@example.com".as_slice(),
+            "first@example.com".len() as i64,
+            original_hashes[0]
+        ],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE blobs SET content=?1, size=?2 WHERE hash=?3",
+        rusqlite::params![
+            b"second@example.com".as_slice(),
+            "second@example.com".len() as i64,
+            original_hashes[1]
+        ],
+    )
+    .unwrap();
+    let blobs_before: i64 = conn
+        .query_row("SELECT COUNT(*) FROM blobs", [], |row| row.get(0))
+        .unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_second_pii_update BEFORE UPDATE ON entries WHEN OLD.id=2 BEGIN SELECT RAISE(ABORT, 'blocked'); END;",
+    )
+    .unwrap();
+    drop(conn);
+
+    harlite()
+        .args(["pii", "--redact", "--format", "json"])
+        .arg(&db_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("blocked"));
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let hashes_after: Vec<String> = conn
+        .prepare("SELECT response_body_hash FROM entries ORDER BY id")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect();
+    let blobs_after: i64 = conn
+        .query_row("SELECT COUNT(*) FROM blobs", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(hashes_after, original_hashes);
+    assert_eq!(blobs_after, blobs_before);
+}
+
+#[test]
+fn test_pii_redaction_rolls_back_when_orphan_cleanup_fails() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("source.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "--bodies", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let original_hash: String = conn
+        .query_row(
+            "SELECT response_body_hash FROM entries ORDER BY id LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    conn.execute(
+        "UPDATE blobs SET content=?1, size=?2 WHERE hash=?3",
+        rusqlite::params![
+            b"cleanup@example.com".as_slice(),
+            "cleanup@example.com".len() as i64,
+            original_hash.as_str()
+        ],
+    )
+    .unwrap();
+    let blobs_before: i64 = conn
+        .query_row("SELECT COUNT(*) FROM blobs", [], |row| row.get(0))
+        .unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_pii_blob_cleanup BEFORE DELETE ON blobs BEGIN SELECT RAISE(ABORT, 'cleanup blocked'); END;",
+    )
+    .unwrap();
+    drop(conn);
+
+    harlite()
+        .args(["pii", "--redact", "--format", "json"])
+        .arg(&db_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cleanup blocked"));
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let hash_after: String = conn
+        .query_row(
+            "SELECT response_body_hash FROM entries ORDER BY id LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let blobs_after: i64 = conn
+        .query_row("SELECT COUNT(*) FROM blobs", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(hash_after, original_hash);
+    assert_eq!(blobs_after, blobs_before);
+}
+
+#[test]
+fn test_redact_rolls_back_when_orphan_cleanup_fails() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("source.db");
+
+    harlite()
+        .args(["import", "tests/fixtures/redact.har", "--bodies", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let original: (String, String) = conn
+        .query_row(
+            "SELECT request_headers, response_body_hash FROM entries LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let blobs_before: i64 = conn
+        .query_row("SELECT COUNT(*) FROM blobs", [], |row| row.get(0))
+        .unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_redact_blob_cleanup BEFORE DELETE ON blobs BEGIN SELECT RAISE(ABORT, 'cleanup blocked'); END;",
+    )
+    .unwrap();
+    drop(conn);
+
+    harlite()
+        .args(["redact", "--body-regex", "ok"])
+        .arg(&db_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cleanup blocked"));
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let after: (String, String) = conn
+        .query_row(
+            "SELECT request_headers, response_body_hash FROM entries LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let blobs_after: i64 = conn
+        .query_row("SELECT COUNT(*) FROM blobs", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(after, original);
+    assert_eq!(blobs_after, blobs_before);
+}
+
+#[test]
+fn test_redact_failures_do_not_publish_output_database() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("source.db");
+    let invalid_output = tmp.path().join("invalid-pattern.db");
+    let runtime_output = tmp.path().join("runtime-failure.db");
+    let previous_output = b"previous output";
+
+    harlite()
+        .args(["import", "tests/fixtures/redact.har", "--bodies", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    fs::write(&invalid_output, previous_output).unwrap();
+    harlite()
+        .args(["redact", "--body-regex", "[", "--force", "--output"])
+        .arg(&invalid_output)
+        .arg(&db_path)
+        .assert()
+        .failure();
+    assert_eq!(fs::read(&invalid_output).unwrap(), previous_output);
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_redact_update BEFORE UPDATE ON entries BEGIN SELECT RAISE(ABORT, 'blocked'); END;",
+    )
+    .unwrap();
+    drop(conn);
+    fs::write(&runtime_output, previous_output).unwrap();
+    harlite()
+        .args(["redact", "--force", "--output"])
+        .arg(&runtime_output)
+        .arg(&db_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("blocked"));
+    assert_eq!(fs::read(&runtime_output).unwrap(), previous_output);
+    assert!(!fs::read_dir(tmp.path()).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("harlite-stage")
+    }));
+}
+
+#[test]
+fn test_pii_failure_does_not_publish_output_database() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("source.db");
+    let out_path = tmp.path().join("redacted.db");
+    let previous_output = b"previous output";
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "--bodies", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute(
+        "UPDATE blobs SET content=?1, size=?2 WHERE hash=(SELECT response_body_hash FROM entries ORDER BY id LIMIT 1)",
+        rusqlite::params![b"secret@example.com".as_slice(), "secret@example.com".len() as i64],
+    )
+    .unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_pii_update BEFORE UPDATE ON entries BEGIN SELECT RAISE(ABORT, 'blocked'); END;",
+    )
+    .unwrap();
+    drop(conn);
+    fs::write(&out_path, previous_output).unwrap();
+
+    harlite()
+        .args(["pii", "--redact", "--format", "json", "--force", "--output"])
+        .arg(&out_path)
+        .arg(&db_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("blocked"));
+    assert_eq!(fs::read(&out_path).unwrap(), previous_output);
+    assert!(!fs::read_dir(tmp.path()).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("harlite-stage")
+    }));
 }
 
 #[test]

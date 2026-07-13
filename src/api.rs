@@ -5,10 +5,11 @@
 
 pub use crate::commands::{
     run_analyze, run_diff, run_export, run_export_data, run_fts_rebuild, run_import, run_imports,
-    run_info, run_merge, run_openapi, run_pii, run_prune, run_query, run_redact, run_report,
+    run_info, run_merge, run_openapi, run_pii, run_pii_with_external_paths, run_prune,
+    run_prune_with_options, run_query, run_redact, run_redact_with_external_paths, run_report,
     run_schema, run_search, run_stats, run_waterfall, AnalyzeOptions, DataExportFormat,
     DedupStrategy, DiffOptions, EntryFilterOptions, ExportDataOptions, ExportOptions, FtsTokenizer,
-    ImportOptions, InfoOptions, NameMatchMode, OpenApiOptions, OutputFormat, PiiOptions,
+    ImportOptions, InfoOptions, NameMatchMode, OpenApiOptions, OutputFormat, PiiOptions, PruneOptions,
     QueryOptions, RedactOptions, ReportOptions, StatsOptions, WaterfallFormat, WaterfallGroupBy,
     WaterfallOptions,
 };
@@ -34,9 +35,10 @@ pub use crate::db::{
 pub use crate::error::{HarliteError, Result};
 pub use crate::graphql::{extract_graphql_info, GraphQLInfo};
 pub use crate::har::{
-    parse_har_file, parse_har_file_async, Browser, Content, Cookie, Creator, Entry, Extensions,
-    Har, Header, Log, Page, PageTimings, PostData, PostParam, QueryParam, Request, Response,
-    Timings,
+    parse_har_file, parse_har_file_async, parse_har_file_async_with_limit,
+    parse_har_file_with_limit, Browser, Content, Cookie, Creator, Entry, Extensions, Har, Header,
+    Log, Page, PageTimings, PostData, PostParam, QueryParam, Request, Response, Timings,
+    DEFAULT_MAX_HAR_INPUT_BYTES,
 };
 pub use crate::plugins::{
     resolve_plugins, ExporterOutcome, PluginConfig, PluginContext, PluginKind, PluginPhase,

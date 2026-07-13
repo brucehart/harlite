@@ -14,7 +14,7 @@ use crate::db::{ensure_schema_upgrades, load_blobs_by_hashes, load_entries, Blob
 use crate::error::{HarliteError, Result};
 use crate::har::{parse_har_file, Entry as HarEntry, Header, PostData};
 
-use super::OutputFormat;
+use super::{csv::write_csv_field, OutputFormat};
 
 pub struct ReplayOptions {
     pub format: OutputFormat,
@@ -219,7 +219,9 @@ fn worker_loop(
 }
 
 fn build_agent(timeout: Option<Duration>) -> ureq::Agent {
-    let mut builder = ureq::AgentBuilder::new();
+    // Captured requests may contain API keys or other non-standard sensitive
+    // headers. Never forward them through an automatic cross-origin redirect.
+    let mut builder = ureq::AgentBuilder::new().redirects(0);
     if let Some(timeout) = timeout {
         builder = builder.timeout_connect(timeout).timeout_read(timeout);
     }
@@ -954,25 +956,6 @@ where
     Ok(())
 }
 
-fn write_csv_field(out: &mut impl Write, field: &str) -> Result<()> {
-    let needs_quotes = field.contains([',', '"', '\n', '\r']);
-    if !needs_quotes {
-        out.write_all(field.as_bytes())?;
-        return Ok(());
-    }
-
-    out.write_all(b"\"")?;
-    for b in field.as_bytes() {
-        if *b == b'"' {
-            out.write_all(b"\"\"")?;
-        } else {
-            out.write_all(&[*b])?;
-        }
-    }
-    out.write_all(b"\"")?;
-    Ok(())
-}
-
 fn write_table_row<'a, I>(out: &mut impl Write, fields: I, widths: &[usize]) -> Result<()>
 where
     I: IntoIterator<Item = &'a str>,
@@ -1026,4 +1009,45 @@ fn truncate(s: &str, max: usize) -> String {
     let mut out = s[..end].to_string();
     out.push_str("...");
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_agent;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    #[test]
+    fn replay_agent_does_not_follow_redirects() {
+        let redirect_target = TcpListener::bind("127.0.0.1:0").unwrap();
+        redirect_target.set_nonblocking(true).unwrap();
+        let target_addr = redirect_target.local_addr().unwrap();
+
+        let redirect_source = TcpListener::bind("127.0.0.1:0").unwrap();
+        let source_addr = redirect_source.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = redirect_source.accept().unwrap();
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request);
+            write!(
+                stream,
+                "HTTP/1.1 302 Found\r\nLocation: http://{target_addr}/secret\r\nContent-Length: 0\r\n\r\n"
+            )
+            .unwrap();
+        });
+
+        let response = build_agent(None)
+            .get(&format!("http://{source_addr}/start"))
+            .set("X-Api-Key", "secret")
+            .call();
+        let status = match response {
+            Ok(response) => response.status(),
+            Err(ureq::Error::Status(status, _)) => status,
+            Err(err) => panic!("unexpected replay error: {err}"),
+        };
+        assert_eq!(status, 302);
+        server.join().unwrap();
+        assert!(redirect_target.accept().is_err());
+    }
 }

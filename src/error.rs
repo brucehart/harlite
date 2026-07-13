@@ -15,6 +15,11 @@ pub enum HarliteError {
     #[error("Database error: {0}")]
     Database(#[from] rusqlite::Error),
 
+    /// Parquet encoding error (only available with the parquet feature).
+    #[cfg(feature = "parquet")]
+    #[error("Parquet error: {0}")]
+    Parquet(#[from] parquet::errors::ParquetError),
+
     /// Validation error for HAR data missing required fields.
     #[error("Invalid HAR file: {0}")]
     InvalidHar(String),

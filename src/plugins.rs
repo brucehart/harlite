@@ -215,13 +215,12 @@ pub fn resolve_plugins(
     let disabled_set: HashSet<&str> = disabled.iter().map(|s| s.as_str()).collect();
     let mut resolved = Vec::new();
     for plugin in configs {
-        let mut is_enabled = plugin.enabled.unwrap_or(true);
-        if disabled_set.contains(plugin.name.as_str()) {
-            is_enabled = false;
-        }
-        if enabled_set.contains(plugin.name.as_str()) {
-            is_enabled = true;
-        }
+        // Plugin commands may come from project-local configuration. Requiring
+        // an explicit CLI enable prevents merely entering a directory from
+        // authorizing arbitrary command execution.
+        let is_enabled = enabled_set.contains(plugin.name.as_str())
+            && plugin.enabled != Some(false)
+            && !disabled_set.contains(plugin.name.as_str());
         if is_enabled {
             resolved.push(plugin.clone());
         }
@@ -342,4 +341,40 @@ fn run_plugin<T: Serialize, R: for<'de> Deserialize<'de>>(
             plugin.name, err
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{resolve_plugins, PluginConfig, PluginKind};
+
+    fn config(enabled: Option<bool>) -> PluginConfig {
+        PluginConfig {
+            name: "test".to_string(),
+            kind: PluginKind::Filter,
+            command: "ignored".to_string(),
+            args: Vec::new(),
+            enabled,
+            phase: None,
+        }
+    }
+
+    #[test]
+    fn config_never_enables_command_execution_implicitly() {
+        assert!(resolve_plugins(&[config(None)], &[], &[])
+            .unwrap()
+            .is_empty());
+        assert!(resolve_plugins(&[config(Some(true))], &[], &[])
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn explicit_cli_enable_is_required_and_config_can_disable() {
+        assert!(!resolve_plugins(&[config(None)], &["test".to_string()], &[])
+            .unwrap()
+            .is_empty());
+        assert!(resolve_plugins(&[config(Some(false))], &["test".to_string()], &[])
+            .unwrap()
+            .is_empty());
+    }
 }

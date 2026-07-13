@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use regex::{NoExpand, Regex};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -9,8 +9,12 @@ use url::Url;
 use crate::db::store_blob;
 use crate::error::{HarliteError, Result};
 
+use super::csv::write_csv_field;
 use super::query::OutputFormat;
-use super::util::{canonicalize_path_for_compare, resolve_database};
+use super::util::{
+    canonicalize_path_for_compare, delete_orphaned_blobs, finalize_sensitive_write,
+    prepare_sensitive_write, resolve_database, ExternalPathPolicy, StagedDatabase,
+};
 
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -101,6 +105,16 @@ struct PiiRedactedBlob {
 }
 
 pub fn run_pii(database: Option<PathBuf>, options: &PiiOptions) -> Result<()> {
+    run_pii_with_external_paths(database, options, false, None)
+}
+
+/// Scan/redact PII with an explicit policy for externally stored bodies.
+pub fn run_pii_with_external_paths(
+    database: Option<PathBuf>,
+    options: &PiiOptions,
+    allow_external_paths: bool,
+    external_path_root: Option<&Path>,
+) -> Result<()> {
     if !options.redact {
         if options.output.is_some() {
             return Err(HarliteError::InvalidArgs(
@@ -120,8 +134,21 @@ pub fn run_pii(database: Option<PathBuf>, options: &PiiOptions) -> Result<()> {
     }
 
     let input_db = resolve_database(database)?;
+    let external_paths = ExternalPathPolicy::new(
+        &input_db,
+        allow_external_paths,
+        external_path_root,
+    )?;
+
+    let matchers = build_matchers(options)?;
+    if matchers.is_empty() {
+        return Err(HarliteError::InvalidArgs(
+            "No PII patterns provided".to_string(),
+        ));
+    }
+
     let write = options.redact && !options.dry_run;
-    let target_db = if write {
+    let staged_output = if write {
         if let Some(out) = &options.output {
             let input_cmp = canonicalize_path_for_compare(&input_db)?;
             let out_cmp = canonicalize_path_for_compare(out)?;
@@ -136,34 +163,32 @@ pub fn run_pii(database: Option<PathBuf>, options: &PiiOptions) -> Result<()> {
                     out.display()
                 )));
             }
-            if out.exists() {
-                std::fs::remove_file(out)?;
-            }
-            std::fs::copy(&input_db, out)?;
-            out.clone()
+            Some(StagedDatabase::copy_from(&input_db, out, options.force)?)
         } else {
-            input_db.clone()
+            None
         }
     } else {
-        input_db.clone()
+        None
     };
-
-    let matchers = build_matchers(options)?;
-    if matchers.is_empty() {
-        return Err(HarliteError::InvalidArgs(
-            "No PII patterns provided".to_string(),
-        ));
-    }
+    let target_db = staged_output
+        .as_ref()
+        .map(|staged| staged.path().to_path_buf())
+        .unwrap_or_else(|| input_db.clone());
 
     let conn = if write {
         let conn = Connection::open(&target_db)?;
-        conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+        prepare_sensitive_write(&conn)?;
         conn
     } else {
         super::query::open_readonly_connection(&target_db)?
     };
 
-    let mut stmt = conn.prepare(
+    if write {
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+    }
+    let work_conn = &conn;
+
+    let mut stmt = work_conn.prepare(
         "SELECT id, url, query_string, request_body_hash, request_body_size, response_body_hash, response_body_size, response_body_hash_raw, response_body_size_raw FROM entries ORDER BY id",
     )?;
 
@@ -181,11 +206,11 @@ pub fn run_pii(database: Option<PathBuf>, options: &PiiOptions) -> Result<()> {
         ))
     })?;
 
-    let mut update = conn.prepare(
+    let mut update = work_conn.prepare(
         "UPDATE entries SET url=?1, query_string=?2, request_body_hash=?3, request_body_size=?4, response_body_hash=?5, response_body_size=?6, response_body_hash_raw=?7, response_body_size_raw=?8 WHERE id=?9",
     )?;
 
-    let has_fts: bool = conn
+    let has_fts: bool = work_conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='response_body_fts'",
             [],
@@ -245,7 +270,7 @@ pub fn run_pii(database: Option<PathBuf>, options: &PiiOptions) -> Result<()> {
         }
 
         if let Some(hash) = req_body_hash.as_deref() {
-            if let Some(text) = load_blob_text(&conn, hash, &mut text_cache)? {
+            if let Some(text) = load_blob_text(work_conn, hash, &mut text_cache, &external_paths)? {
                 append_findings(
                     &mut findings,
                     entry_id,
@@ -256,12 +281,13 @@ pub fn run_pii(database: Option<PathBuf>, options: &PiiOptions) -> Result<()> {
 
                 if options.redact {
                     if let Some(redacted) = redact_blob_cached(
-                        &conn,
+                        work_conn,
                         hash,
                         &matchers,
                         &options.token,
                         write,
                         &mut redacted_cache,
+                        &external_paths,
                     )? {
                         new_req_body_hash = Some(redacted.new_hash);
                         new_req_body_size = Some(redacted.new_size);
@@ -272,7 +298,7 @@ pub fn run_pii(database: Option<PathBuf>, options: &PiiOptions) -> Result<()> {
         }
 
         if let Some(hash) = resp_body_hash.as_deref() {
-            if let Some(text) = load_blob_text(&conn, hash, &mut text_cache)? {
+            if let Some(text) = load_blob_text(work_conn, hash, &mut text_cache, &external_paths)? {
                 append_findings(
                     &mut findings,
                     entry_id,
@@ -283,12 +309,13 @@ pub fn run_pii(database: Option<PathBuf>, options: &PiiOptions) -> Result<()> {
 
                 if options.redact {
                     if let Some(redacted) = redact_blob_cached(
-                        &conn,
+                        work_conn,
                         hash,
                         &matchers,
                         &options.token,
                         write,
                         &mut redacted_cache,
+                        &external_paths,
                     )? {
                         new_resp_body_hash = Some(redacted.new_hash.clone());
                         new_resp_body_size = Some(redacted.new_size);
@@ -299,7 +326,7 @@ pub fn run_pii(database: Option<PathBuf>, options: &PiiOptions) -> Result<()> {
                         if write {
                             changed_response_hashes.insert(hash.to_string());
                             if has_fts {
-                                let has_old_fts = conn
+                                let has_old_fts = work_conn
                                     .query_row(
                                         "SELECT 1 FROM response_body_fts WHERE hash = ?1 LIMIT 1",
                                         params![hash],
@@ -308,7 +335,11 @@ pub fn run_pii(database: Option<PathBuf>, options: &PiiOptions) -> Result<()> {
                                     .optional()?
                                     .is_some();
                                 if has_old_fts {
-                                    upsert_response_fts(&conn, &redacted.new_hash, &redacted.text)?;
+                                    upsert_response_fts(
+                                        work_conn,
+                                        &redacted.new_hash,
+                                        &redacted.text,
+                                    )?;
                                 }
                             }
                         }
@@ -334,14 +365,27 @@ pub fn run_pii(database: Option<PathBuf>, options: &PiiOptions) -> Result<()> {
 
     if write && has_fts && !changed_response_hashes.is_empty() {
         let mut check_stmt =
-            conn.prepare("SELECT COUNT(*) FROM entries WHERE response_body_hash = ?1")?;
-        let mut delete_stmt = conn.prepare("DELETE FROM response_body_fts WHERE hash = ?1")?;
+            work_conn.prepare("SELECT COUNT(*) FROM entries WHERE response_body_hash = ?1")?;
+        let mut delete_stmt = work_conn.prepare("DELETE FROM response_body_fts WHERE hash = ?1")?;
         for hash in changed_response_hashes {
             let count: i64 = check_stmt.query_row([hash.as_str()], |row| row.get(0))?;
             if count == 0 {
                 delete_stmt.execute([hash])?;
             }
         }
+    }
+
+    drop(update);
+    drop(stmt);
+    if write {
+        delete_orphaned_blobs(work_conn)?;
+        conn.execute_batch("COMMIT")?;
+        finalize_sensitive_write(&conn)?;
+    }
+    drop(conn);
+
+    if let Some(staged) = staged_output {
+        staged.publish()?;
     }
 
     match options.format {
@@ -489,12 +533,13 @@ fn load_blob_text(
     conn: &Connection,
     hash: &str,
     cache: &mut HashMap<String, Option<String>>,
+    external_paths: &ExternalPathPolicy,
 ) -> Result<Option<String>> {
     if let Some(existing) = cache.get(hash) {
         return Ok(existing.clone());
     }
 
-    let Some((content, _mime_type)) = load_blob_for_pii(conn, hash)? else {
+    let Some((content, _mime_type)) = load_blob_for_pii(conn, hash, external_paths)? else {
         cache.insert(hash.to_string(), None);
         return Ok(None);
     };
@@ -511,7 +556,11 @@ fn load_blob_text(
     Ok(Some(text))
 }
 
-fn load_blob_for_pii(conn: &Connection, hash: &str) -> Result<Option<(Vec<u8>, Option<String>)>> {
+fn load_blob_for_pii(
+    conn: &Connection,
+    hash: &str,
+    external_paths: &ExternalPathPolicy,
+) -> Result<Option<(Vec<u8>, Option<String>)>> {
     let row = conn
         .query_row(
             "SELECT content, size, mime_type, external_path FROM blobs WHERE hash = ?1",
@@ -533,7 +582,8 @@ fn load_blob_for_pii(conn: &Connection, hash: &str) -> Result<Option<(Vec<u8>, O
 
     if content.is_empty() && size > 0 {
         if let Some(path) = external_path {
-            if let Ok(bytes) = std::fs::read(path) {
+            if let Some(path) = external_paths.resolve_file(&path) {
+                let bytes = std::fs::read(path)?;
                 content = bytes;
             }
         }
@@ -553,12 +603,13 @@ fn redact_blob_cached(
     token: &str,
     write: bool,
     cache: &mut HashMap<String, Option<PiiRedactedBlob>>,
+    external_paths: &ExternalPathPolicy,
 ) -> Result<Option<PiiRedactedBlob>> {
     if let Some(existing) = cache.get(hash) {
         return Ok(existing.clone());
     }
 
-    let Some((content, mime_type)) = load_blob_for_pii(conn, hash)? else {
+    let Some((content, mime_type)) = load_blob_for_pii(conn, hash, external_paths)? else {
         cache.insert(hash.to_string(), None);
         return Ok(None);
     };
@@ -764,23 +815,6 @@ where
         write_csv_field(out, field)?;
     }
     out.write_all(b"\n")?;
-    Ok(())
-}
-
-fn write_csv_field(out: &mut impl Write, field: &str) -> Result<()> {
-    if field.contains(',') || field.contains('"') || field.contains('\n') {
-        out.write_all(b"\"")?;
-        for ch in field.chars() {
-            if ch == '"' {
-                out.write_all(b"\"\"")?;
-            } else {
-                out.write_all(ch.to_string().as_bytes())?;
-            }
-        }
-        out.write_all(b"\"")?;
-    } else {
-        out.write_all(field.as_bytes())?;
-    }
     Ok(())
 }
 

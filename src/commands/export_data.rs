@@ -9,6 +9,7 @@ use crate::db::{ensure_schema_upgrades, EntryRow};
 use crate::error::{HarliteError, Result};
 
 use super::entry_filter::{load_entries_with_filters, EntryFilterOptions};
+use super::csv::write_csv_field;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 #[clap(rename_all = "kebab-case")]
@@ -164,25 +165,6 @@ where
         write_csv_field(out, field)?;
     }
     out.write_all(b"\n")?;
-    Ok(())
-}
-
-fn write_csv_field(out: &mut impl Write, field: &str) -> Result<()> {
-    let needs_quotes = field.contains([',', '"', '\n', '\r']);
-    if !needs_quotes {
-        out.write_all(field.as_bytes())?;
-        return Ok(());
-    }
-
-    out.write_all(b"\"")?;
-    for b in field.as_bytes() {
-        if *b == b'"' {
-            out.write_all(b"\"\"")?;
-        } else {
-            out.write_all(&[*b])?;
-        }
-    }
-    out.write_all(b"\"")?;
     Ok(())
 }
 
@@ -389,7 +371,7 @@ fn write_parquet(path: &Path, entries: &[EntryRow]) -> Result<()> {
     use parquet::column::writer::ColumnWriter;
     use parquet::data_type::ByteArray;
     use parquet::file::properties::WriterProperties;
-    use parquet::file::writer::SerializedFileWriter;
+    use parquet::file::writer::{SerializedFileWriter, SerializedRowGroupWriter};
     use parquet::schema::types::Type;
     use std::sync::Arc;
 
@@ -397,196 +379,196 @@ fn write_parquet(path: &Path, entries: &[EntryRow]) -> Result<()> {
         .with_fields(vec![
             Type::primitive_type_builder("import_id", PhysicalType::INT64)
                 .with_repetition(Repetition::REQUIRED)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("page_id", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("started_at", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("time_ms", PhysicalType::DOUBLE)
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("blocked_ms", PhysicalType::DOUBLE)
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("dns_ms", PhysicalType::DOUBLE)
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("connect_ms", PhysicalType::DOUBLE)
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("send_ms", PhysicalType::DOUBLE)
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("wait_ms", PhysicalType::DOUBLE)
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("receive_ms", PhysicalType::DOUBLE)
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("ssl_ms", PhysicalType::DOUBLE)
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("method", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("url", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("host", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("path", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("query_string", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("http_version", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("request_headers", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("request_cookies", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("request_body_hash", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("request_body_size", PhysicalType::INT64)
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("status", PhysicalType::INT32)
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("status_text", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("response_headers", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("response_cookies", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("response_body_hash", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("response_body_size", PhysicalType::INT64)
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("response_body_hash_raw", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("response_body_size_raw", PhysicalType::INT64)
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("response_mime_type", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("is_redirect", PhysicalType::INT32)
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("server_ip", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("connection_id", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("request_id", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("parent_request_id", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("initiator_type", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("initiator_url", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("initiator_line", PhysicalType::INT64)
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("initiator_column", PhysicalType::INT64)
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("redirect_url", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("tls_version", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("tls_cipher_suite", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("tls_cert_subject", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("tls_cert_issuer", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("tls_cert_expiry", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("entry_hash", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("entry_extensions", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("request_extensions", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("response_extensions", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("content_extensions", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("timings_extensions", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
             Type::primitive_type_builder("post_data_extensions", PhysicalType::BYTE_ARRAY)
                 .with_logical_type(Some(parquet::basic::LogicalType::String))
                 .with_repetition(Repetition::OPTIONAL)
-                .build()?,
+                .build()?.into(),
         ])
         .build()?;
 
@@ -596,15 +578,18 @@ fn write_parquet(path: &Path, entries: &[EntryRow]) -> Result<()> {
 
     let mut row_group_writer = writer.next_row_group()?;
 
-    let mut write_string_col = |values: Vec<Option<String>>| -> Result<()> {
+    fn write_string_col<W: std::io::Write + Send>(
+        row_group_writer: &mut SerializedRowGroupWriter<'_, W>,
+        values: Vec<Option<String>>,
+    ) -> Result<()> {
         let def_levels: Vec<i16> = values.iter().map(|v| if v.is_some() { 1 } else { 0 }).collect();
         let data: Vec<ByteArray> = values
             .into_iter()
             .filter_map(|v| v.map(|s| ByteArray::from(s.into_bytes())))
             .collect();
-        if let Some(col_writer) = row_group_writer.next_column()? {
-            match col_writer {
-                ColumnWriter::ByteArrayColumnWriter(mut w) => {
+        if let Some(mut col_writer) = row_group_writer.next_column()? {
+            match col_writer.untyped() {
+                ColumnWriter::ByteArrayColumnWriter(w) => {
                     w.write_batch(&data, Some(&def_levels), None)?;
                 }
                 _ => {
@@ -613,16 +598,20 @@ fn write_parquet(path: &Path, entries: &[EntryRow]) -> Result<()> {
                     ))
                 }
             }
+            col_writer.close()?;
         }
         Ok(())
-    };
+    }
 
-    let mut write_i64_col = |values: Vec<Option<i64>>| -> Result<()> {
+    fn write_i64_col<W: std::io::Write + Send>(
+        row_group_writer: &mut SerializedRowGroupWriter<'_, W>,
+        values: Vec<Option<i64>>,
+    ) -> Result<()> {
         let def_levels: Vec<i16> = values.iter().map(|v| if v.is_some() { 1 } else { 0 }).collect();
         let data: Vec<i64> = values.into_iter().filter_map(|v| v).collect();
-        if let Some(col_writer) = row_group_writer.next_column()? {
-            match col_writer {
-                ColumnWriter::Int64ColumnWriter(mut w) => {
+        if let Some(mut col_writer) = row_group_writer.next_column()? {
+            match col_writer.untyped() {
+                ColumnWriter::Int64ColumnWriter(w) => {
                     w.write_batch(&data, Some(&def_levels), None)?;
                 }
                 _ => {
@@ -631,16 +620,20 @@ fn write_parquet(path: &Path, entries: &[EntryRow]) -> Result<()> {
                     ))
                 }
             }
+            col_writer.close()?;
         }
         Ok(())
-    };
+    }
 
-    let mut write_i32_col = |values: Vec<Option<i32>>| -> Result<()> {
+    fn write_i32_col<W: std::io::Write + Send>(
+        row_group_writer: &mut SerializedRowGroupWriter<'_, W>,
+        values: Vec<Option<i32>>,
+    ) -> Result<()> {
         let def_levels: Vec<i16> = values.iter().map(|v| if v.is_some() { 1 } else { 0 }).collect();
         let data: Vec<i32> = values.into_iter().filter_map(|v| v).collect();
-        if let Some(col_writer) = row_group_writer.next_column()? {
-            match col_writer {
-                ColumnWriter::Int32ColumnWriter(mut w) => {
+        if let Some(mut col_writer) = row_group_writer.next_column()? {
+            match col_writer.untyped() {
+                ColumnWriter::Int32ColumnWriter(w) => {
                     w.write_batch(&data, Some(&def_levels), None)?;
                 }
                 _ => {
@@ -649,16 +642,20 @@ fn write_parquet(path: &Path, entries: &[EntryRow]) -> Result<()> {
                     ))
                 }
             }
+            col_writer.close()?;
         }
         Ok(())
-    };
+    }
 
-    let mut write_f64_col = |values: Vec<Option<f64>>| -> Result<()> {
+    fn write_f64_col<W: std::io::Write + Send>(
+        row_group_writer: &mut SerializedRowGroupWriter<'_, W>,
+        values: Vec<Option<f64>>,
+    ) -> Result<()> {
         let def_levels: Vec<i16> = values.iter().map(|v| if v.is_some() { 1 } else { 0 }).collect();
         let data: Vec<f64> = values.into_iter().filter_map(|v| v).collect();
-        if let Some(col_writer) = row_group_writer.next_column()? {
-            match col_writer {
-                ColumnWriter::DoubleColumnWriter(mut w) => {
+        if let Some(mut col_writer) = row_group_writer.next_column()? {
+            match col_writer.untyped() {
+                ColumnWriter::DoubleColumnWriter(w) => {
                     w.write_batch(&data, Some(&def_levels), None)?;
                 }
                 _ => {
@@ -667,15 +664,16 @@ fn write_parquet(path: &Path, entries: &[EntryRow]) -> Result<()> {
                     ))
                 }
             }
+            col_writer.close()?;
         }
         Ok(())
-    };
+    }
 
     let import_ids = entries.iter().map(|e| e.import_id).collect::<Vec<_>>();
     let import_def = vec![1; import_ids.len()];
-    if let Some(col_writer) = row_group_writer.next_column()? {
-        match col_writer {
-            ColumnWriter::Int64ColumnWriter(mut w) => {
+    if let Some(mut col_writer) = row_group_writer.next_column()? {
+        match col_writer.untyped() {
+            ColumnWriter::Int64ColumnWriter(w) => {
                 w.write_batch(&import_ids, Some(&import_def), None)?;
             }
             _ => {
@@ -684,59 +682,60 @@ fn write_parquet(path: &Path, entries: &[EntryRow]) -> Result<()> {
                 ))
             }
         }
+        col_writer.close()?;
     }
 
-    write_string_col(entries.iter().map(|e| e.page_id.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.started_at.clone()).collect())?;
-    write_f64_col(entries.iter().map(|e| e.time_ms).collect())?;
-    write_f64_col(entries.iter().map(|e| e.blocked_ms).collect())?;
-    write_f64_col(entries.iter().map(|e| e.dns_ms).collect())?;
-    write_f64_col(entries.iter().map(|e| e.connect_ms).collect())?;
-    write_f64_col(entries.iter().map(|e| e.send_ms).collect())?;
-    write_f64_col(entries.iter().map(|e| e.wait_ms).collect())?;
-    write_f64_col(entries.iter().map(|e| e.receive_ms).collect())?;
-    write_f64_col(entries.iter().map(|e| e.ssl_ms).collect())?;
-    write_string_col(entries.iter().map(|e| e.method.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.url.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.host.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.path.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.query_string.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.http_version.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.request_headers.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.request_cookies.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.request_body_hash.clone()).collect())?;
-    write_i64_col(entries.iter().map(|e| e.request_body_size).collect())?;
-    write_i32_col(entries.iter().map(|e| e.status).collect())?;
-    write_string_col(entries.iter().map(|e| e.status_text.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.response_headers.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.response_cookies.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.response_body_hash.clone()).collect())?;
-    write_i64_col(entries.iter().map(|e| e.response_body_size).collect())?;
-    write_string_col(entries.iter().map(|e| e.response_body_hash_raw.clone()).collect())?;
-    write_i64_col(entries.iter().map(|e| e.response_body_size_raw).collect())?;
-    write_string_col(entries.iter().map(|e| e.response_mime_type.clone()).collect())?;
-    write_i32_col(entries.iter().map(|e| e.is_redirect).collect())?;
-    write_string_col(entries.iter().map(|e| e.server_ip.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.connection_id.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.request_id.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.parent_request_id.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.initiator_type.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.initiator_url.clone()).collect())?;
-    write_i64_col(entries.iter().map(|e| e.initiator_line).collect())?;
-    write_i64_col(entries.iter().map(|e| e.initiator_column).collect())?;
-    write_string_col(entries.iter().map(|e| e.redirect_url.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.tls_version.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.tls_cipher_suite.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.tls_cert_subject.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.tls_cert_issuer.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.tls_cert_expiry.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.entry_hash.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.entry_extensions.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.request_extensions.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.response_extensions.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.content_extensions.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.timings_extensions.clone()).collect())?;
-    write_string_col(entries.iter().map(|e| e.post_data_extensions.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.page_id.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.started_at.clone()).collect())?;
+    write_f64_col(&mut row_group_writer, entries.iter().map(|e| e.time_ms).collect())?;
+    write_f64_col(&mut row_group_writer, entries.iter().map(|e| e.blocked_ms).collect())?;
+    write_f64_col(&mut row_group_writer, entries.iter().map(|e| e.dns_ms).collect())?;
+    write_f64_col(&mut row_group_writer, entries.iter().map(|e| e.connect_ms).collect())?;
+    write_f64_col(&mut row_group_writer, entries.iter().map(|e| e.send_ms).collect())?;
+    write_f64_col(&mut row_group_writer, entries.iter().map(|e| e.wait_ms).collect())?;
+    write_f64_col(&mut row_group_writer, entries.iter().map(|e| e.receive_ms).collect())?;
+    write_f64_col(&mut row_group_writer, entries.iter().map(|e| e.ssl_ms).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.method.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.url.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.host.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.path.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.query_string.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.http_version.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.request_headers.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.request_cookies.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.request_body_hash.clone()).collect())?;
+    write_i64_col(&mut row_group_writer, entries.iter().map(|e| e.request_body_size).collect())?;
+    write_i32_col(&mut row_group_writer, entries.iter().map(|e| e.status).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.status_text.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.response_headers.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.response_cookies.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.response_body_hash.clone()).collect())?;
+    write_i64_col(&mut row_group_writer, entries.iter().map(|e| e.response_body_size).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.response_body_hash_raw.clone()).collect())?;
+    write_i64_col(&mut row_group_writer, entries.iter().map(|e| e.response_body_size_raw).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.response_mime_type.clone()).collect())?;
+    write_i32_col(&mut row_group_writer, entries.iter().map(|e| e.is_redirect).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.server_ip.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.connection_id.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.request_id.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.parent_request_id.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.initiator_type.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.initiator_url.clone()).collect())?;
+    write_i64_col(&mut row_group_writer, entries.iter().map(|e| e.initiator_line).collect())?;
+    write_i64_col(&mut row_group_writer, entries.iter().map(|e| e.initiator_column).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.redirect_url.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.tls_version.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.tls_cipher_suite.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.tls_cert_subject.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.tls_cert_issuer.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.tls_cert_expiry.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.entry_hash.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.entry_extensions.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.request_extensions.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.response_extensions.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.content_extensions.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.timings_extensions.clone()).collect())?;
+    write_string_col(&mut row_group_writer, entries.iter().map(|e| e.post_data_extensions.clone()).collect())?;
 
     row_group_writer.close()?;
     writer.close()?;
