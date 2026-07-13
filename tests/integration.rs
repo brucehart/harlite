@@ -146,6 +146,14 @@ fn test_imports_list_and_prune() {
     let import_id: i64 = conn
         .query_row("SELECT id FROM imports LIMIT 1", [], |r| r.get(0))
         .unwrap();
+    let graphql_fields_inserted = conn
+        .execute(
+            "INSERT INTO graphql_fields (entry_id, field) SELECT id, 'viewer' FROM entries WHERE import_id = ?1 LIMIT 1",
+            [import_id],
+        )
+        .unwrap();
+    assert_eq!(graphql_fields_inserted, 1);
+    drop(conn);
 
     harlite()
         .args(["prune", "--import-id", &import_id.to_string()])
@@ -166,11 +174,15 @@ fn test_imports_list_and_prune() {
     let blob_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM blobs", [], |r| r.get(0))
         .unwrap();
+    let graphql_field_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM graphql_fields", [], |r| r.get(0))
+        .unwrap();
 
     assert_eq!(entry_count, 0);
     assert_eq!(import_count, 0);
     assert_eq!(page_count, 0);
     assert_eq!(blob_count, 0);
+    assert_eq!(graphql_field_count, 0);
 }
 
 #[test]

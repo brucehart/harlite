@@ -65,6 +65,18 @@ pub fn run_prune_with_options(
         hashes
     };
 
+    let has_graphql_fields: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='graphql_fields')",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_graphql_fields {
+        tx.execute(
+            "DELETE FROM graphql_fields WHERE entry_id IN (SELECT id FROM entries WHERE import_id = ?1)",
+            params![import_id],
+        )?;
+    }
+
     let entries_deleted = tx.execute(
         "DELETE FROM entries WHERE import_id = ?1",
         params![import_id],
