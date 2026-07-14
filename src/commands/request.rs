@@ -611,7 +611,7 @@ fn render_fetch(request: &RequestSnapshot, headers: &[&Header]) -> Result<String
             .expect("serialized fetch options object");
         format!(
             "{},\n  \"body\": {body}\n}}",
-            &options_json[..closing].trim_end()
+            options_json[..closing].trim_end()
         )
     } else {
         options_json
