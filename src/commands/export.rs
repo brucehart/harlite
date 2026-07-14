@@ -224,6 +224,11 @@ fn open_output(path: &Path) -> Result<Box<dyn Write>> {
 /// Export a harlite database or HAR back to a HAR file.
 pub fn run_export(database: PathBuf, options: &ExportOptions) -> Result<()> {
     let input_format = resolve_export_format(&database, options.format)?;
+    if database == Path::new("-") && options.output.is_none() {
+        return Err(HarliteError::InvalidArgs(
+            "Reading a HAR from standard input requires --output".to_string(),
+        ));
+    }
     let output_path = options
         .output
         .clone()
@@ -474,8 +479,7 @@ fn run_export_from_db(database: &Path, output_path: &Path, options: &ExportOptio
             || row.wait_ms.is_some()
             || row.receive_ms.is_some();
         let wait_ms =
-            normalize_ms(row.wait_ms)
-                .unwrap_or_else(|| if has_timing_parts { 0.0 } else { time_ms });
+            normalize_ms(row.wait_ms).unwrap_or(if has_timing_parts { 0.0 } else { time_ms });
         let timings = Some(Timings {
             blocked: normalize_ms(row.blocked_ms),
             dns: normalize_ms(row.dns_ms),
@@ -720,6 +724,7 @@ fn run_export_from_har(database: &Path, output_path: &Path, options: &ExportOpti
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn matches_har_filters(
     entry: &Entry,
     url: &[String],
@@ -952,6 +957,9 @@ fn resolve_export_format(
 }
 
 fn detect_export_format(path: &Path) -> Result<ExportInputFormat> {
+    if path == Path::new("-") {
+        return Ok(ExportInputFormat::Har);
+    }
     if is_db_path(path) {
         return Ok(ExportInputFormat::Db);
     }

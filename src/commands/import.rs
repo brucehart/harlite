@@ -152,6 +152,21 @@ pub fn run_import(files: &[PathBuf], options: &ImportOptions) -> Result<ImportSt
         ));
     }
 
+    let stdin_count = files
+        .iter()
+        .filter(|path| path.as_path() == Path::new("-"))
+        .count();
+    if stdin_count > 1 || (stdin_count == 1 && files.len() != 1) {
+        return Err(HarliteError::InvalidArgs(
+            "Standard input ('-') must be the only import source".to_string(),
+        ));
+    }
+    if stdin_count == 1 && options.output.is_none() {
+        return Err(HarliteError::InvalidArgs(
+            "Importing from standard input requires --output".to_string(),
+        ));
+    }
+
     let output_path = match &options.output {
         Some(p) => p.clone(),
         None => {
@@ -457,6 +472,9 @@ fn setup_connection(conn: &Connection) -> Result<()> {
 }
 
 fn source_key(path: &Path) -> String {
+    if path == Path::new("-") {
+        return "stdin".to_string();
+    }
     path.canonicalize()
         .unwrap_or_else(|_| path.to_path_buf())
         .to_string_lossy()
@@ -484,7 +502,7 @@ fn resolve_jobs(file_count: usize, requested: usize) -> usize {
         let cpus = thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
-        cpus.min(4).max(1)
+        cpus.clamp(1, 4)
     };
     jobs.min(file_count).max(1)
 }
@@ -809,16 +827,22 @@ fn entry_matches_filters(entry: &Entry, filters: &ImportFilters) -> Result<bool>
 }
 
 fn extract_request_id(entry: &Entry) -> Option<String> {
-    extension_string(&entry.extensions, &["_requestId", "requestId", "request_id"])
-        .or_else(|| {
-            extension_string(&entry.request.extensions, &["_requestId", "requestId", "request_id"])
-        })
-        .or_else(|| {
-            extension_string(
-                &entry.response.extensions,
-                &["_requestId", "requestId", "request_id"],
-            )
-        })
+    extension_string(
+        &entry.extensions,
+        &["_requestId", "requestId", "request_id"],
+    )
+    .or_else(|| {
+        extension_string(
+            &entry.request.extensions,
+            &["_requestId", "requestId", "request_id"],
+        )
+    })
+    .or_else(|| {
+        extension_string(
+            &entry.response.extensions,
+            &["_requestId", "requestId", "request_id"],
+        )
+    })
 }
 
 fn extract_initiator(entry: &Entry) -> InitiatorInfo {
@@ -830,15 +854,21 @@ fn extract_initiator(entry: &Entry) -> InitiatorInfo {
         return InitiatorInfo::default();
     };
 
-    let mut info = InitiatorInfo::default();
-    info.initiator_type = value_string(map.get("type"));
-    info.parent_request_id = value_string_by_keys(
-        map,
-        &["requestId", "request_id", "parentRequestId", "parent_request_id"],
-    );
-    info.initiator_url = value_string_by_keys(map, &["url", "initiatorUrl", "sourceURL"]);
-    info.initiator_line = value_i64_by_keys(map, &["lineNumber", "line"]);
-    info.initiator_column = value_i64_by_keys(map, &["columnNumber", "column"]);
+    let mut info = InitiatorInfo {
+        initiator_type: value_string(map.get("type")),
+        parent_request_id: value_string_by_keys(
+            map,
+            &[
+                "requestId",
+                "request_id",
+                "parentRequestId",
+                "parent_request_id",
+            ],
+        ),
+        initiator_url: value_string_by_keys(map, &["url", "initiatorUrl", "sourceURL"]),
+        initiator_line: value_i64_by_keys(map, &["lineNumber", "line"]),
+        initiator_column: value_i64_by_keys(map, &["columnNumber", "column"]),
+    };
 
     if info.initiator_url.is_none()
         || info.initiator_line.is_none()
@@ -924,10 +954,7 @@ fn value_string(value: Option<&Value>) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-fn value_string_by_keys(
-    map: &serde_json::Map<String, Value>,
-    keys: &[&str],
-) -> Option<String> {
+fn value_string_by_keys(map: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {
     for key in keys {
         if let Some(value) = map.get(*key) {
             if let Some(s) = value.as_str() {
@@ -968,7 +995,9 @@ fn stack_frame_from_value(value: &Value) -> Option<StackFrame> {
     let obj = value.as_object()?;
     if let Some(frames) = obj.get("callFrames").and_then(|v| v.as_array()) {
         for frame in frames {
-            let Some(frame_obj) = frame.as_object() else { continue };
+            let Some(frame_obj) = frame.as_object() else {
+                continue;
+            };
             let Some(url) = value_string(frame_obj.get("url")) else {
                 continue;
             };

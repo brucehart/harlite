@@ -65,36 +65,47 @@ pub fn run_otel(database: PathBuf, options: &OtelExportOptions) -> Result<()> {
             let payload = build_json_export(resource_attrs, spans);
             serde_json::to_writer(&mut writer, &payload)?;
             writer.write_all(b"\n")?;
-            if output_path != PathBuf::from("-") {
-                println!("Exported {} spans to {}", payload.span_count(), output_path.display());
+            if output_path != std::path::Path::new("-") {
+                println!(
+                    "Exported {} spans to {}",
+                    payload.span_count(),
+                    output_path.display()
+                );
             }
             if skipped > 0 {
-                eprintln!("Skipped {} entries without a valid start timestamp", skipped);
+                eprintln!(
+                    "Skipped {} entries without a valid start timestamp",
+                    skipped
+                );
             }
             Ok(())
         }
         OtelExportFormat::OtlpHttp => {
-            let endpoint = options
-                .endpoint
-                .as_deref()
-                .ok_or_else(|| HarliteError::InvalidArgs("--endpoint is required for OTLP export".to_string()))?;
+            let endpoint = options.endpoint.as_deref().ok_or_else(|| {
+                HarliteError::InvalidArgs("--endpoint is required for OTLP export".to_string())
+            })?;
             let endpoint = normalize_otlp_http_endpoint(endpoint)?;
             let request = build_otlp_request(resource_attrs, spans);
             send_otlp_http(&endpoint, request)?;
             if skipped > 0 {
-                eprintln!("Skipped {} entries without a valid start timestamp", skipped);
+                eprintln!(
+                    "Skipped {} entries without a valid start timestamp",
+                    skipped
+                );
             }
             Ok(())
         }
         OtelExportFormat::OtlpGrpc => {
-            let endpoint = options
-                .endpoint
-                .as_deref()
-                .ok_or_else(|| HarliteError::InvalidArgs("--endpoint is required for OTLP export".to_string()))?;
+            let endpoint = options.endpoint.as_deref().ok_or_else(|| {
+                HarliteError::InvalidArgs("--endpoint is required for OTLP export".to_string())
+            })?;
             let request = build_otlp_request(resource_attrs, spans);
             send_otlp_grpc(endpoint, request)?;
             if skipped > 0 {
-                eprintln!("Skipped {} entries without a valid start timestamp", skipped);
+                eprintln!(
+                    "Skipped {} entries without a valid start timestamp",
+                    skipped
+                );
             }
             Ok(())
         }
@@ -190,10 +201,7 @@ enum SpanKind {
     Client,
 }
 
-fn build_resource_attributes(
-    service_name: &str,
-    extra: &[String],
-) -> Result<Vec<Attribute>> {
+fn build_resource_attributes(service_name: &str, extra: &[String]) -> Result<Vec<Attribute>> {
     let mut attrs = vec![Attribute {
         key: "service.name".to_string(),
         value: AttrValue::String(service_name.to_string()),
@@ -248,7 +256,7 @@ fn entry_to_spans(entry: &EntryRow, include_phases: bool) -> Option<Vec<SpanReco
         kind: SpanKind::Client,
         start_unix_nano: start_ns,
         end_unix_nano: end_ns,
-        attributes: attributes.drain(..).collect(),
+        attributes: std::mem::take(&mut attributes),
         status,
     });
 
@@ -470,9 +478,7 @@ fn headers_from_json(json: Option<&str>) -> Option<HashMap<String, String>> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
         return None;
     };
-    let Some(obj) = value.as_object() else {
-        return None;
-    };
+    let obj = value.as_object()?;
     let mut map = HashMap::new();
     for (key, value) in obj {
         if let Some(val) = value.as_str() {
@@ -485,10 +491,7 @@ fn headers_from_json(json: Option<&str>) -> Option<HashMap<String, String>> {
 fn request_bounds(entry: &EntryRow, base_ns: u64) -> (u64, u64) {
     let total_ms = normalize_ms(entry.time_ms).unwrap_or_else(|| {
         let ranges = phase_ranges_ms(entry);
-        ranges
-            .last()
-            .map(|phase| phase.end_ms)
-            .unwrap_or(0.0)
+        ranges.last().map(|phase| phase.end_ms).unwrap_or(0.0)
     });
     let total_ns = ms_to_ns(total_ms);
     (base_ns, base_ns.saturating_add(total_ns))
@@ -620,9 +623,8 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 fn normalize_otlp_http_endpoint(endpoint: &str) -> Result<String> {
-    let parsed = Url::parse(endpoint).map_err(|_| {
-        HarliteError::InvalidArgs("--endpoint must be a valid URL".to_string())
-    })?;
+    let parsed = Url::parse(endpoint)
+        .map_err(|_| HarliteError::InvalidArgs("--endpoint must be a valid URL".to_string()))?;
     let trimmed = endpoint.trim_end_matches('/');
     let path = parsed.path().trim_end_matches('/');
     if path.ends_with("/v1/traces") {
@@ -850,8 +852,8 @@ fn build_otlp_request(
                         value: Some(AnyValue {
                             value: Some(match attr.value {
                                 AttrValue::String(value) => any_value::Value::StringValue(value),
-                        AttrValue::Int(value) => any_value::Value::IntValue(value),
-                        AttrValue::Bool(value) => any_value::Value::BoolValue(value),
+                                AttrValue::Int(value) => any_value::Value::IntValue(value),
+                                AttrValue::Bool(value) => any_value::Value::BoolValue(value),
                             }),
                         }),
                     })
@@ -934,9 +936,7 @@ fn send_otlp_grpc(
     rt.block_on(async move {
         let mut client = TraceServiceClient::connect(endpoint)
             .await
-            .map_err(|err| {
-                HarliteError::InvalidArgs(format!("OTLP gRPC connect failed: {err}"))
-            })?;
+            .map_err(|err| HarliteError::InvalidArgs(format!("OTLP gRPC connect failed: {err}")))?;
         client
             .export(request)
             .await

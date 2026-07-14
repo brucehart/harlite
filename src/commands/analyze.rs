@@ -20,6 +20,9 @@ pub struct AnalyzeOptions {
     pub slow_total_ms: f64,
     pub slow_ttfb_ms: f64,
     pub top: usize,
+    pub max_p95_total_ms: Option<f64>,
+    pub max_p95_ttfb_ms: Option<f64>,
+    pub max_errors: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -116,6 +119,7 @@ struct Bottleneck {
 #[derive(Debug, Serialize)]
 struct AnalyzeOutput {
     entries: usize,
+    error_entries: usize,
     filters: Filters,
     thresholds: Thresholds,
     aggregates: TimingAggregates,
@@ -126,6 +130,21 @@ struct AnalyzeOutput {
 }
 
 pub fn run_analyze(database: PathBuf, options: &AnalyzeOptions) -> Result<()> {
+    if !options.slow_total_ms.is_finite()
+        || options.slow_total_ms < 0.0
+        || !options.slow_ttfb_ms.is_finite()
+        || options.slow_ttfb_ms < 0.0
+        || options
+            .max_p95_total_ms
+            .is_some_and(|value| !value.is_finite() || value < 0.0)
+        || options
+            .max_p95_ttfb_ms
+            .is_some_and(|value| !value.is_finite() || value < 0.0)
+    {
+        return Err(HarliteError::InvalidArgs(
+            "Analyze timing thresholds must be finite and non-negative".to_string(),
+        ));
+    }
     let conn = Connection::open(&database)?;
     ensure_schema_upgrades(&conn)?;
 
@@ -138,12 +157,14 @@ pub fn run_analyze(database: PathBuf, options: &AnalyzeOptions) -> Result<()> {
         None => None,
     };
 
-    let mut query = EntryQuery::default();
-    query.hosts = options.host.clone();
-    query.methods = options.method.clone();
-    query.statuses = options.status.clone();
-    query.from_started_at = from_started_at.clone();
-    query.to_started_at = to_started_at.clone();
+    let query = EntryQuery {
+        hosts: options.host.clone(),
+        methods: options.method.clone(),
+        statuses: options.status.clone(),
+        from_started_at: from_started_at.clone(),
+        to_started_at: to_started_at.clone(),
+        ..EntryQuery::default()
+    };
 
     let entries = load_entries(&conn, &query)?;
 
@@ -173,14 +194,18 @@ pub fn run_analyze(database: PathBuf, options: &AnalyzeOptions) -> Result<()> {
         if let Some(value) = total_ms {
             totals.push(value);
             if value >= options.slow_total_ms {
-                slow_total.push(build_slow_entry(row, total_ms, ttfb_ms, dns_ms, connect_ms, ssl_ms));
+                slow_total.push(build_slow_entry(
+                    row, total_ms, ttfb_ms, dns_ms, connect_ms, ssl_ms,
+                ));
             }
         }
 
         if let Some(value) = ttfb_ms {
             ttfb.push(value);
             if value >= options.slow_ttfb_ms {
-                slow_ttfb.push(build_slow_entry(row, total_ms, ttfb_ms, dns_ms, connect_ms, ssl_ms));
+                slow_ttfb.push(build_slow_entry(
+                    row, total_ms, ttfb_ms, dns_ms, connect_ms, ssl_ms,
+                ));
             }
         }
 
@@ -262,6 +287,10 @@ pub fn run_analyze(database: PathBuf, options: &AnalyzeOptions) -> Result<()> {
 
     let output = AnalyzeOutput {
         entries: entries.len(),
+        error_entries: entries
+            .iter()
+            .filter(|entry| entry.status.is_some_and(|status| status >= 400))
+            .count(),
         filters: Filters {
             host: options.host.clone(),
             method: options.method.clone(),
@@ -278,8 +307,12 @@ pub fn run_analyze(database: PathBuf, options: &AnalyzeOptions) -> Result<()> {
         slow_requests: SlowRequests {
             total_ms: slow_total,
             ttfb_ms: slow_ttfb,
-            total_count: count_over_threshold(&entries, options.slow_total_ms, |r| normalize_ms(r.time_ms)),
-            ttfb_count: count_over_threshold(&entries, options.slow_ttfb_ms, |r| normalize_ms(r.wait_ms)),
+            total_count: count_over_threshold(&entries, options.slow_total_ms, |r| {
+                normalize_ms(r.time_ms)
+            }),
+            ttfb_count: count_over_threshold(&entries, options.slow_ttfb_ms, |r| {
+                normalize_ms(r.wait_ms)
+            }),
         },
         connection_reuse: reuse_stats,
         cache_candidates: CacheCandidates {
@@ -296,7 +329,42 @@ pub fn run_analyze(database: PathBuf, options: &AnalyzeOptions) -> Result<()> {
         render_text(&output);
     }
 
+    enforce_budgets(&output, options)?;
+
     Ok(())
+}
+
+fn enforce_budgets(output: &AnalyzeOutput, options: &AnalyzeOptions) -> Result<()> {
+    let mut violations = Vec::new();
+    if let (Some(limit), Some(stats)) = (options.max_p95_total_ms, &output.aggregates.total_ms) {
+        if stats.p95 > limit {
+            violations.push(format!(
+                "total p95 {:.2}ms exceeds {:.2}ms",
+                stats.p95, limit
+            ));
+        }
+    }
+    if let (Some(limit), Some(stats)) = (options.max_p95_ttfb_ms, &output.aggregates.ttfb_ms) {
+        if stats.p95 > limit {
+            violations.push(format!(
+                "TTFB p95 {:.2}ms exceeds {:.2}ms",
+                stats.p95, limit
+            ));
+        }
+    }
+    if let Some(limit) = options.max_errors {
+        if output.error_entries > limit {
+            violations.push(format!(
+                "{} error response(s) exceed the limit of {}",
+                output.error_entries, limit
+            ));
+        }
+    }
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(HarliteError::ThresholdExceeded(violations.join("; ")))
+    }
 }
 
 fn parse_started_at_bound(s: &str, is_end: bool) -> Result<String> {
@@ -446,9 +514,7 @@ fn is_cache_candidate(row: &EntryRow) -> bool {
         return false;
     }
     let headers = headers_from_json(row.response_headers.as_deref());
-    let cache_control = headers
-        .get("cache-control")
-        .map(|v| v.to_ascii_lowercase());
+    let cache_control = headers.get("cache-control").map(|v| v.to_ascii_lowercase());
     if let Some(control) = cache_control {
         if control.contains("no-store")
             || control.contains("no-cache")
@@ -518,13 +584,14 @@ where
 {
     entries
         .iter()
-        .filter_map(|row| fetch(row))
+        .filter_map(fetch)
         .filter(|v| *v >= threshold)
         .count()
 }
 
 fn render_text(output: &AnalyzeOutput) {
     println!("entries={}", output.entries);
+    println!("error_entries={}", output.error_entries);
     println!("filters.hosts={}", output.filters.host.join(","));
     println!("filters.methods={}", output.filters.method.join(","));
     let status_list = output
@@ -540,7 +607,10 @@ fn render_text(output: &AnalyzeOutput) {
         output.filters.from.as_deref().unwrap_or("")
     );
     println!("filters.to={}", output.filters.to.as_deref().unwrap_or(""));
-    println!("thresholds.slow_total_ms={}", output.thresholds.slow_total_ms);
+    println!(
+        "thresholds.slow_total_ms={}",
+        output.thresholds.slow_total_ms
+    );
     println!("thresholds.slow_ttfb_ms={}", output.thresholds.slow_ttfb_ms);
     println!("thresholds.top={}", output.thresholds.top);
 
@@ -558,7 +628,8 @@ fn render_text(output: &AnalyzeOutput) {
             "slow.total_ms={:.1} method={} status={} url={}",
             entry.total_ms.unwrap_or(0.0),
             entry.method,
-            entry.status
+            entry
+                .status
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "-".to_string()),
             entry.url
@@ -571,7 +642,8 @@ fn render_text(output: &AnalyzeOutput) {
             "slow.ttfb_ms={:.1} method={} status={} url={}",
             entry.ttfb_ms.unwrap_or(0.0),
             entry.method,
-            entry.status
+            entry
+                .status
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "-".to_string()),
             entry.url
@@ -626,14 +698,7 @@ fn print_stats_line(name: &str, stats: &Option<TimeStats>) {
     if let Some(stats) = stats {
         println!(
             "stats.{}=count:{} min:{:.1} p50:{:.1} p90:{:.1} p95:{:.1} avg:{:.1} max:{:.1}",
-            name,
-            stats.count,
-            stats.min,
-            stats.p50,
-            stats.p90,
-            stats.p95,
-            stats.avg,
-            stats.max
+            name, stats.count, stats.min, stats.p50, stats.p90, stats.p95, stats.avg, stats.max
         );
     } else {
         println!("stats.{}=count:0", name);

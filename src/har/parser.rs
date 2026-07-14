@@ -3,14 +3,14 @@
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
-use std::io::{BufReader, Cursor, Read};
+use std::io::{self, BufReader, Cursor, Read};
 use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 
-use crate::error::Result;
 #[cfg(not(feature = "compression"))]
 use crate::error::HarliteError;
+use crate::error::Result;
 
 pub type Extensions = serde_json::Map<String, serde_json::Value>;
 
@@ -194,13 +194,50 @@ pub fn parse_har_file(path: &Path) -> Result<Har> {
 
 /// Parse a HAR with an explicit limit on decompressed JSON bytes.
 pub fn parse_har_file_with_limit(path: &Path, max_input_bytes: usize) -> Result<Har> {
-    let mut file = File::open(path)?;
-    let mut prefix = [0u8; 4];
-    let prefix_len = file.read(&mut prefix)?;
-    let prefix_reader = Cursor::new(prefix[..prefix_len].to_vec());
-    let chained = prefix_reader.chain(file);
+    if path == Path::new("-") {
+        let stdin = io::stdin();
+        let mut bytes = Vec::new();
+        LimitedReader::new(stdin.lock(), max_input_bytes).read_to_end(&mut bytes)?;
+        let uncompressed =
+            parse_har_reader_with_limit(Cursor::new(bytes.as_slice()), path, max_input_bytes);
+        if uncompressed.is_ok()
+            || detect_compression(path, &bytes[..bytes.len().min(4)]) == Compression::Gzip
+        {
+            return uncompressed;
+        }
 
-    let reader: Box<dyn Read> = match detect_compression(path, &prefix[..prefix_len]) {
+        // Brotli streams have no fixed magic bytes. For stdin, retry a failed
+        // JSON parse with an explicit Brotli hint while preserving the original
+        // JSON error if neither interpretation is valid.
+        #[cfg(feature = "compression")]
+        if let Ok(har) = parse_har_reader_with_limit(
+            Cursor::new(bytes.as_slice()),
+            Path::new("stdin.har.br"),
+            max_input_bytes,
+        ) {
+            return Ok(har);
+        }
+        return uncompressed;
+    }
+
+    parse_har_reader_with_limit(File::open(path)?, path, max_input_bytes)
+}
+
+/// Parse HAR JSON from an arbitrary reader with an explicit decompressed limit.
+///
+/// `path_hint` is used only for compression detection. Magic bytes are still
+/// honored, so compressed stdin works without a filename extension.
+pub fn parse_har_reader_with_limit<'a, R: Read + 'a>(
+    mut input: R,
+    path_hint: &Path,
+    max_input_bytes: usize,
+) -> Result<Har> {
+    let mut prefix = [0u8; 4];
+    let prefix_len = input.read(&mut prefix)?;
+    let prefix_reader = Cursor::new(prefix[..prefix_len].to_vec());
+    let chained = prefix_reader.chain(input);
+
+    let reader: Box<dyn Read + 'a> = match detect_compression(path_hint, &prefix[..prefix_len]) {
         Compression::Gzip => {
             #[cfg(feature = "compression")]
             {
@@ -242,6 +279,10 @@ pub fn parse_har_file_async(path: &Path) -> Result<Har> {
 
 /// Parse a HAR using a background reader with an explicit decompressed limit.
 pub fn parse_har_file_async_with_limit(path: &Path, max_input_bytes: usize) -> Result<Har> {
+    if path == Path::new("-") {
+        return parse_har_file_with_limit(path, max_input_bytes);
+    }
+
     let mut file = File::open(path)?;
     let mut prefix = [0u8; 4];
     let prefix_len = file.read(&mut prefix)?;

@@ -4,14 +4,15 @@
 //! Treat the contents of this module as SemVer-stable.
 
 pub use crate::commands::{
-    run_analyze, run_diff, run_export, run_export_data, run_fts_rebuild, run_import, run_imports,
-    run_info, run_merge, run_openapi, run_pii, run_pii_with_external_paths, run_prune,
-    run_prune_with_options, run_query, run_redact, run_redact_with_external_paths, run_report,
-    run_schema, run_search, run_stats, run_waterfall, AnalyzeOptions, DataExportFormat,
-    DedupStrategy, DiffOptions, EntryFilterOptions, ExportDataOptions, ExportOptions, FtsTokenizer,
-    ImportOptions, InfoOptions, NameMatchMode, OpenApiOptions, OutputFormat, PiiOptions, PruneOptions,
-    QueryOptions, RedactOptions, ReportOptions, StatsOptions, WaterfallFormat, WaterfallGroupBy,
-    WaterfallOptions,
+    run_analyze, run_check, run_diff, run_export, run_export_data, run_fts_rebuild, run_import,
+    run_imports, run_info, run_merge, run_openapi, run_pii, run_pii_input,
+    run_pii_with_external_paths, run_prune, run_prune_with_options, run_query, run_redact,
+    run_redact_input, run_redact_with_external_paths, run_report, run_request_export, run_schema,
+    run_search, run_stats, run_waterfall, AnalyzeOptions, CheckOptions, DataExportFormat,
+    DedupStrategy, DiffFailOn, DiffOptions, EntryFilterOptions, ExportDataOptions, ExportOptions,
+    FtsTokenizer, ImportOptions, InfoOptions, NameMatchMode, OpenApiOptions, OutputFormat,
+    PiiOptions, PruneOptions, QueryOptions, RedactOptions, ReportOptions, RequestExportFormat,
+    RequestExportOptions, StatsOptions, WaterfallFormat, WaterfallGroupBy, WaterfallOptions,
 };
 #[cfg(feature = "cdp")]
 pub use crate::commands::{run_cdp, CdpOptions};

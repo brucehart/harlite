@@ -33,11 +33,14 @@ Works great with AI coding agents like Codex and Claude — they already know SQ
 - **Database merge** — Combine multiple harlite databases with deduplication (`harlite merge`)
 - **Queryable headers** — Headers stored as JSON, queryable with SQLite JSON functions
 - **Performance analysis** — Built-in timing analysis and caching insights (`harlite analyze`)
+- **Integrity validation** — Check HAR semantics, SQLite integrity, body hashes, and FTS references (`harlite check`)
 - **HTML reports** — Self-contained HTML report with waterfall + slow/errors (`harlite report`)
 - **Interactive REPL** — Explore databases with history, completions, and shortcuts (`harlite repl`)
-- **Safe sharing** — Redact sensitive headers/cookies before sharing a database
-- **PII scanning** — Find emails/phones/SSNs/credit cards in URLs and bodies (`harlite pii`)
-- **Diffing** — Compare two HAR files or two databases (`harlite diff`)
+- **Safe sharing** — Redact sensitive headers/cookies in HAR files or databases
+- **PII scanning** — Find and redact emails/phones/SSNs/credit cards in HAR files or databases (`harlite pii`)
+- **CI regression gates** — Enforce performance budgets with `analyze` and change budgets with `diff`
+- **Request snippets** — Export cURL, Fetch, node-fetch, or PowerShell commands (`harlite request`)
+- **Streaming input** — Read HAR JSON or compressed HAR data from standard input with `-`
 - **Replay** — Reissue requests against live servers and compare responses (`harlite replay`)
 - **HAR extensions preserved** — Store and round-trip HAR 1.3 extension fields as JSON
 - **CDP capture** — Capture from Chrome and write directly to HAR or SQLite
@@ -53,6 +56,17 @@ cargo install harlite
 ```
 
 Published on crates.io as `harlite`.
+
+### Download a native binary
+
+Release archives are available for Linux AMD64/ARM64, macOS AMD64/ARM64, and Windows AMD64 on the [GitHub Releases page](https://github.com/brucehart/harlite/releases/latest).
+
+Each archive includes `harlite`, `README.md`, `CHANGELOG.md`, and `LICENSE`. Releases also include `SHA256SUMS` and keyless Sigstore-backed GitHub artifact attestations:
+
+```bash
+grep 'harlite-v0.4.0-linux-amd64.tar.gz' SHA256SUMS | sha256sum --check -
+gh attestation verify harlite-v0.4.0-linux-amd64.tar.gz --repo brucehart/harlite
+```
 
 ## Feature flags
 
@@ -504,6 +518,23 @@ harlite analyze traffic.db --json
 # Filters + thresholds
 harlite analyze traffic.db --host api.example.com --from 2024-01-15 --to 2024-01-16 \
   --slow-total-ms 800 --slow-ttfb-ms 300 --top 20
+
+# Fail a CI job when a budget is exceeded
+harlite analyze traffic.db --json --max-p95-total-ms 800 \
+  --max-p95-ttfb-ms 300 --max-errors 0
+```
+
+### Validate HAR files and databases
+
+Check HAR semantics or database integrity before analysis, sharing, or release automation:
+
+```bash
+harlite check capture.har
+harlite check traffic.db --strict
+harlite check traffic.db --json
+
+# External bodies are never read unless explicitly trusted
+harlite check traffic.db --allow-external-paths --external-path-root ./extracted-bodies
 ```
 
 ### Imports list and prune
@@ -663,6 +694,10 @@ harlite diff before.db after.db --format json
 
 # Filter to specific hosts/paths/statuses
 harlite diff before.har after.har --host api.example.com --method GET --status 200 --url-regex 'example\\.com/api/'
+
+# Ignore cache-busting parameters and fail on new errors or slowdowns
+harlite diff before.har after.har --ignore-query-param cacheBust \
+  --fail-on new-errors --max-total-regression-ms 100 --max-new-errors 0
 ```
 
 Matching is done by `(method, url)` with a stable ordinal match per pair: if the same method+URL appears multiple times, the first occurrence in the left file is matched with the first in the right, the second with the second, and so on (ordered by HAR entry order or `started_at` for databases).
@@ -694,7 +729,7 @@ Safety: unsafe methods are skipped unless `--allow-unsafe` is set. Automatic red
 Redact common sensitive headers/cookies (by default: `authorization`, `cookie`, `set-cookie`, `x-api-key`, etc.) before sharing:
 
 ```bash
-# Modify in-place
+# Modify a database in-place
 harlite redact traffic.db
 
 # Write to a new database (recommended)
@@ -719,6 +754,13 @@ harlite redact traffic.db --body-regex '(?i)\"password\"\\s*:\\s*\"[^\"]+\"'
 # Read externally stored bodies only from an explicit trusted root
 harlite redact traffic.db --body-regex 'secret' --allow-external-paths \
   --external-path-root ./extracted-bodies
+
+# HAR files are written to a new sibling file by default
+harlite redact capture.har
+harlite redact capture.har --output capture.safe.har
+
+# Stream a redacted HAR to stdout; status details go to stderr
+cat capture.har | harlite redact - --output - > capture.safe.har
 ```
 
 Redaction removes superseded blobs and compacts the database, including its WAL, so old values are not left in ordinary SQLite free pages. External body paths are ignored unless explicitly enabled and contained by the selected root.
@@ -728,8 +770,9 @@ Redaction removes superseded blobs and compacts the database, including its WAL,
 Find emails, phone numbers, SSNs, and credit card numbers in URLs and stored bodies:
 
 ```bash
-# Scan and report findings
+# Scan and report findings in a database or HAR file
 harlite pii traffic.db
+harlite pii capture.har
 
 # JSON output for scripting
 harlite pii traffic.db --format json
@@ -737,14 +780,37 @@ harlite pii traffic.db --format json
 # Customize patterns (disable defaults, add your own)
 harlite pii traffic.db --no-defaults --email-regex '(?i)\\b.+@example\\.com\\b'
 
-# Auto-redact findings (write a new DB)
+# Auto-redact findings (write a new DB or HAR)
 harlite pii traffic.db --redact --output traffic.redacted.db
+harlite pii capture.har --redact --output capture.redacted.har
 
 # Scan trusted externally stored bodies
 harlite pii traffic.db --allow-external-paths --external-path-root ./extracted-bodies
 ```
 
 Defaults are conservative but may still produce false positives; review results before redacting. Use `--no-defaults` to opt out and supply your own regexes.
+
+### Export request snippets
+
+Turn captured requests into reproducible commands. Credential-bearing and transport-managed headers are excluded unless `--include-sensitive` is explicitly supplied.
+
+```bash
+harlite request capture.har --format curl --limit 5
+harlite request traffic.db --format fetch --host api.example.com
+harlite request capture.har --format node-fetch --index 2
+harlite request capture.har --format powershell --output requests.ps1
+```
+
+### Read HAR from standard input
+
+Use `-` where a compatible command expects a HAR path. Commands that create a file require an explicit output path because no filename can be derived from stdin.
+
+```bash
+cat capture.har | harlite import - --output traffic.db
+cat capture.har | harlite check - --strict
+cat capture.har | harlite request - --format curl
+cat capture.har | harlite report - --output report.html
+```
 
 ### Query with harlite
 

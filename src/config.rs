@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::commands::{
-    DedupStrategy, ExportInputFormat, FtsTokenizer, NameMatchMode, OutputFormat,
+    DedupStrategy, DiffFailOn, ExportInputFormat, FtsTokenizer, NameMatchMode, OutputFormat,
 };
 use crate::db::ExtractBodiesKind;
 use crate::error::{HarliteError, Result};
@@ -170,6 +170,12 @@ pub struct DiffConfig {
     pub method: Option<Vec<String>>,
     pub status: Option<Vec<i32>>,
     pub url_regex: Option<Vec<String>>,
+    pub fail_on: Option<Vec<DiffFailOn>>,
+    pub max_total_regression_ms: Option<f64>,
+    pub max_ttfb_regression_ms: Option<f64>,
+    pub max_response_size_increase: Option<i64>,
+    pub max_new_errors: Option<usize>,
+    pub ignore_query_param: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -214,7 +220,7 @@ pub struct StatsConfig {
     pub cert_expiring_days: Option<u64>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Default)]
 pub struct ResolvedConfig {
     pub import: ResolvedImportConfig,
     pub cdp: ResolvedCdpConfig,
@@ -289,7 +295,7 @@ pub struct ResolvedReplayConfig {
     pub override_header: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Default)]
 pub struct ResolvedExportConfig {
     pub output: Option<PathBuf>,
     pub format: Option<ExportInputFormat>,
@@ -358,6 +364,12 @@ pub struct ResolvedDiffConfig {
     pub method: Vec<String>,
     pub status: Vec<i32>,
     pub url_regex: Vec<String>,
+    pub fail_on: Vec<DiffFailOn>,
+    pub max_total_regression_ms: Option<f64>,
+    pub max_ttfb_regression_ms: Option<f64>,
+    pub max_response_size_increase: Option<i64>,
+    pub max_new_errors: Option<usize>,
+    pub ignore_query_param: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -396,30 +408,10 @@ pub struct ResolvedFtsRebuildConfig {
     pub external_path_root: Option<PathBuf>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Default)]
 pub struct ResolvedStatsConfig {
     pub json: bool,
     pub cert_expiring_days: Option<u64>,
-}
-
-impl Default for ResolvedConfig {
-    fn default() -> Self {
-        Self {
-            import: ResolvedImportConfig::default(),
-            cdp: ResolvedCdpConfig::default(),
-            replay: ResolvedReplayConfig::default(),
-            export: ResolvedExportConfig::default(),
-            redact: ResolvedRedactConfig::default(),
-            pii: ResolvedPiiConfig::default(),
-            diff: ResolvedDiffConfig::default(),
-            merge: ResolvedMergeConfig::default(),
-            query: ResolvedQueryConfig::default(),
-            search: ResolvedSearchConfig::default(),
-            repl: ResolvedReplConfig::default(),
-            fts_rebuild: ResolvedFtsRebuildConfig::default(),
-            stats: ResolvedStatsConfig::default(),
-        }
-    }
 }
 
 impl Default for ResolvedImportConfig {
@@ -487,36 +479,6 @@ impl Default for ResolvedReplayConfig {
     }
 }
 
-impl Default for ResolvedExportConfig {
-    fn default() -> Self {
-        Self {
-            output: None,
-            format: None,
-            bodies: false,
-            bodies_raw: false,
-            allow_external_paths: false,
-            external_path_root: None,
-            compact: false,
-            url: Vec::new(),
-            url_contains: Vec::new(),
-            url_regex: Vec::new(),
-            host: Vec::new(),
-            method: Vec::new(),
-            status: Vec::new(),
-            mime: Vec::new(),
-            ext: Vec::new(),
-            source: Vec::new(),
-            source_contains: Vec::new(),
-            from: None,
-            to: None,
-            min_request_size: None,
-            max_request_size: None,
-            min_response_size: None,
-            max_response_size: None,
-        }
-    }
-}
-
 impl Default for ResolvedRedactConfig {
     fn default() -> Self {
         Self {
@@ -564,6 +526,12 @@ impl Default for ResolvedDiffConfig {
             method: Vec::new(),
             status: Vec::new(),
             url_regex: Vec::new(),
+            fail_on: Vec::new(),
+            max_total_regression_ms: None,
+            max_ttfb_regression_ms: None,
+            max_response_size_increase: None,
+            max_new_errors: None,
+            ignore_query_param: Vec::new(),
         }
     }
 }
@@ -615,15 +583,6 @@ impl Default for ResolvedFtsRebuildConfig {
             max_body_size: "1MB".to_string(),
             allow_external_paths: false,
             external_path_root: None,
-        }
-    }
-}
-
-impl Default for ResolvedStatsConfig {
-    fn default() -> Self {
-        Self {
-            json: false,
-            cert_expiring_days: None,
         }
     }
 }
@@ -997,6 +956,24 @@ impl ResolvedDiffConfig {
         if let Some(value) = cfg.url_regex.clone() {
             self.url_regex = value;
         }
+        if let Some(value) = cfg.fail_on.clone() {
+            self.fail_on = value;
+        }
+        if let Some(value) = cfg.max_total_regression_ms {
+            self.max_total_regression_ms = Some(value);
+        }
+        if let Some(value) = cfg.max_ttfb_regression_ms {
+            self.max_ttfb_regression_ms = Some(value);
+        }
+        if let Some(value) = cfg.max_response_size_increase {
+            self.max_response_size_increase = Some(value);
+        }
+        if let Some(value) = cfg.max_new_errors {
+            self.max_new_errors = Some(value);
+        }
+        if let Some(value) = cfg.ignore_query_param.clone() {
+            self.ignore_query_param = value;
+        }
     }
 }
 
@@ -1245,6 +1222,21 @@ impl DiffConfig {
         merge_opt(&mut self.method, other.method);
         merge_opt(&mut self.status, other.status);
         merge_opt(&mut self.url_regex, other.url_regex);
+        merge_opt(&mut self.fail_on, other.fail_on);
+        merge_opt(
+            &mut self.max_total_regression_ms,
+            other.max_total_regression_ms,
+        );
+        merge_opt(
+            &mut self.max_ttfb_regression_ms,
+            other.max_ttfb_regression_ms,
+        );
+        merge_opt(
+            &mut self.max_response_size_increase,
+            other.max_response_size_increase,
+        );
+        merge_opt(&mut self.max_new_errors, other.max_new_errors);
+        merge_opt(&mut self.ignore_query_param, other.ignore_query_param);
     }
 }
 

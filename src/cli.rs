@@ -7,8 +7,8 @@ use crate::commands::MatchMode;
 #[cfg(feature = "otel")]
 use crate::commands::OtelExportFormat;
 use crate::commands::{
-    DataExportFormat, DedupStrategy, ExportInputFormat, NameMatchMode, OutputFormat,
-    WaterfallFormat, WaterfallGroupBy,
+    DataExportFormat, DedupStrategy, DiffFailOn, ExportInputFormat, NameMatchMode, OutputFormat,
+    RequestExportFormat, WaterfallFormat, WaterfallGroupBy,
 };
 use crate::db::ExtractBodiesKind;
 
@@ -287,6 +287,28 @@ pub enum Commands {
     /// Print the resolved configuration
     Config,
 
+    /// Validate a HAR file or inspect a harlite database for integrity problems
+    Check {
+        /// HAR file, SQLite database, or '-' for HAR data on standard input
+        input: PathBuf,
+
+        /// Emit a structured JSON report
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        json: bool,
+
+        /// Treat warnings as validation failures
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        strict: bool,
+
+        /// Verify externally stored blob files
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        allow_external_paths: bool,
+
+        /// Trusted root for externally stored blob files
+        #[arg(long, requires = "allow_external_paths")]
+        external_path_root: Option<PathBuf>,
+    },
+
     /// Show information about a database
     Info {
         /// Database file to inspect
@@ -375,6 +397,18 @@ pub enum Commands {
         /// Limit for top N lists
         #[arg(long)]
         top: Option<usize>,
+
+        /// Fail when the total-time p95 exceeds this value in milliseconds
+        #[arg(long)]
+        max_p95_total_ms: Option<f64>,
+
+        /// Fail when the TTFB p95 exceeds this value in milliseconds
+        #[arg(long)]
+        max_p95_ttfb_ms: Option<f64>,
+
+        /// Fail when the number of HTTP 4xx/5xx responses exceeds this value
+        #[arg(long)]
+        max_errors: Option<usize>,
     },
 
     /// Export a HAR or harlite DB back to a HAR file
@@ -561,6 +595,60 @@ pub enum Commands {
         /// Maximum response body size (e.g., '100KB', '1.5MB', '1M', '100k', 'unlimited')
         #[arg(long)]
         max_response_size: Option<String>,
+    },
+
+    /// Export captured requests as cURL, Fetch, node-fetch, or PowerShell commands
+    Request {
+        /// HAR file, SQLite database, or '-' for HAR data on standard input
+        input: PathBuf,
+
+        /// Snippet format
+        #[arg(short, long, value_enum, default_value_t = RequestExportFormat::Curl)]
+        format: RequestExportFormat,
+
+        /// Output file (default: stdout; use '-' for stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Overwrite an existing output file
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        force: bool,
+
+        /// Include credentials such as Authorization, Cookie, and API-key headers
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        include_sensitive: bool,
+
+        /// One-based index after filtering (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        index: Option<Vec<usize>>,
+
+        /// Maximum number of snippets to emit
+        #[arg(long)]
+        limit: Option<usize>,
+
+        /// URL substring filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        url_contains: Option<Vec<String>>,
+
+        /// Hostname filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        host: Option<Vec<String>>,
+
+        /// HTTP method filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        method: Option<Vec<String>>,
+
+        /// HTTP status filter (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        status: Option<Vec<i32>>,
+
+        /// Allow reading externally stored request bodies
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        allow_external_paths: bool,
+
+        /// Trusted root for externally stored request bodies
+        #[arg(long, requires = "allow_external_paths")]
+        external_path_root: Option<PathBuf>,
     },
 
     /// Export entries as OpenTelemetry spans
@@ -906,13 +994,13 @@ pub enum Commands {
         max_response_size: Option<String>,
     },
 
-    /// Redact sensitive headers/cookies in a harlite SQLite database
+    /// Redact sensitive headers, cookies, query parameters, and bodies in a HAR or database
     Redact {
-        /// Output database file (default: modify in-place)
+        /// Output file (database defaults to in-place; HAR gets a derived sibling path)
         #[arg(short, long)]
         output: Option<PathBuf>,
 
-        /// Overwrite output database if it exists
+        /// Overwrite the output file if it exists
         #[arg(long, action = clap::ArgAction::SetTrue)]
         force: Option<bool>,
 
@@ -956,7 +1044,7 @@ pub enum Commands {
         #[arg(long, requires = "allow_external_paths")]
         external_path_root: Option<PathBuf>,
 
-        /// Database file to redact (default: the only *.db in the current directory)
+        /// HAR or database to redact; use '-' for HAR data on standard input
         database: Option<PathBuf>,
     },
 
@@ -970,11 +1058,11 @@ pub enum Commands {
         #[arg(long, action = clap::ArgAction::SetTrue)]
         redact: Option<bool>,
 
-        /// Output database file (default: modify in-place when --redact)
+        /// Output database or HAR file (database defaults to in-place; HAR gets a derived name)
         #[arg(short, long)]
         output: Option<PathBuf>,
 
-        /// Overwrite output database if it exists
+        /// Overwrite the output file if it exists
         #[arg(long, action = clap::ArgAction::SetTrue)]
         force: Option<bool>,
 
@@ -1030,7 +1118,7 @@ pub enum Commands {
         #[arg(long, requires = "allow_external_paths")]
         external_path_root: Option<PathBuf>,
 
-        /// Database file to scan (default: the only *.db in the current directory)
+        /// HAR or database to scan; use '-' for HAR data on standard input
         database: Option<PathBuf>,
     },
 
@@ -1061,6 +1149,30 @@ pub enum Commands {
         /// URL regex match (repeatable)
         #[arg(long, action = clap::ArgAction::Append)]
         url_regex: Option<Vec<String>>,
+
+        /// Fail when a selected class of difference is present (repeatable)
+        #[arg(long, value_enum, action = clap::ArgAction::Append)]
+        fail_on: Option<Vec<DiffFailOn>>,
+
+        /// Fail when any total-time increase exceeds this many milliseconds
+        #[arg(long)]
+        max_total_regression_ms: Option<f64>,
+
+        /// Fail when any TTFB increase exceeds this many milliseconds
+        #[arg(long)]
+        max_ttfb_regression_ms: Option<f64>,
+
+        /// Fail when any response-body increase exceeds this many bytes
+        #[arg(long)]
+        max_response_size_increase: Option<i64>,
+
+        /// Fail when the number of newly introduced HTTP errors exceeds this value
+        #[arg(long)]
+        max_new_errors: Option<usize>,
+
+        /// Ignore this query parameter when matching requests (repeatable)
+        #[arg(long, action = clap::ArgAction::Append)]
+        ignore_query_param: Option<Vec<String>>,
     },
 
     /// Replay requests against live servers and compare responses

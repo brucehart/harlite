@@ -233,62 +233,6 @@ fn write_json(columns: &[String], rows: &mut rusqlite::Rows<'_>) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{normalize_single_statement, wrap_query};
-    use crate::error::HarliteError;
-    use rusqlite::types::Value;
-
-    #[test]
-    fn normalize_single_statement_allows_semicolons_in_strings() {
-        let sql = "SELECT ';' AS semi, 'a'';''b' AS escaped";
-        assert_eq!(normalize_single_statement(sql).unwrap(), sql);
-    }
-
-    #[test]
-    fn normalize_single_statement_allows_semicolons_in_comments() {
-        let sql = "SELECT 1 -- trailing; comment\n";
-        assert_eq!(normalize_single_statement(sql).unwrap(), sql);
-
-        let block = "SELECT 1 /* block; comment */";
-        assert_eq!(normalize_single_statement(block).unwrap(), block);
-    }
-
-    #[test]
-    fn normalize_single_statement_rejects_multiple_statements() {
-        let err = normalize_single_statement("SELECT 1; SELECT 2").unwrap_err();
-        match err {
-            HarliteError::InvalidArgs(msg) => {
-                assert!(msg.contains("single SQL statement"));
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn wrap_query_adds_limits() {
-        let (sql, params) = wrap_query("SELECT * FROM entries", Some(10), Some(5));
-        assert_eq!(
-            sql,
-            "SELECT * FROM (SELECT * FROM entries) LIMIT ?1 OFFSET ?2"
-        );
-        assert_eq!(
-            params,
-            vec![Value::Integer(10), Value::Integer(5)]
-        );
-    }
-
-    #[test]
-    fn wrap_query_handles_offset_only() {
-        let (sql, params) = wrap_query("SELECT * FROM entries", None, Some(5));
-        assert_eq!(
-            sql,
-            "SELECT * FROM (SELECT * FROM entries) LIMIT -1 OFFSET ?1"
-        );
-        assert_eq!(params, vec![Value::Integer(5)]);
-    }
-}
-
 const TABLE_CELL_MAX_WIDTH: usize = 80;
 const TABLE_CELL_MIN_WIDTH: usize = 32;
 
@@ -298,8 +242,7 @@ fn column_widths(columns: &[String]) -> Vec<usize> {
         .map(|c| {
             c.chars()
                 .count()
-                .max(TABLE_CELL_MIN_WIDTH)
-                .min(TABLE_CELL_MAX_WIDTH)
+                .clamp(TABLE_CELL_MIN_WIDTH, TABLE_CELL_MAX_WIDTH)
         })
         .collect()
 }
@@ -315,9 +258,9 @@ fn write_table(columns: &[String], rows: &mut rusqlite::Rows<'_>, quiet: bool) -
     }
     while let Some(row) = rows.next()? {
         let mut out_fields: Vec<String> = Vec::with_capacity(columns.len());
-        for i in 0..columns.len() {
+        for (i, width) in widths.iter().copied().enumerate().take(columns.len()) {
             let value = value_to_table(row.get_ref(i)?);
-            out_fields.push(truncate(&value, widths[i]));
+            out_fields.push(truncate(&value, width));
         }
         write_table_row(&mut out, out_fields.iter().map(|s| s.as_str()), &widths)?;
     }
@@ -329,8 +272,7 @@ fn write_table_row<'a, I>(out: &mut impl Write, fields: I, widths: &[usize]) -> 
 where
     I: IntoIterator<Item = &'a str>,
 {
-    let mut i = 0usize;
-    for field in fields {
+    for (i, field) in fields.into_iter().enumerate() {
         if i > 0 {
             out.write_all(b" | ")?;
         }
@@ -341,7 +283,6 @@ where
         if field_len < width {
             out.write_all(" ".repeat(width - field_len).as_bytes())?;
         }
-        i += 1;
     }
     out.write_all(b"\n")?;
     Ok(())
@@ -430,4 +371,57 @@ fn truncate(s: &str, max: usize) -> String {
     let mut out = s[..end].to_string();
     out.push_str("...");
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_single_statement, wrap_query};
+    use crate::error::HarliteError;
+    use rusqlite::types::Value;
+
+    #[test]
+    fn normalize_single_statement_allows_semicolons_in_strings() {
+        let sql = "SELECT ';' AS semi, 'a'';''b' AS escaped";
+        assert_eq!(normalize_single_statement(sql).unwrap(), sql);
+    }
+
+    #[test]
+    fn normalize_single_statement_allows_semicolons_in_comments() {
+        let sql = "SELECT 1 -- trailing; comment\n";
+        assert_eq!(normalize_single_statement(sql).unwrap(), sql);
+
+        let block = "SELECT 1 /* block; comment */";
+        assert_eq!(normalize_single_statement(block).unwrap(), block);
+    }
+
+    #[test]
+    fn normalize_single_statement_rejects_multiple_statements() {
+        let err = normalize_single_statement("SELECT 1; SELECT 2").unwrap_err();
+        match err {
+            HarliteError::InvalidArgs(msg) => {
+                assert!(msg.contains("single SQL statement"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wrap_query_adds_limits() {
+        let (sql, params) = wrap_query("SELECT * FROM entries", Some(10), Some(5));
+        assert_eq!(
+            sql,
+            "SELECT * FROM (SELECT * FROM entries) LIMIT ?1 OFFSET ?2"
+        );
+        assert_eq!(params, vec![Value::Integer(10), Value::Integer(5)]);
+    }
+
+    #[test]
+    fn wrap_query_handles_offset_only() {
+        let (sql, params) = wrap_query("SELECT * FROM entries", None, Some(5));
+        assert_eq!(
+            sql,
+            "SELECT * FROM (SELECT * FROM entries) LIMIT -1 OFFSET ?1"
+        );
+        assert_eq!(params, vec![Value::Integer(5)]);
+    }
 }

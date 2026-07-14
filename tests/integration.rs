@@ -1857,9 +1857,11 @@ fn test_redact_ignores_untrusted_external_blob_paths() {
         })
         .unwrap();
     let content: Vec<u8> = conn
-        .query_row("SELECT content FROM blobs WHERE hash='attacker'", [], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT content FROM blobs WHERE hash='attacker'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
     assert_eq!(hash, "attacker");
     assert!(content.is_empty());
@@ -1905,7 +1907,9 @@ fn test_pii_redaction_physically_removes_superseded_body() {
     assert_eq!(old_blob_count, 0);
     drop(conn);
     let raw = fs::read(&out_path).unwrap();
-    assert!(!raw.windows(secret.len()).any(|window| window == secret.as_bytes()));
+    assert!(!raw
+        .windows(secret.len())
+        .any(|window| window == secret.as_bytes()));
 }
 
 #[test]
@@ -3554,4 +3558,772 @@ fn test_redact_with_explicit_regex_patterns() {
         )
         .unwrap();
     assert_eq!(auth, "REDACTED");
+}
+
+#[test]
+fn test_check_validates_har_database_and_blob_hashes() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("check.db");
+    let warning_path = tmp.path().join("warning.har");
+
+    harlite()
+        .args(["check", "tests/fixtures/simple.har", "--strict"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Valid: yes"));
+
+    let mut warning_har: serde_json::Value =
+        serde_json::from_slice(&fs::read("tests/fixtures/simple.har").unwrap()).unwrap();
+    warning_har["log"]
+        .as_object_mut()
+        .unwrap()
+        .remove("creator");
+    fs::write(&warning_path, serde_json::to_vec(&warning_har).unwrap()).unwrap();
+    harlite()
+        .arg("check")
+        .arg(&warning_path)
+        .args(["--strict", "--json"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("\"valid\": false"))
+        .stderr(predicate::str::contains("issue(s)"));
+
+    let mut invalid_timing_har: serde_json::Value =
+        serde_json::from_slice(&fs::read("tests/fixtures/simple.har").unwrap()).unwrap();
+    invalid_timing_har["log"]["entries"][0]["timings"]["wait"] = json!(-0.5);
+    fs::write(
+        &warning_path,
+        serde_json::to_vec(&invalid_timing_har).unwrap(),
+    )
+    .unwrap();
+    harlite()
+        .arg("check")
+        .arg(&warning_path)
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains(
+            "timing wait must be -1 or non-negative",
+        ));
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "--bodies", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+    harlite()
+        .arg("check")
+        .arg(&db_path)
+        .args(["--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"valid\": true"));
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute(
+        "UPDATE response_body_fts SET body = 'stale indexed content' WHERE rowid = (SELECT MIN(rowid) FROM response_body_fts)",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    harlite()
+        .arg("check")
+        .arg(&db_path)
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("does not match blob content"));
+    harlite()
+        .arg("fts-rebuild")
+        .arg(&db_path)
+        .assert()
+        .success();
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute(
+        "INSERT INTO blobs (hash, content, size) VALUES ('not-a-blake3-hash', X'', 0)",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    harlite()
+        .arg("check")
+        .arg(&db_path)
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("content hash is"));
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute("DELETE FROM blobs WHERE hash = 'not-a-blake3-hash'", [])
+        .unwrap();
+    conn.execute(
+        "UPDATE blobs SET content = X'636F7272757074' WHERE length(content) > 0",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    harlite()
+        .arg("check")
+        .arg(&db_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Validation failed"));
+}
+
+#[test]
+fn test_stdin_har_support_for_import_check_export_and_report() {
+    let tmp = TempDir::new().unwrap();
+    let input = fs::read("tests/fixtures/simple.har").unwrap();
+    let db_path = tmp.path().join("stdin.db");
+    let exported_path = tmp.path().join("filtered.har");
+    let report_path = tmp.path().join("report.html");
+
+    harlite()
+        .args(["import", "-", "--output"])
+        .arg(&db_path)
+        .write_stdin(input.clone())
+        .assert()
+        .success();
+    harlite()
+        .args(["check", "-", "--strict"])
+        .write_stdin(input.clone())
+        .assert()
+        .success();
+    #[cfg(feature = "compression")]
+    {
+        let mut brotli_input = Vec::new();
+        {
+            let mut compressor = brotli::CompressorWriter::new(&mut brotli_input, 4096, 5, 22);
+            compressor.write_all(&input).unwrap();
+        }
+        harlite()
+            .args(["check", "-", "--strict"])
+            .write_stdin(brotli_input)
+            .assert()
+            .success();
+    }
+    harlite()
+        .args(["export", "-", "--output"])
+        .arg(&exported_path)
+        .write_stdin(input.clone())
+        .assert()
+        .success();
+    harlite()
+        .args(["report", "-", "--output"])
+        .arg(&report_path)
+        .write_stdin(input)
+        .assert()
+        .success();
+
+    assert!(db_path.exists());
+    assert!(exported_path.exists());
+    assert!(report_path.exists());
+}
+
+#[test]
+fn test_har_native_redaction_and_pii_redaction() {
+    let tmp = TempDir::new().unwrap();
+    let redact_out = tmp.path().join("safe.har");
+    let form_redact_out = tmp.path().join("form-safe.har");
+    let pii_input = tmp.path().join("pii.har");
+    let pii_out = tmp.path().join("pii-safe.har");
+    let encoded_pii_input = tmp.path().join("encoded-pii.har");
+    let encoded_pii_out = tmp.path().join("encoded-pii-safe.har");
+    let pii_db = tmp.path().join("pii.db");
+    let pii_db_out = tmp.path().join("pii-safe.db");
+    let relative_input = tmp.path().join("relative.har");
+    let relative_out = tmp.path().join("relative-safe.har");
+
+    harlite()
+        .args(["redact", "tests/fixtures/redact.har", "--output"])
+        .arg(&redact_out)
+        .assert()
+        .success();
+    let redacted: serde_json::Value =
+        serde_json::from_slice(&fs::read(&redact_out).unwrap()).unwrap();
+    assert_eq!(
+        redacted["log"]["entries"][0]["request"]["headers"][1]["value"],
+        "REDACTED"
+    );
+
+    let mut relative: serde_json::Value =
+        serde_json::from_slice(&fs::read("tests/fixtures/redact.har").unwrap()).unwrap();
+    relative["log"]["entries"][0]["request"]["url"] = json!("/api?token=relative-url-secret");
+    relative["log"]["entries"][0]["request"]["queryString"] =
+        json!([{ "name": "token", "value": "relative-url-secret" }]);
+    fs::write(&relative_input, serde_json::to_vec(&relative).unwrap()).unwrap();
+    harlite()
+        .arg("redact")
+        .arg(&relative_input)
+        .args([
+            "--no-defaults",
+            "--query-param",
+            "token",
+            "--match",
+            "exact",
+            "--output",
+        ])
+        .arg(&relative_out)
+        .assert()
+        .success();
+    let relative_redacted: serde_json::Value =
+        serde_json::from_slice(&fs::read(&relative_out).unwrap()).unwrap();
+    assert_eq!(
+        relative_redacted["log"]["entries"][0]["request"]["url"],
+        "/api?token=REDACTED"
+    );
+    assert_eq!(
+        relative_redacted["log"]["entries"][0]["request"]["queryString"][0]["value"],
+        "REDACTED"
+    );
+
+    let mut pii: serde_json::Value =
+        serde_json::from_slice(&fs::read("tests/fixtures/redact.har").unwrap()).unwrap();
+    let encoded_response = "contact=alice%40example.com";
+    pii["log"]["entries"][0]["response"]["content"]["mimeType"] =
+        json!("application/x-www-form-urlencoded");
+    pii["log"]["entries"][0]["response"]["content"]["encoding"] = json!("base64");
+    pii["log"]["entries"][0]["response"]["content"]["text"] =
+        json!(STANDARD.encode(encoded_response));
+    pii["log"]["entries"][0]["response"]["content"]["size"] = json!(encoded_response.len());
+    pii["log"]["entries"][0]["request"]["postData"] = json!({
+        "mimeType": "application/x-www-form-urlencoded",
+        "text": "contact=carol%40example.com",
+        "params": [{
+            "name": "erin@example.com",
+            "value": "bob@example.com",
+            "fileName": "frank@example.com.txt"
+        }]
+    });
+    fs::write(&pii_input, serde_json::to_vec(&pii).unwrap()).unwrap();
+
+    harlite()
+        .arg("redact")
+        .arg(&pii_input)
+        .args([
+            "--no-defaults",
+            "--body-regex",
+            r"[A-Za-z]+@example\.com",
+            "--output",
+        ])
+        .arg(&form_redact_out)
+        .assert()
+        .success();
+    let form_redacted = fs::read_to_string(&form_redact_out).unwrap();
+    assert!(!form_redacted.contains("bob@example.com"));
+    assert!(!form_redacted.contains("carol@example.com"));
+    assert!(!form_redacted.contains("erin@example.com"));
+    assert!(!form_redacted.contains("frank@example.com"));
+
+    harlite()
+        .arg("pii")
+        .arg(&pii_input)
+        .args(["--redact", "--output"])
+        .arg(&pii_out)
+        .args(["--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("email"));
+    let pii_redacted = fs::read_to_string(&pii_out).unwrap();
+    assert!(!pii_redacted.contains("alice@example.com"));
+    assert!(!pii_redacted.contains("bob@example.com"));
+    assert!(!pii_redacted.contains("carol@example.com"));
+    assert!(!pii_redacted.contains("carol%40example.com"));
+    assert!(!pii_redacted.contains("erin@example.com"));
+    assert!(!pii_redacted.contains("frank@example.com"));
+    assert!(pii_redacted.contains("REDACTED"));
+    let pii_redacted_json: serde_json::Value = serde_json::from_str(&pii_redacted).unwrap();
+    let response_text = pii_redacted_json["log"]["entries"][0]["response"]["content"]["text"]
+        .as_str()
+        .unwrap();
+    let response_text = String::from_utf8(STANDARD.decode(response_text).unwrap()).unwrap();
+    assert_eq!(response_text, "contact=REDACTED");
+
+    harlite().arg("check").arg(&pii_out).assert().success();
+
+    let mut encoded_pii: serde_json::Value =
+        serde_json::from_slice(&fs::read("tests/fixtures/simple.har").unwrap()).unwrap();
+    encoded_pii["log"]["entries"][0]["request"]["url"] = json!(
+        "https://dave%40example.com@2125551212.example.test/users/bob%40example.com?email=alice%40example.com&nested=grace%2540example.com#carol%40example.com"
+    );
+    encoded_pii["log"]["entries"][0]["request"]["queryString"] =
+        json!([{ "name": "email", "value": "alice@example.com" }]);
+    fs::write(
+        &encoded_pii_input,
+        serde_json::to_vec(&encoded_pii).unwrap(),
+    )
+    .unwrap();
+    harlite()
+        .arg("pii")
+        .arg(&encoded_pii_input)
+        .args(["--redact", "--token", "[REDACTED]", "--output"])
+        .arg(&encoded_pii_out)
+        .args(["--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("email"));
+    let encoded_redacted = fs::read_to_string(&encoded_pii_out).unwrap();
+    assert!(!encoded_redacted.contains("alice@example.com"));
+    assert!(!encoded_redacted.contains("alice%40example.com"));
+    assert!(!encoded_redacted.contains("bob%40example.com"));
+    assert!(!encoded_redacted.contains("carol%40example.com"));
+    assert!(!encoded_redacted.contains("dave%40example.com"));
+    assert!(!encoded_redacted.contains("grace%2540example.com"));
+    assert!(!encoded_redacted.contains("grace%40example.com"));
+    assert!(!encoded_redacted.contains("2125551212"));
+    assert!(encoded_redacted.contains("REDACTED"));
+    let encoded_redacted_json: serde_json::Value = serde_json::from_str(&encoded_redacted).unwrap();
+    assert_eq!(
+        encoded_redacted_json["log"]["entries"][1]["request"]["url"],
+        encoded_pii["log"]["entries"][1]["request"]["url"]
+    );
+    assert_eq!(
+        encoded_redacted_json["log"]["entries"][1]["request"]["queryString"],
+        encoded_pii["log"]["entries"][1]["request"]["queryString"]
+    );
+
+    harlite()
+        .arg("import")
+        .arg(&pii_input)
+        .arg(&encoded_pii_input)
+        .args(["--bodies", "--output"])
+        .arg(&pii_db)
+        .assert()
+        .success();
+    harlite()
+        .arg("pii")
+        .arg(&pii_db)
+        .args(["--redact", "--output"])
+        .arg(&pii_db_out)
+        .args(["--format", "json"])
+        .assert()
+        .success();
+    let conn = rusqlite::Connection::open(&pii_db_out).unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT entries.url, entries.host, entries.path, entries.query_string, blobs.content
+             FROM entries
+             LEFT JOIN blobs ON blobs.hash = entries.request_body_hash",
+        )
+        .unwrap();
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<Vec<u8>>>(4)?,
+            ))
+        })
+        .unwrap();
+    let mut database_text = String::new();
+    for row in rows {
+        let (url, host, path, query, body) = row.unwrap();
+        database_text.push_str(&url.unwrap_or_default());
+        database_text.push_str(&host.unwrap_or_default());
+        database_text.push_str(&path.unwrap_or_default());
+        database_text.push_str(&query.unwrap_or_default());
+        database_text.push_str(&String::from_utf8(body.unwrap_or_default()).unwrap());
+    }
+    for secret in [
+        "alice@example.com",
+        "alice%40example.com",
+        "bob%40example.com",
+        "carol%40example.com",
+        "dave%40example.com",
+        "grace%2540example.com",
+        "grace%40example.com",
+        "2125551212",
+    ] {
+        assert!(
+            !database_text.contains(secret),
+            "database retained {secret}"
+        );
+    }
+}
+
+#[test]
+fn test_request_export_formats_and_sensitive_header_policy() {
+    let tmp = TempDir::new().unwrap();
+    let form_path = tmp.path().join("form.har");
+    let db_path = tmp.path().join("legacy.db");
+    let cookie_db_path = tmp.path().join("cookies.db");
+
+    harlite()
+        .args(["request", "tests/fixtures/redact.har", "--format", "curl"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("curl"))
+        .stdout(predicate::str::contains("supersecret").not());
+
+    harlite()
+        .args([
+            "request",
+            "tests/fixtures/redact.har",
+            "--format",
+            "powershell",
+            "--include-sensitive",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Invoke-WebRequest"))
+        .stdout(predicate::str::contains("supersecret"))
+        .stdout(predicate::str::contains("session_id=sess123"));
+
+    harlite()
+        .args([
+            "request",
+            "tests/fixtures/simple.har",
+            "--format",
+            "node-fetch",
+            "--limit",
+            "1",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "import fetch from \"node-fetch\";",
+        ));
+
+    let output = harlite()
+        .args([
+            "request",
+            "tests/fixtures/simple.har",
+            "--format",
+            "node-fetch",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(stdout.matches("import fetch from").count(), 1);
+
+    let mut form: serde_json::Value =
+        serde_json::from_slice(&fs::read("tests/fixtures/simple.har").unwrap()).unwrap();
+    form["log"]["entries"][0]["request"]["method"] = json!("POST");
+    form["log"]["entries"][0]["request"]["postData"] = json!({
+        "mimeType": "application/x-www-form-urlencoded; charset=UTF-8",
+        "params": [{ "name": "message", "value": "hello world" }]
+    });
+    form["log"]["entries"][0]["request"]["headers"]
+        .as_array_mut()
+        .unwrap()
+        .extend([
+            json!({ "name": "Private-Token", "value": "gitlab-secret" }),
+            json!({ "name": "X-Amz-Security-Token", "value": "aws-secret" }),
+            json!({ "name": "X-Authorization", "value": "variant-secret" }),
+            json!({ "name": "X-AuthToken", "value": "concatenated-auth-secret" }),
+            json!({ "name": "X-AccessToken", "value": "concatenated-access-secret" }),
+            json!({ "name": "Transfer-Encoding", "value": "chunked" }),
+            json!({ "name": "X-Dupe", "value": "first" }),
+            json!({ "name": "x-dupe", "value": "second" }),
+        ]);
+    fs::write(&form_path, serde_json::to_vec(&form).unwrap()).unwrap();
+    harlite()
+        .arg("request")
+        .arg(&form_path)
+        .args(["--format", "curl", "--limit", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("message=hello+world"))
+        .stdout(predicate::str::contains(
+            "Content-Type: application/x-www-form-urlencoded; charset=UTF-8",
+        ))
+        .stdout(predicate::str::contains("gitlab-secret").not())
+        .stdout(predicate::str::contains("aws-secret").not())
+        .stdout(predicate::str::contains("variant-secret").not())
+        .stdout(predicate::str::contains("concatenated-auth-secret").not())
+        .stdout(predicate::str::contains("concatenated-access-secret").not())
+        .stdout(predicate::str::contains("Transfer-Encoding").not());
+
+    let output = harlite()
+        .arg("request")
+        .arg(&form_path)
+        .args(["--format", "powershell", "--limit", "1"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let powershell = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        powershell.to_ascii_lowercase().matches("'x-dupe'").count(),
+        1
+    );
+    assert!(powershell.contains("first, second"));
+
+    form["log"]["entries"][0]["request"]["postData"] = json!({
+        "mimeType": "multipart/form-data",
+        "params": [
+            { "name": "message", "value": "hello multipart" },
+            {
+                "name": "upload",
+                "value": "captured file contents",
+                "fileName": "example.txt",
+                "contentType": "text/plain"
+            }
+        ]
+    });
+    form["log"]["entries"][0]["request"]["headers"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "name": "Content-Type",
+            "value": "multipart/form-data; boundary=stale-captured-boundary"
+        }));
+    fs::write(&form_path, serde_json::to_vec(&form).unwrap()).unwrap();
+    let output = harlite()
+        .arg("request")
+        .arg(&form_path)
+        .args(["--format", "fetch", "--limit", "1"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let fetch = String::from_utf8(output.stdout).unwrap();
+    assert!(fetch.contains("multipart/form-data; boundary=harlite-"));
+    assert!(!fetch.contains("stale-captured-boundary"));
+    assert!(fetch.contains("name=\\\"message\\\""));
+    assert!(fetch.contains("hello multipart"));
+    assert!(fetch.contains("filename=\\\"example.txt\\\""));
+    assert!(fetch.contains("captured file contents"));
+
+    form["log"]["entries"][0]["request"]["postData"] = json!({
+        "mimeType": "text/plain",
+        "text": "@captured-body"
+    });
+    fs::write(&form_path, serde_json::to_vec(&form).unwrap()).unwrap();
+    harlite()
+        .arg("request")
+        .arg(&form_path)
+        .args(["--format", "curl", "--limit", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("printf %s '@captured-body'"))
+        .stdout(predicate::str::contains("--data-binary @-"));
+
+    harlite()
+        .args(["import", "tests/fixtures/redact.har", "-o"])
+        .arg(&cookie_db_path)
+        .assert()
+        .success();
+    harlite()
+        .arg("request")
+        .arg(&cookie_db_path)
+        .args(["--include-sensitive", "--limit", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("session_id=sess123"));
+
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "--bodies", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+    harlite()
+        .arg("request")
+        .arg(&db_path)
+        .args([
+            "--method",
+            "get",
+            "--host",
+            "API.EXAMPLE.COM",
+            "--limit",
+            "1",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("curl"));
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_graphql_fields_entry_field;
+         DROP INDEX IF EXISTS idx_graphql_fields_field;
+         DROP INDEX IF EXISTS idx_graphql_fields_entry;
+         DROP TABLE graphql_fields;",
+    )
+    .unwrap();
+    drop(conn);
+    harlite()
+        .arg("request")
+        .arg(&db_path)
+        .args(["--limit", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("curl"));
+}
+
+#[test]
+fn test_analyze_and_diff_ci_gates_return_failure() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("gate.db");
+    let changed_db_path = tmp.path().join("gate-changed.db");
+    let noise_left_path = tmp.path().join("noise-left.har");
+    let noise_right_path = tmp.path().join("noise-right.har");
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "-o"])
+        .arg(&db_path)
+        .assert()
+        .success();
+    harlite()
+        .args(["import", "tests/fixtures/simple_changed.har", "-o"])
+        .arg(&changed_db_path)
+        .assert()
+        .success();
+
+    harlite()
+        .arg("analyze")
+        .arg(&db_path)
+        .args(["--max-p95-total-ms", "1", "--json"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("\"entries\":2"))
+        .stderr(predicate::str::contains("Threshold exceeded"));
+
+    harlite()
+        .args([
+            "diff",
+            "tests/fixtures/simple.har",
+            "tests/fixtures/simple_changed.har",
+            "--fail-on",
+            "new-errors",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("\"change\""))
+        .stderr(predicate::str::contains("Threshold exceeded"));
+
+    harlite()
+        .arg("diff")
+        .arg(&db_path)
+        .arg(&changed_db_path)
+        .args([
+            "--method",
+            "get",
+            "--host",
+            "API.EXAMPLE.COM",
+            "--fail-on",
+            "any",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("\"change\""))
+        .stderr(predicate::str::contains("Threshold exceeded"));
+
+    harlite()
+        .arg("analyze")
+        .arg(&db_path)
+        .args(["--max-p95-total-ms", "NaN"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("finite and non-negative"));
+    harlite()
+        .args([
+            "diff",
+            "tests/fixtures/simple.har",
+            "tests/fixtures/simple_changed.har",
+            "--max-total-regression-ms",
+            "NaN",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("finite and non-negative"));
+
+    let noise_left: serde_json::Value =
+        serde_json::from_slice(&fs::read("tests/fixtures/simple.har").unwrap()).unwrap();
+    let mut noise_right = noise_left.clone();
+    let original_time = noise_right["log"]["entries"][0]["time"].as_f64().unwrap();
+    noise_right["log"]["entries"][0]["time"] = json!(original_time + 1e-7);
+    noise_right["log"]["entries"][0]["response"]["headers"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "name": "x-noise-test", "value": "changed" }));
+    fs::write(&noise_left_path, serde_json::to_vec(&noise_left).unwrap()).unwrap();
+    fs::write(&noise_right_path, serde_json::to_vec(&noise_right).unwrap()).unwrap();
+    harlite()
+        .arg("diff")
+        .arg(&noise_left_path)
+        .arg(&noise_right_path)
+        .args([
+            "--fail-on",
+            "regression",
+            "--max-total-regression-ms",
+            "0",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"change\":\"changed\""));
+}
+
+#[test]
+fn test_diff_can_ignore_query_parameters_when_matching() {
+    let tmp = TempDir::new().unwrap();
+    let left_path = tmp.path().join("left.har");
+    let right_path = tmp.path().join("right.har");
+    let spelling_left_path = tmp.path().join("left-spelling.har");
+    let spelling_right_path = tmp.path().join("right-spelling.har");
+    let mut left: serde_json::Value =
+        serde_json::from_slice(&fs::read("tests/fixtures/simple.har").unwrap()).unwrap();
+    let mut right = left.clone();
+    for entry in left["log"]["entries"].as_array_mut().unwrap() {
+        let url = entry["request"]["url"].as_str().unwrap().to_string();
+        entry["request"]["url"] = json!(format!("{url}?cacheBust=left"));
+    }
+    for entry in right["log"]["entries"].as_array_mut().unwrap() {
+        let url = entry["request"]["url"].as_str().unwrap().to_string();
+        entry["request"]["url"] = json!(format!("{url}?cacheBust=right"));
+    }
+    fs::write(&left_path, serde_json::to_vec(&left).unwrap()).unwrap();
+    fs::write(&right_path, serde_json::to_vec(&right).unwrap()).unwrap();
+
+    let mut spelling_left = left.clone();
+    let mut spelling_right = right.clone();
+    spelling_left["log"]["entries"][0]["request"]["url"] =
+        json!("https://example.com?cacheBust=left");
+    spelling_right["log"]["entries"][0]["request"]["url"] =
+        json!("https://example.com/?cacheBust=right");
+    fs::write(
+        &spelling_left_path,
+        serde_json::to_vec(&spelling_left).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        &spelling_right_path,
+        serde_json::to_vec(&spelling_right).unwrap(),
+    )
+    .unwrap();
+
+    harlite()
+        .arg("diff")
+        .arg(&left_path)
+        .arg(&right_path)
+        .args([
+            "--ignore-query-param",
+            "cacheBust",
+            "--fail-on",
+            "any",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::eq("[]\n"));
+
+    harlite()
+        .arg("diff")
+        .arg(&spelling_left_path)
+        .arg(&spelling_right_path)
+        .args([
+            "--ignore-query-param",
+            "cacheBust",
+            "--fail-on",
+            "any",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Threshold exceeded"));
 }

@@ -18,3 +18,17 @@ pub mod graphql;
 pub mod har;
 pub mod plugins;
 pub mod size;
+
+mod cli;
+mod config;
+mod router;
+
+/// Parse command-line arguments and run the harlite CLI.
+///
+/// This is primarily used by the packaged binary. Embedders should prefer the
+/// stable functions and option types exposed through [`crate::api`].
+pub fn run_cli() -> error::Result<()> {
+    use clap::Parser;
+
+    router::run(cli::Cli::parse())
+}

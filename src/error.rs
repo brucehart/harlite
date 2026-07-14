@@ -39,6 +39,14 @@ pub enum HarliteError {
     /// Invalid command-line arguments or options.
     #[error("{0}")]
     InvalidArgs(String),
+
+    /// Input validation completed and found one or more issues.
+    #[error("Validation failed with {0} issue(s)")]
+    ValidationFailed(usize),
+
+    /// A user-supplied automation or regression threshold was exceeded.
+    #[error("Threshold exceeded: {0}")]
+    ThresholdExceeded(String),
 }
 
 /// Convenience result type for harlite operations.

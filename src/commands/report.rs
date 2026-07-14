@@ -226,26 +226,32 @@ enum InputKind {
 }
 
 fn detect_input_kind(input: &Path) -> Result<InputKind> {
+    if input == Path::new("-") {
+        return Ok(InputKind::Har);
+    }
     let lower = input
         .extension()
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    if lower == "db" || input
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase()
-        .ends_with(".db")
+    if lower == "db"
+        || input
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .ends_with(".db")
     {
         return Ok(InputKind::Db);
     }
-    if lower == "har" || lower == "json" || input
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase()
-        .contains(".har")
+    if lower == "har"
+        || lower == "json"
+        || input
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .contains(".har")
     {
         return Ok(InputKind::Har);
     }
@@ -332,7 +338,11 @@ fn normalize_lower(s: &str) -> String {
     s.trim().to_ascii_lowercase()
 }
 
-fn page_matches_filter(page_id: Option<&str>, page_title: Option<&str>, filters: &[String]) -> bool {
+fn page_matches_filter(
+    page_id: Option<&str>,
+    page_title: Option<&str>,
+    filters: &[String],
+) -> bool {
     if filters.is_empty() {
         return true;
     }
@@ -346,7 +356,7 @@ fn page_matches_filter(page_id: Option<&str>, page_title: Option<&str>, filters:
 }
 
 fn is_navigation_entry(entry: &ReportEntry) -> bool {
-    if entry.method.to_ascii_uppercase() != "GET" {
+    if !entry.method.eq_ignore_ascii_case("GET") {
         return false;
     }
     let Some(mime) = entry.mime.as_deref() else {
@@ -373,7 +383,11 @@ fn build_groups(
         return Vec::new();
     }
 
-    entries.sort_by(|a, b| a.started_at_dt.cmp(&b.started_at_dt).then_with(|| a.url.cmp(&b.url)));
+    entries.sort_by(|a, b| {
+        a.started_at_dt
+            .cmp(&b.started_at_dt)
+            .then_with(|| a.url.cmp(&b.url))
+    });
 
     let mut groups: Vec<WaterfallGroup> = Vec::new();
     let mut group_map: HashMap<String, usize> = HashMap::new();
@@ -381,8 +395,11 @@ fn build_groups(
     let mut current_nav: Option<String> = None;
 
     for entry in entries {
-        if !page_matches_filter(entry.page_id.as_deref(), entry.page_title.as_deref(), page_filters)
-        {
+        if !page_matches_filter(
+            entry.page_id.as_deref(),
+            entry.page_title.as_deref(),
+            page_filters,
+        ) {
             continue;
         }
 
@@ -466,7 +483,9 @@ fn entry_to_report_entry_db(
     page_map: &HashMap<(i64, String), PageRow>,
 ) -> Option<ReportEntry> {
     let started_at = row.started_at?;
-    let dt = DateTime::parse_from_rfc3339(&started_at).ok()?.with_timezone(&Utc);
+    let dt = DateTime::parse_from_rfc3339(&started_at)
+        .ok()?
+        .with_timezone(&Utc);
 
     let url = row.url.unwrap_or_default();
     let host = row.host.unwrap_or_else(|| {
@@ -513,7 +532,10 @@ fn entry_to_report_entry_db(
     })
 }
 
-fn entry_to_report_entry_har(entry: HarEntry, page_title_map: &HashMap<String, Option<String>>) -> Option<ReportEntry> {
+fn entry_to_report_entry_har(
+    entry: HarEntry,
+    page_title_map: &HashMap<String, Option<String>>,
+) -> Option<ReportEntry> {
     let dt = DateTime::parse_from_rfc3339(&entry.started_date_time)
         .ok()?
         .with_timezone(&Utc);
@@ -532,15 +554,18 @@ fn entry_to_report_entry_har(entry: HarEntry, page_title_map: &HashMap<String, O
         .flatten();
 
     let t = entry.timings;
-    let timings = t.as_ref().map(|t| TimingsMs {
-        blocked: normalize_ms(t.blocked),
-        dns: normalize_ms(t.dns),
-        connect: normalize_ms(t.connect),
-        ssl: normalize_ms(t.ssl),
-        send: Some(t.send).filter(|v| *v >= 0.0),
-        wait: Some(t.wait).filter(|v| *v >= 0.0),
-        receive: Some(t.receive).filter(|v| *v >= 0.0),
-    }).unwrap_or_default();
+    let timings = t
+        .as_ref()
+        .map(|t| TimingsMs {
+            blocked: normalize_ms(t.blocked),
+            dns: normalize_ms(t.dns),
+            connect: normalize_ms(t.connect),
+            ssl: normalize_ms(t.ssl),
+            send: Some(t.send).filter(|v| *v >= 0.0),
+            wait: Some(t.wait).filter(|v| *v >= 0.0),
+            receive: Some(t.receive).filter(|v| *v >= 0.0),
+        })
+        .unwrap_or_default();
 
     Some(ReportEntry {
         started_at: entry.started_date_time.clone(),
@@ -555,7 +580,8 @@ fn entry_to_report_entry_har(entry: HarEntry, page_title_map: &HashMap<String, O
         status: Some(entry.response.status),
         mime: entry.response.content.mime_type.clone(),
         request_body_size: normalize_i64(entry.request.body_size),
-        response_body_size: normalize_i64(entry.response.body_size).or(Some(entry.response.content.size).filter(|v| *v >= 0)),
+        response_body_size: normalize_i64(entry.response.body_size)
+            .or(Some(entry.response.content.size).filter(|v| *v >= 0)),
         page_id,
         page_title,
     })
@@ -565,7 +591,11 @@ fn apply_start_offsets(entries: &mut [ReportEntry]) -> Option<(DateTime<Utc>, Da
     if entries.is_empty() {
         return None;
     }
-    entries.sort_by(|a, b| a.started_at_dt.cmp(&b.started_at_dt).then_with(|| a.url.cmp(&b.url)));
+    entries.sort_by(|a, b| {
+        a.started_at_dt
+            .cmp(&b.started_at_dt)
+            .then_with(|| a.url.cmp(&b.url))
+    });
     let base = entries.first().map(|e| e.started_at_dt)?;
     let mut max_end = 0.0;
     for e in entries.iter_mut() {
@@ -611,7 +641,11 @@ fn ttfb_ms(entry: &ReportEntry) -> Option<f64> {
 
 fn top_slowest(entries: &[ReportEntry], top: usize) -> (Vec<SlowRow>, Vec<SlowRow>) {
     let mut by_total: Vec<&ReportEntry> = entries.iter().collect();
-    by_total.sort_by(|a, b| b.total_ms.partial_cmp(&a.total_ms).unwrap_or(std::cmp::Ordering::Equal));
+    by_total.sort_by(|a, b| {
+        b.total_ms
+            .partial_cmp(&a.total_ms)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let mut by_ttfb: Vec<&ReportEntry> = entries.iter().collect();
     by_ttfb.sort_by(|a, b| {
@@ -630,19 +664,31 @@ fn top_slowest(entries: &[ReportEntry], top: usize) -> (Vec<SlowRow>, Vec<SlowRo
         ttfb_ms: ttfb_ms(e),
     };
 
-    let mut out_total = by_total.into_iter().take(top).map(to_row).collect::<Vec<_>>();
+    let mut out_total = by_total
+        .into_iter()
+        .take(top)
+        .map(to_row)
+        .collect::<Vec<_>>();
     out_total.retain(|r| r.total_ms > 0.0);
 
-    let mut out_ttfb = by_ttfb.into_iter().take(top).map(to_row).collect::<Vec<_>>();
+    let mut out_ttfb = by_ttfb
+        .into_iter()
+        .take(top)
+        .map(to_row)
+        .collect::<Vec<_>>();
     out_ttfb.retain(|r| r.ttfb_ms.unwrap_or(-1.0) >= 0.0);
 
     (out_total, out_ttfb)
 }
 
-fn count_over_threshold(entries: &[ReportEntry], threshold: f64, fetch: fn(&ReportEntry) -> Option<f64>) -> usize {
+fn count_over_threshold(
+    entries: &[ReportEntry],
+    threshold: f64,
+    fetch: fn(&ReportEntry) -> Option<f64>,
+) -> usize {
     entries
         .iter()
-        .filter_map(|e| fetch(e))
+        .filter_map(fetch)
         .filter(|v| *v >= threshold)
         .count()
 }
@@ -675,7 +721,11 @@ fn top_error_endpoints(entries: &[ReportEntry], top: usize) -> Vec<ErrorEndpoint
             sample_url,
         })
         .collect::<Vec<_>>();
-    rows.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.endpoint.cmp(&b.endpoint)));
+    rows.sort_by(|a, b| {
+        b.count
+            .cmp(&a.count)
+            .then_with(|| a.endpoint.cmp(&b.endpoint))
+    });
     if rows.len() > top {
         rows.truncate(top);
     }
@@ -709,20 +759,13 @@ fn entry_matches_filters_har(
     if !f.url.is_empty() && !f.url.iter().any(|u| u == &e.url) {
         return false;
     }
-    if !f.url_contains.is_empty()
-        && !f.url_contains.iter().any(|needle| e.url.contains(needle))
-    {
+    if !f.url_contains.is_empty() && !f.url_contains.iter().any(|needle| e.url.contains(needle)) {
         return false;
     }
     if !f.host.is_empty() && !f.host.iter().any(|h| h == &e.host) {
         return false;
     }
-    if !f.method.is_empty()
-        && !f
-            .method
-            .iter()
-            .any(|m| m.eq_ignore_ascii_case(&e.method))
-    {
+    if !f.method.is_empty() && !f.method.iter().any(|m| m.eq_ignore_ascii_case(&e.method)) {
         return false;
     }
     if !f.status.is_empty() && !f.status.iter().any(|s| e.status == Some(*s)) {
@@ -742,7 +785,9 @@ fn entry_matches_filters_har(
         return false;
     }
     if !exts.is_empty() {
-        let Some(ext) = url_extension(&e.url) else { return false };
+        let Some(ext) = url_extension(&e.url) else {
+            return false;
+        };
         if !exts.contains(&ext) {
             return false;
         }
@@ -769,9 +814,7 @@ fn entry_matches_filters_har(
             return false;
         }
     }
-    if !f.source_contains.is_empty()
-        && !f.source_contains.iter().any(|s| source_name.contains(s))
-    {
+    if !f.source_contains.is_empty() && !f.source_contains.iter().any(|s| source_name.contains(s)) {
         return false;
     }
 
@@ -1179,7 +1222,10 @@ fn waterfall_html(report: &JsonReport<'_>) -> String {
             escape_html(&g.name)
         ));
         for e in &g.entries {
-            let status = e.status.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string());
+            let status = e
+                .status
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string());
             let x0 = (e.start_ms / total_ms) * W;
             let mut x = x0;
             let mut rects = String::new();
@@ -1243,6 +1289,12 @@ fn waterfall_html(report: &JsonReport<'_>) -> String {
 pub fn run_report(input: PathBuf, options: &ReportOptions) -> Result<()> {
     let kind = detect_input_kind(&input)?;
 
+    if input == Path::new("-") && options.output.is_none() {
+        return Err(HarliteError::InvalidArgs(
+            "Reading a HAR from standard input requires --output".to_string(),
+        ));
+    }
+
     let title = options
         .title
         .clone()
@@ -1304,16 +1356,9 @@ pub fn run_report(input: PathBuf, options: &ReportOptions) -> Result<()> {
                 }
             }
 
-            let from_dt = options
-                .filters
-                .from
-                .as_deref()
-                .and_then(parse_timestamp);
-            let to_dt = options.filters.to.as_deref().and_then(parse_timestamp).map(|dt| {
-                // If user passed a date-only string, parse_timestamp returned midnight.
-                // Accept that behavior (consistent with existing util); users can pass RFC3339 for precision.
-                dt
-            });
+            let from_dt = options.filters.from.as_deref().and_then(parse_timestamp);
+            // Date-only values resolve to midnight; callers can use RFC3339 for precision.
+            let to_dt = options.filters.to.as_deref().and_then(parse_timestamp);
 
             let url_regexes: Vec<Regex> = options
                 .filters
@@ -1333,7 +1378,9 @@ pub fn run_report(input: PathBuf, options: &ReportOptions) -> Result<()> {
 
             let mut entries = Vec::new();
             for e in har.log.entries {
-                let Some(re) = entry_to_report_entry_har(e, &page_title_map) else { continue };
+                let Some(re) = entry_to_report_entry_har(e, &page_title_map) else {
+                    continue;
+                };
                 if !entry_matches_filters_har(
                     &re,
                     options,
@@ -1360,7 +1407,8 @@ pub fn run_report(input: PathBuf, options: &ReportOptions) -> Result<()> {
         total_ms,
     });
 
-    let slow_total_count = count_over_threshold(&entries, options.slow_total_ms, |e| Some(e.total_ms));
+    let slow_total_count =
+        count_over_threshold(&entries, options.slow_total_ms, |e| Some(e.total_ms));
     let slow_ttfb_count = count_over_threshold(&entries, options.slow_ttfb_ms, ttfb_ms);
     let slow = SlowSummary {
         slow_total_threshold_ms: options.slow_total_ms,
@@ -1554,11 +1602,7 @@ mod tests {
         e2.page_id = Some("p2".to_string());
         e2.page_title = Some("Other".to_string());
 
-        let groups = build_groups(
-            vec![e1, e2],
-            WaterfallGroupBy::Page,
-            &["home".to_string()],
-        );
+        let groups = build_groups(vec![e1, e2], WaterfallGroupBy::Page, &["home".to_string()]);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].entries.len(), 1);
         assert_eq!(groups[0].entries[0].page_id.as_deref(), Some("p1"));
@@ -1566,18 +1610,24 @@ mod tests {
 
     #[test]
     fn entry_matches_filters_har_ext_mime_and_size_filters() -> Result<()> {
-        let mut e = entry("2024-01-15T00:00:00.000Z", 0.0, "https://example.com/app.js");
+        let mut e = entry(
+            "2024-01-15T00:00:00.000Z",
+            0.0,
+            "https://example.com/app.js",
+        );
         e.mime = Some("application/json; charset=utf-8".to_string());
         e.request_body_size = Some(100);
         e.response_body_size = Some(200);
 
-        let mut filters = EntryFilterOptions::default();
-        filters.ext = vec!["js".to_string()];
-        filters.mime_contains = vec!["JSON".to_string()];
-        filters.min_request_size = Some("50".to_string());
-        filters.max_request_size = Some("150".to_string());
-        filters.min_response_size = Some("100".to_string());
-        filters.max_response_size = Some("250".to_string());
+        let filters = EntryFilterOptions {
+            ext: vec!["js".to_string()],
+            mime_contains: vec!["JSON".to_string()],
+            min_request_size: Some("50".to_string()),
+            max_request_size: Some("150".to_string()),
+            min_response_size: Some("100".to_string()),
+            max_response_size: Some("250".to_string()),
+            ..EntryFilterOptions::default()
+        };
 
         // Sanity check size parsing; these should all be valid.
         let _ = size::parse_size_bytes_i64(filters.min_request_size.as_deref().unwrap())?;

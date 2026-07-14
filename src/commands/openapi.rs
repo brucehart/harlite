@@ -72,7 +72,11 @@ pub fn run_openapi(database: PathBuf, options: &OpenApiOptions) -> Result<()> {
             continue;
         };
         let path = parsed.path().to_string();
-        let path = if path.is_empty() { "/".to_string() } else { path };
+        let path = if path.is_empty() {
+            "/".to_string()
+        } else {
+            path
+        };
 
         if let Some(server) = server_from_url(&parsed) {
             servers.insert(server);
@@ -147,7 +151,7 @@ pub fn run_openapi(database: PathBuf, options: &OpenApiOptions) -> Result<()> {
     serde_json::to_writer_pretty(&mut writer, &spec)?;
     writer.write_all(b"\n")?;
 
-    if output_path != PathBuf::from("-") {
+    if output_path != std::path::Path::new("-") {
         println!("Exported OpenAPI schema to {}", output_path.display());
     }
 
@@ -598,7 +602,9 @@ fn merge_schema(a: Schema, b: Schema) -> Schema {
                 schema_type: Some("array".to_string()),
                 properties: None,
                 items: match (a.items, b.items) {
-                    (Some(a_items), Some(b_items)) => Some(Box::new(merge_schema(*a_items, *b_items))),
+                    (Some(a_items), Some(b_items)) => {
+                        Some(Box::new(merge_schema(*a_items, *b_items)))
+                    }
                     (Some(items), None) => Some(items),
                     (None, Some(items)) => Some(items),
                     (None, None) => None,

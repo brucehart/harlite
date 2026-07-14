@@ -406,28 +406,16 @@ pub fn ensure_schema_upgrades(conn: &Connection) -> Result<()> {
         conn.execute("ALTER TABLE entries ADD COLUMN request_id TEXT", [])?;
     }
     if !table_has_column(conn, "entries", "parent_request_id")? {
-        conn.execute(
-            "ALTER TABLE entries ADD COLUMN parent_request_id TEXT",
-            [],
-        )?;
+        conn.execute("ALTER TABLE entries ADD COLUMN parent_request_id TEXT", [])?;
     }
     if !table_has_column(conn, "entries", "initiator_type")? {
-        conn.execute(
-            "ALTER TABLE entries ADD COLUMN initiator_type TEXT",
-            [],
-        )?;
+        conn.execute("ALTER TABLE entries ADD COLUMN initiator_type TEXT", [])?;
     }
     if !table_has_column(conn, "entries", "initiator_url")? {
-        conn.execute(
-            "ALTER TABLE entries ADD COLUMN initiator_url TEXT",
-            [],
-        )?;
+        conn.execute("ALTER TABLE entries ADD COLUMN initiator_url TEXT", [])?;
     }
     if !table_has_column(conn, "entries", "initiator_line")? {
-        conn.execute(
-            "ALTER TABLE entries ADD COLUMN initiator_line INTEGER",
-            [],
-        )?;
+        conn.execute("ALTER TABLE entries ADD COLUMN initiator_line INTEGER", [])?;
     }
     if !table_has_column(conn, "entries", "initiator_column")? {
         conn.execute(
@@ -514,7 +502,6 @@ fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool
         .collect();
     Ok(names.iter().any(|n| n == column))
 }
-
 
 #[cfg(test)]
 mod tests {

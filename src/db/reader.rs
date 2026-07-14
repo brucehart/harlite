@@ -155,8 +155,7 @@ fn push_in_clause(
     if values.is_empty() {
         return;
     }
-    let placeholders = std::iter::repeat("?")
-        .take(values.len())
+    let placeholders = std::iter::repeat_n("?", values.len())
         .collect::<Vec<_>>()
         .join(", ");
     clauses.push(format!("{column} IN ({placeholders})"));
@@ -174,8 +173,7 @@ fn push_in_clause_i32(
     if values.is_empty() {
         return;
     }
-    let placeholders = std::iter::repeat("?")
-        .take(values.len())
+    let placeholders = std::iter::repeat_n("?", values.len())
         .collect::<Vec<_>>()
         .join(", ");
     clauses.push(format!("{column} IN ({placeholders})"));
@@ -193,8 +191,7 @@ fn push_in_clause_i64(
     if values.is_empty() {
         return;
     }
-    let placeholders = std::iter::repeat("?")
-        .take(values.len())
+    let placeholders = std::iter::repeat_n("?", values.len())
         .collect::<Vec<_>>()
         .join(", ");
     clauses.push(format!("{column} IN ({placeholders})"));
@@ -213,8 +210,7 @@ fn push_like_any(
         return;
     }
 
-    let joined = std::iter::repeat(predicate)
-        .take(needles.len())
+    let joined = std::iter::repeat_n(predicate, needles.len())
         .collect::<Vec<_>>()
         .join(" OR ");
     clauses.push(format!("({joined})"));
@@ -385,8 +381,7 @@ pub fn load_pages_for_imports(conn: &Connection, import_ids: &[i64]) -> Result<V
         return Ok(Vec::new());
     }
 
-    let placeholders = std::iter::repeat("?")
-        .take(import_ids.len())
+    let placeholders = std::iter::repeat_n("?", import_ids.len())
         .collect::<Vec<_>>()
         .join(", ");
 
@@ -394,11 +389,7 @@ pub fn load_pages_for_imports(conn: &Connection, import_ids: &[i64]) -> Result<V
         "SELECT import_id, id, started_at, title, on_content_load_ms, on_load_ms, page_extensions, page_timings_extensions FROM pages WHERE import_id IN ({placeholders})"
     );
 
-    let params: Vec<Value> = import_ids
-        .iter()
-        .copied()
-        .map(|id| Value::Integer(id))
-        .collect();
+    let params: Vec<Value> = import_ids.iter().copied().map(Value::Integer).collect();
 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(params.iter()), |row| {
@@ -445,8 +436,7 @@ pub fn load_blobs_by_hashes(conn: &Connection, hashes: &[String]) -> Result<Vec<
     const CHUNK: usize = 900;
 
     for chunk in hashes.chunks(CHUNK) {
-        let placeholders = std::iter::repeat("?")
-            .take(chunk.len())
+        let placeholders = std::iter::repeat_n("?", chunk.len())
             .collect::<Vec<_>>()
             .join(", ");
         let params: Vec<Value> = chunk.iter().map(|h| Value::Text(h.clone())).collect();

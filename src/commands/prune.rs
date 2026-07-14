@@ -98,8 +98,7 @@ pub fn run_prune_with_options(
         )?;
 
         for chunk in hashes.chunks(HASH_CHUNK) {
-            let placeholders = std::iter::repeat("?")
-                .take(chunk.len())
+            let placeholders = std::iter::repeat_n("?", chunk.len())
                 .collect::<Vec<_>>()
                 .join(", ");
 
@@ -128,8 +127,7 @@ pub fn run_prune_with_options(
                 continue;
             }
 
-            let orphan_placeholders = std::iter::repeat("?")
-                .take(orphan_hashes.len())
+            let orphan_placeholders = std::iter::repeat_n("?", orphan_hashes.len())
                 .collect::<Vec<_>>()
                 .join(", ");
             let mut orphan_params: Vec<&dyn rusqlite::ToSql> =

@@ -2,7 +2,9 @@
 use std::collections::{HashMap, HashSet};
 
 #[cfg(feature = "graphql")]
-use graphql_parser::query::{parse_query, Definition, OperationDefinition, Selection, SelectionSet};
+use graphql_parser::query::{
+    parse_query, Definition, OperationDefinition, Selection, SelectionSet,
+};
 use serde_json::Value;
 use url::Url;
 
@@ -24,8 +26,12 @@ struct GraphQLPayload {
 
 pub fn extract_graphql_info(entry: &Entry) -> Option<GraphQLInfo> {
     let request = &entry.request;
-    let content_type = header_value(&request.headers, "content-type")
-        .or_else(|| request.post_data.as_ref().and_then(|post| post.mime_type.clone()));
+    let content_type = header_value(&request.headers, "content-type").or_else(|| {
+        request
+            .post_data
+            .as_ref()
+            .and_then(|post| post.mime_type.clone())
+    });
 
     let mut payload = GraphQLPayload::default();
     if is_graphql_content_type(content_type.as_deref()) {
@@ -104,7 +110,9 @@ fn apply_post_data(post_data: &PostData, content_type: Option<&str>, payload: &m
             return;
         }
 
-        if is_json_mime(mime) || text.trim_start().starts_with('{') || text.trim_start().starts_with('[')
+        if is_json_mime(mime)
+            || text.trim_start().starts_with('{')
+            || text.trim_start().starts_with('[')
         {
             apply_json_payload(text, payload);
         }
@@ -171,7 +179,11 @@ fn apply_graphql_json(value: &Value, payload: &mut GraphQLPayload) {
             payload.operation_name = Some(name.to_string());
         }
     }
-    if value.get("extensions").and_then(|ext| ext.get("persistedQuery")).is_some() {
+    if value
+        .get("extensions")
+        .and_then(|ext| ext.get("persistedQuery"))
+        .is_some()
+    {
         payload.detected = true;
     }
     if payload.query.is_some() || payload.operation_name.is_some() {

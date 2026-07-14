@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use clap::ValueEnum;
 use regex::{NoExpand, Regex, RegexBuilder};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -8,10 +9,12 @@ use url::Url;
 
 use crate::db::store_blob;
 use crate::error::{HarliteError, Result};
+use crate::har::{Cookie, Har, Header, QueryParam};
 
 use super::util::{
-    canonicalize_path_for_compare, delete_orphaned_blobs, finalize_sensitive_write,
-    prepare_sensitive_write, resolve_database, ExternalPathPolicy, StagedDatabase,
+    canonicalize_path_for_compare, delete_orphaned_blobs, derived_output_path,
+    finalize_sensitive_write, is_sqlite_file, prepare_sensitive_write, resolve_database,
+    write_json_atomic, ExternalPathPolicy, StagedDatabase,
 };
 
 #[derive(Clone, Copy, Debug, ValueEnum, serde::Serialize, serde::Deserialize)]
@@ -163,6 +166,47 @@ fn default_cookie_patterns() -> Vec<String> {
     vec!["*".to_string()]
 }
 
+fn build_redaction_matchers(
+    options: &RedactOptions,
+) -> Result<(NameMatcher, NameMatcher, NameMatcher, Vec<Regex>)> {
+    let mut header_patterns = Vec::new();
+    let mut cookie_patterns = Vec::new();
+    let mut query_patterns = Vec::new();
+    if !options.no_defaults && matches!(options.match_mode, NameMatchMode::Wildcard) {
+        header_patterns.extend(default_header_patterns());
+        cookie_patterns.extend(default_cookie_patterns());
+    }
+    header_patterns.extend(options.headers.iter().cloned());
+    cookie_patterns.extend(options.cookies.iter().cloned());
+    query_patterns.extend(options.query_params.iter().cloned());
+
+    let header_matcher = NameMatcher::new(options.match_mode, &header_patterns)?;
+    let cookie_matcher = NameMatcher::new(options.match_mode, &cookie_patterns)?;
+    let query_matcher = NameMatcher::new(options.match_mode, &query_patterns)?;
+    let body_regexes = options
+        .body_regexes
+        .iter()
+        .map(|pattern| Regex::new(pattern))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    if header_matcher.is_empty()
+        && cookie_matcher.is_empty()
+        && query_matcher.is_empty()
+        && body_regexes.is_empty()
+    {
+        let hint = if !matches!(options.match_mode, NameMatchMode::Wildcard) {
+            " (defaults only available in wildcard mode)"
+        } else {
+            ""
+        };
+        return Err(HarliteError::InvalidArgs(format!(
+            "No redaction patterns provided{hint}"
+        )));
+    }
+
+    Ok((header_matcher, cookie_matcher, query_matcher, body_regexes))
+}
+
 fn redact_headers_json(
     json: &str,
     matcher: &NameMatcher,
@@ -249,7 +293,9 @@ fn redact_url_params(
     token: &str,
     matched_names: &mut HashSet<String>,
 ) -> Option<(String, Option<String>, u64)> {
-    let mut parsed = Url::parse(url).ok()?;
+    let Ok(mut parsed) = Url::parse(url) else {
+        return redact_raw_url_params(url, matcher, token, matched_names);
+    };
     let pairs: Vec<(String, String)> = parsed
         .query_pairs()
         .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -281,6 +327,45 @@ fn redact_url_params(
     let new_query = parsed.query().map(|q| q.to_string());
     let new_url: String = parsed.into();
     Some((new_url, new_query, changed))
+}
+
+fn redact_raw_url_params(
+    url: &str,
+    matcher: &NameMatcher,
+    token: &str,
+    matched_names: &mut HashSet<String>,
+) -> Option<(String, Option<String>, u64)> {
+    let (without_fragment, fragment) = url
+        .split_once('#')
+        .map(|(base, fragment)| (base, Some(fragment)))
+        .unwrap_or((url, None));
+    let (prefix, raw_query) = without_fragment.split_once('?')?;
+    let pairs = url::form_urlencoded::parse(raw_query.as_bytes());
+    let mut changed = 0;
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    for (name, value) in pairs {
+        let name = name.into_owned();
+        let mut value = value.into_owned();
+        if matcher.matches(&name) {
+            matched_names.insert(name.clone());
+            if value != token {
+                value = token.to_string();
+                changed += 1;
+            }
+        }
+        serializer.append_pair(&name, &value);
+    }
+    if changed == 0 {
+        return None;
+    }
+
+    let query = serializer.finish();
+    let mut redacted = format!("{prefix}?{query}");
+    if let Some(fragment) = fragment {
+        redacted.push('#');
+        redacted.push_str(fragment);
+    }
+    Some((redacted, Some(query), changed))
 }
 
 #[derive(Clone)]
@@ -419,90 +504,7 @@ fn upsert_response_fts(conn: &Connection, hash: &str, text: &str) -> Result<()> 
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{
-        redact_body_text, redact_cookies_json, redact_headers_json, redact_url_params, NameMatcher,
-        NameMatchMode,
-    };
-    use std::collections::HashSet;
-
-    #[test]
-    fn redacts_headers_with_exact_match() {
-        let matcher = NameMatcher::new(
-            NameMatchMode::Exact,
-            &vec!["authorization".to_string(), "x-api-key".to_string()],
-        )
-        .expect("matcher");
-        let mut matched = HashSet::new();
-        let json = r#"{"Authorization":"secret","x-api-key":"abc","other":"keep"}"#;
-        let (out, count) =
-            redact_headers_json(json, &matcher, "REDACTED", &mut matched).expect("redact");
-
-        assert_eq!(count, 2);
-        assert!(matched.contains("Authorization"));
-        assert!(matched.contains("x-api-key"));
-        let value: serde_json::Value = serde_json::from_str(&out).expect("json");
-        assert_eq!(value.get("Authorization").and_then(|v| v.as_str()), Some("REDACTED"));
-        assert_eq!(value.get("x-api-key").and_then(|v| v.as_str()), Some("REDACTED"));
-        assert_eq!(value.get("other").and_then(|v| v.as_str()), Some("keep"));
-    }
-
-    #[test]
-    fn redacts_cookies_with_wildcard_match() {
-        let matcher =
-            NameMatcher::new(NameMatchMode::Wildcard, &vec!["sess*".to_string()])
-                .expect("matcher");
-        let mut matched = HashSet::new();
-        let json = r#"[{"name":"sessionid","value":"abc"},{"name":"pref","value":"1"}]"#;
-        let (out, count) =
-            redact_cookies_json(json, &matcher, "REDACTED", &mut matched).expect("redact");
-
-        assert_eq!(count, 1);
-        assert!(matched.contains("sessionid"));
-        let value: serde_json::Value = serde_json::from_str(&out).expect("json");
-        let items = value.as_array().expect("array");
-        assert_eq!(
-            items[0].get("value").and_then(|v| v.as_str()),
-            Some("REDACTED")
-        );
-        assert_eq!(items[1].get("value").and_then(|v| v.as_str()), Some("1"));
-    }
-
-    #[test]
-    fn redacts_url_params_and_preserves_query() {
-        let matcher = NameMatcher::new(
-            NameMatchMode::Exact,
-            &vec!["token".to_string(), "secret".to_string()],
-        )
-        .expect("matcher");
-        let mut matched = HashSet::new();
-        let url = "https://example.com/path?token=abc&keep=1&secret=REDACTED";
-        let (new_url, new_query, count) =
-            redact_url_params(url, &matcher, "REDACTED", &mut matched)
-                .expect("should redact");
-
-        assert_eq!(count, 1);
-        assert!(matched.contains("token"));
-        assert!(matched.contains("secret"));
-        assert!(new_url.contains("token=REDACTED"));
-        assert!(new_url.contains("keep=1"));
-        assert!(new_query.unwrap_or_default().contains("secret=REDACTED"));
-    }
-
-    #[test]
-    fn redacts_body_text_with_regexes() {
-        let regexes = vec![regex::Regex::new("secret").expect("regex")];
-        let out = redact_body_text("secret token", &regexes, "REDACTED")
-            .expect("redacted");
-        assert_eq!(out.0, "REDACTED token");
-        assert_eq!(out.1, 1);
-
-        let no_change = redact_body_text("no match", &regexes, "REDACTED");
-        assert!(no_change.is_none());
-    }
-}
-
+#[allow(clippy::too_many_arguments)]
 fn redact_entries(
     conn: &Connection,
     header_matcher: &NameMatcher,
@@ -653,16 +655,15 @@ fn redact_entries(
         }
         if !body_regexes.is_empty() {
             if let Some(hash) = req_body_hash.as_deref() {
-                let (redacted, counted) =
-                    redact_blob_cached(
-                        conn,
-                        hash,
-                        body_regexes,
-                        token,
-                        write,
-                        &mut blob_cache,
-                        external_paths,
-                    )?;
+                let (redacted, counted) = redact_blob_cached(
+                    conn,
+                    hash,
+                    body_regexes,
+                    token,
+                    write,
+                    &mut blob_cache,
+                    external_paths,
+                )?;
                 if let Some(redacted) = redacted {
                     if counted {
                         report.body_matches += redacted.matches;
@@ -676,16 +677,15 @@ fn redact_entries(
                 }
             }
             if let Some(hash) = resp_body_hash.as_deref() {
-                let (redacted, counted) =
-                    redact_blob_cached(
-                        conn,
-                        hash,
-                        body_regexes,
-                        token,
-                        write,
-                        &mut blob_cache,
-                        external_paths,
-                    )?;
+                let (redacted, counted) = redact_blob_cached(
+                    conn,
+                    hash,
+                    body_regexes,
+                    token,
+                    write,
+                    &mut blob_cache,
+                    external_paths,
+                )?;
                 if let Some(redacted) = redacted {
                     if counted {
                         report.body_matches += redacted.matches;
@@ -753,6 +753,321 @@ fn redact_entries(
     Ok(report)
 }
 
+/// Redact either a harlite database or a HAR file. Existing library callers of
+/// `run_redact` retain database-only behavior; the CLI uses this dispatcher.
+pub fn run_redact_input(
+    input: Option<PathBuf>,
+    options: &RedactOptions,
+    allow_external_paths: bool,
+    external_path_root: Option<&Path>,
+) -> Result<()> {
+    if input.as_deref().is_some_and(is_har_input) {
+        return run_redact_har(input.expect("HAR input"), options);
+    }
+    run_redact_with_external_paths(input, options, allow_external_paths, external_path_root)
+}
+
+fn is_har_input(path: &Path) -> bool {
+    if path == Path::new("-") {
+        return true;
+    }
+    if path.exists() {
+        return !is_sqlite_file(path);
+    }
+    !matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.to_ascii_lowercase())
+            .as_deref(),
+        Some("db" | "db3" | "sqlite" | "sqlite3")
+    )
+}
+
+fn run_redact_har(input: PathBuf, options: &RedactOptions) -> Result<()> {
+    let (header_matcher, cookie_matcher, query_matcher, body_regexes) =
+        build_redaction_matchers(options)?;
+    let mut har = crate::har::parse_har_file(&input)?;
+    let report = redact_har_entries(
+        &mut har,
+        &header_matcher,
+        &cookie_matcher,
+        &query_matcher,
+        &body_regexes,
+        &options.token,
+    );
+
+    if options.dry_run {
+        println!(
+            "Dry run: would redact {} values across {} entries in {} (output not written)",
+            report.total(),
+            report.entries_changed,
+            if input == Path::new("-") {
+                "stdin".to_string()
+            } else {
+                input.display().to_string()
+            }
+        );
+    } else {
+        let output = options
+            .output
+            .clone()
+            .map(Ok)
+            .unwrap_or_else(|| derived_output_path(&input, "-redacted", "har"))?;
+        if input != Path::new("-")
+            && canonicalize_path_for_compare(&input)? == canonicalize_path_for_compare(&output)?
+        {
+            return Err(HarliteError::InvalidArgs(
+                "Output HAR must be different from input HAR".to_string(),
+            ));
+        }
+        write_json_atomic(&output, &har, true, options.force)?;
+        if output == Path::new("-") {
+            eprintln!(
+                "Redacted {} values across {} entries",
+                report.total(),
+                report.entries_changed
+            );
+            eprint_redaction_breakdown(&report);
+            return Ok(());
+        }
+        println!(
+            "Redacted {} values across {} entries in {}",
+            report.total(),
+            report.entries_changed,
+            output.display()
+        );
+    }
+    print_redaction_breakdown(&report);
+    Ok(())
+}
+
+fn redact_har_entries(
+    har: &mut Har,
+    header_matcher: &NameMatcher,
+    cookie_matcher: &NameMatcher,
+    query_matcher: &NameMatcher,
+    body_regexes: &[Regex],
+    token: &str,
+) -> RedactionReport {
+    let mut report = RedactionReport::default();
+    for entry in &mut har.log.entries {
+        report.entries_scanned += 1;
+        let before = report.total();
+
+        report.request_headers += redact_har_headers(
+            &mut entry.request.headers,
+            header_matcher,
+            token,
+            &mut report.matched_header_names,
+        );
+        report.response_headers += redact_har_headers(
+            &mut entry.response.headers,
+            header_matcher,
+            token,
+            &mut report.matched_header_names,
+        );
+        report.request_cookies += redact_har_cookies(
+            entry.request.cookies.as_mut(),
+            cookie_matcher,
+            token,
+            &mut report.matched_cookie_names,
+        );
+        report.response_cookies += redact_har_cookies(
+            entry.response.cookies.as_mut(),
+            cookie_matcher,
+            token,
+            &mut report.matched_cookie_names,
+        );
+        report.query_params += redact_har_query(
+            &mut entry.request.url,
+            &mut entry.request.query_string,
+            query_matcher,
+            token,
+            &mut report.matched_query_param_names,
+        );
+
+        if let Some(post_data) = entry.request.post_data.as_mut() {
+            let mut body_changed = false;
+            if let Some(text) = post_data.text.as_mut() {
+                if let Some((redacted, matches)) = redact_body_text(text, body_regexes, token) {
+                    *text = redacted;
+                    body_changed = true;
+                    report.body_matches += matches;
+                    if entry.request.body_size.is_some_and(|size| size >= 0) {
+                        entry.request.body_size = Some(text.len() as i64);
+                    }
+                }
+            }
+            if let Some(params) = post_data.params.as_mut() {
+                for param in params {
+                    for field in [
+                        Some(&mut param.name),
+                        param.value.as_mut(),
+                        param.file_name.as_mut(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        let Some((redacted, matches)) =
+                            redact_body_text(field, body_regexes, token)
+                        else {
+                            continue;
+                        };
+                        *field = redacted;
+                        report.body_matches += matches;
+                        body_changed = true;
+                    }
+                }
+            }
+            if body_changed {
+                report.request_bodies += 1;
+            }
+        }
+
+        if let Some(text) = entry.response.content.text.as_mut() {
+            let redacted = if entry
+                .response
+                .content
+                .encoding
+                .as_deref()
+                .is_some_and(|encoding| encoding.eq_ignore_ascii_case("base64"))
+            {
+                STANDARD
+                    .decode(text.as_bytes())
+                    .ok()
+                    .and_then(|bytes| String::from_utf8(bytes).ok())
+                    .and_then(|decoded| {
+                        redact_body_text(&decoded, body_regexes, token).map(
+                            |(redacted, matches)| {
+                                let length = redacted.len() as i64;
+                                (STANDARD.encode(redacted.as_bytes()), matches, length)
+                            },
+                        )
+                    })
+            } else {
+                redact_body_text(text, body_regexes, token).map(|(redacted, matches)| {
+                    let length = redacted.len() as i64;
+                    (redacted, matches, length)
+                })
+            };
+            if let Some((redacted, matches, decoded_length)) = redacted {
+                *text = redacted;
+                entry.response.content.size = decoded_length;
+                report.response_bodies += 1;
+                report.body_matches += matches;
+            }
+        }
+
+        if report.total() > before {
+            report.entries_changed += 1;
+        }
+    }
+    report
+}
+
+fn redact_har_headers(
+    headers: &mut [Header],
+    matcher: &NameMatcher,
+    token: &str,
+    matched_names: &mut HashSet<String>,
+) -> u64 {
+    let mut count = 0;
+    for header in headers {
+        if matcher.matches(&header.name) && header.value != token {
+            header.value = token.to_string();
+            matched_names.insert(header.name.clone());
+            count += 1;
+        }
+    }
+    count
+}
+
+fn redact_har_cookies(
+    cookies: Option<&mut Vec<Cookie>>,
+    matcher: &NameMatcher,
+    token: &str,
+    matched_names: &mut HashSet<String>,
+) -> u64 {
+    let mut count = 0;
+    for cookie in cookies.into_iter().flatten() {
+        if matcher.matches(&cookie.name) && cookie.value != token {
+            cookie.value = token.to_string();
+            matched_names.insert(cookie.name.clone());
+            count += 1;
+        }
+    }
+    count
+}
+
+fn redact_har_query(
+    url: &mut String,
+    query_string: &mut Option<Vec<QueryParam>>,
+    matcher: &NameMatcher,
+    token: &str,
+    matched_names: &mut HashSet<String>,
+) -> u64 {
+    let Some((new_url, new_query, count)) = redact_url_params(url, matcher, token, matched_names)
+    else {
+        return redact_query_list(query_string, matcher, token, matched_names);
+    };
+    *url = new_url;
+    if let Some(query) = new_query {
+        let values: Vec<QueryParam> = url::form_urlencoded::parse(query.as_bytes())
+            .map(|(name, value)| QueryParam {
+                name: name.into_owned(),
+                value: value.into_owned(),
+            })
+            .collect();
+        *query_string = (!values.is_empty()).then_some(values);
+    }
+    count
+}
+
+fn redact_query_list(
+    query_string: &mut Option<Vec<QueryParam>>,
+    matcher: &NameMatcher,
+    token: &str,
+    matched_names: &mut HashSet<String>,
+) -> u64 {
+    let mut count = 0;
+    for param in query_string.iter_mut().flatten() {
+        if matcher.matches(&param.name) && param.value != token {
+            param.value = token.to_string();
+            matched_names.insert(param.name.clone());
+            count += 1;
+        }
+    }
+    count
+}
+
+fn print_redaction_breakdown(report: &RedactionReport) {
+    println!(
+        "Breakdown: request_headers={}, response_headers={}, request_cookies={}, response_cookies={}, query_params={}, request_bodies={}, response_bodies={}, body_matches={}",
+        report.request_headers,
+        report.response_headers,
+        report.request_cookies,
+        report.response_cookies,
+        report.query_params,
+        report.request_bodies,
+        report.response_bodies,
+        report.body_matches
+    );
+}
+
+fn eprint_redaction_breakdown(report: &RedactionReport) {
+    eprintln!(
+        "Breakdown: request_headers={}, response_headers={}, request_cookies={}, response_cookies={}, query_params={}, request_bodies={}, response_bodies={}, body_matches={}",
+        report.request_headers,
+        report.response_headers,
+        report.request_cookies,
+        report.response_cookies,
+        report.query_params,
+        report.request_bodies,
+        report.response_bodies,
+        report.body_matches
+    );
+}
+
 pub fn run_redact(database: Option<PathBuf>, options: &RedactOptions) -> Result<()> {
     run_redact_with_external_paths(database, options, false, None)
 }
@@ -765,49 +1080,11 @@ pub fn run_redact_with_external_paths(
     external_path_root: Option<&Path>,
 ) -> Result<()> {
     let input_db = resolve_database(database)?;
-    let external_paths = ExternalPathPolicy::new(
-        &input_db,
-        allow_external_paths,
-        external_path_root,
-    )?;
+    let external_paths =
+        ExternalPathPolicy::new(&input_db, allow_external_paths, external_path_root)?;
 
-    let mut header_patterns: Vec<String> = Vec::new();
-    let mut cookie_patterns: Vec<String> = Vec::new();
-    let mut query_patterns: Vec<String> = Vec::new();
-    // Only apply defaults when using wildcard mode, since defaults are wildcard patterns
-    if !options.no_defaults && matches!(options.match_mode, NameMatchMode::Wildcard) {
-        header_patterns.extend(default_header_patterns());
-        cookie_patterns.extend(default_cookie_patterns());
-    }
-    header_patterns.extend(options.headers.iter().cloned());
-    cookie_patterns.extend(options.cookies.iter().cloned());
-    query_patterns.extend(options.query_params.iter().cloned());
-
-    let header_matcher = NameMatcher::new(options.match_mode, &header_patterns)?;
-    let cookie_matcher = NameMatcher::new(options.match_mode, &cookie_patterns)?;
-    let query_matcher = NameMatcher::new(options.match_mode, &query_patterns)?;
-
-    let body_regexes: Vec<Regex> = options
-        .body_regexes
-        .iter()
-        .map(|p| Regex::new(p))
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-
-    if header_matcher.is_empty()
-        && cookie_matcher.is_empty()
-        && query_matcher.is_empty()
-        && body_regexes.is_empty()
-    {
-        let hint = if !matches!(options.match_mode, NameMatchMode::Wildcard) {
-            " (defaults only available in wildcard mode)"
-        } else {
-            ""
-        };
-        return Err(HarliteError::InvalidArgs(format!(
-            "No redaction patterns provided{}",
-            hint
-        )));
-    }
+    let (header_matcher, cookie_matcher, query_matcher, body_regexes) =
+        build_redaction_matchers(options)?;
 
     let staged_output = if options.dry_run {
         None
@@ -899,17 +1176,7 @@ pub fn run_redact_with_external_paths(
         );
     }
 
-    println!(
-        "Breakdown: request_headers={}, response_headers={}, request_cookies={}, response_cookies={}, query_params={}, request_bodies={}, response_bodies={}, body_matches={}",
-        report.request_headers,
-        report.response_headers,
-        report.request_cookies,
-        report.response_cookies,
-        report.query_params,
-        report.request_bodies,
-        report.response_bodies,
-        report.body_matches
-    );
+    print_redaction_breakdown(&report);
 
     if !report.matched_header_names.is_empty() {
         let mut names: Vec<String> = report.matched_header_names.into_iter().collect();
@@ -928,4 +1195,91 @@ pub fn run_redact_with_external_paths(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        redact_body_text, redact_cookies_json, redact_headers_json, redact_url_params,
+        NameMatchMode, NameMatcher,
+    };
+    use std::collections::HashSet;
+
+    #[test]
+    fn redacts_headers_with_exact_match() {
+        let matcher = NameMatcher::new(
+            NameMatchMode::Exact,
+            &["authorization".to_string(), "x-api-key".to_string()],
+        )
+        .expect("matcher");
+        let mut matched = HashSet::new();
+        let json = r#"{"Authorization":"secret","x-api-key":"abc","other":"keep"}"#;
+        let (out, count) =
+            redact_headers_json(json, &matcher, "REDACTED", &mut matched).expect("redact");
+
+        assert_eq!(count, 2);
+        assert!(matched.contains("Authorization"));
+        assert!(matched.contains("x-api-key"));
+        let value: serde_json::Value = serde_json::from_str(&out).expect("json");
+        assert_eq!(
+            value.get("Authorization").and_then(|v| v.as_str()),
+            Some("REDACTED")
+        );
+        assert_eq!(
+            value.get("x-api-key").and_then(|v| v.as_str()),
+            Some("REDACTED")
+        );
+        assert_eq!(value.get("other").and_then(|v| v.as_str()), Some("keep"));
+    }
+
+    #[test]
+    fn redacts_cookies_with_wildcard_match() {
+        let matcher =
+            NameMatcher::new(NameMatchMode::Wildcard, &["sess*".to_string()]).expect("matcher");
+        let mut matched = HashSet::new();
+        let json = r#"[{"name":"sessionid","value":"abc"},{"name":"pref","value":"1"}]"#;
+        let (out, count) =
+            redact_cookies_json(json, &matcher, "REDACTED", &mut matched).expect("redact");
+
+        assert_eq!(count, 1);
+        assert!(matched.contains("sessionid"));
+        let value: serde_json::Value = serde_json::from_str(&out).expect("json");
+        let items = value.as_array().expect("array");
+        assert_eq!(
+            items[0].get("value").and_then(|v| v.as_str()),
+            Some("REDACTED")
+        );
+        assert_eq!(items[1].get("value").and_then(|v| v.as_str()), Some("1"));
+    }
+
+    #[test]
+    fn redacts_url_params_and_preserves_query() {
+        let matcher = NameMatcher::new(
+            NameMatchMode::Exact,
+            &["token".to_string(), "secret".to_string()],
+        )
+        .expect("matcher");
+        let mut matched = HashSet::new();
+        let url = "https://example.com/path?token=abc&keep=1&secret=REDACTED";
+        let (new_url, new_query, count) =
+            redact_url_params(url, &matcher, "REDACTED", &mut matched).expect("should redact");
+
+        assert_eq!(count, 1);
+        assert!(matched.contains("token"));
+        assert!(matched.contains("secret"));
+        assert!(new_url.contains("token=REDACTED"));
+        assert!(new_url.contains("keep=1"));
+        assert!(new_query.unwrap_or_default().contains("secret=REDACTED"));
+    }
+
+    #[test]
+    fn redacts_body_text_with_regexes() {
+        let regexes = vec![regex::Regex::new("secret").expect("regex")];
+        let out = redact_body_text("secret token", &regexes, "REDACTED").expect("redacted");
+        assert_eq!(out.0, "REDACTED token");
+        assert_eq!(out.1, 1);
+
+        let no_change = redact_body_text("no match", &regexes, "REDACTED");
+        assert!(no_change.is_none());
+    }
 }
