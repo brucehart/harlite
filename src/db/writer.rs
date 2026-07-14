@@ -12,22 +12,12 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Summary statistics for an import operation.
+#[derive(Default)]
 pub struct ImportStats {
     pub entries_imported: usize,
     pub entries_skipped: usize,
     pub request: BlobStats,
     pub response: BlobStats,
-}
-
-impl Default for ImportStats {
-    fn default() -> Self {
-        Self {
-            entries_imported: 0,
-            entries_skipped: 0,
-            request: BlobStats::default(),
-            response: BlobStats::default(),
-        }
-    }
 }
 
 impl ImportStats {
@@ -601,28 +591,28 @@ fn tls_details_from_value(value: &Value) -> Option<TlsDetails> {
 }
 
 fn tls_details_from_map(map: &Map<String, Value>) -> TlsDetails {
-    let mut out = TlsDetails::default();
-    out.version = get_string_value(map, &["protocol", "tlsVersion", "version"]);
-    out.cipher_suite = get_string_value(map, &["cipher", "cipherSuite", "cipherSuiteName"]);
-    out.cert_subject = get_string_value(
-        map,
-        &[
-            "subjectName",
-            "subject",
-            "certificateSubject",
-            "certSubject",
-        ],
-    );
-    out.cert_issuer = get_string_value(
-        map,
-        &["issuer", "issuerName", "certificateIssuer", "certIssuer"],
-    );
-    if let Some(value) = get_value(
-        map,
-        &["validTo", "expiry", "expires", "notAfter", "expiresAt"],
-    ) {
-        out.cert_expiry = parse_expiry_value(&value);
-    }
+    let mut out = TlsDetails {
+        version: get_string_value(map, &["protocol", "tlsVersion", "version"]),
+        cipher_suite: get_string_value(map, &["cipher", "cipherSuite", "cipherSuiteName"]),
+        cert_subject: get_string_value(
+            map,
+            &[
+                "subjectName",
+                "subject",
+                "certificateSubject",
+                "certSubject",
+            ],
+        ),
+        cert_issuer: get_string_value(
+            map,
+            &["issuer", "issuerName", "certificateIssuer", "certIssuer"],
+        ),
+        cert_expiry: get_value(
+            map,
+            &["validTo", "expiry", "expires", "notAfter", "expiresAt"],
+        )
+        .and_then(|value| parse_expiry_value(&value)),
+    };
 
     if out.cert_subject.is_none() || out.cert_issuer.is_none() || out.cert_expiry.is_none() {
         if let Some(value) = get_value(map, &["certificate", "cert", "certificates"]) {
@@ -926,13 +916,13 @@ pub fn insert_entry_with_hash(
     let mut ssl_ms = None;
     if let Some(timings) = &entry.timings {
         let normalize = |value: f64| if value >= 0.0 { Some(value) } else { None };
-        blocked_ms = timings.blocked.and_then(|v| normalize(v));
-        dns_ms = timings.dns.and_then(|v| normalize(v));
-        connect_ms = timings.connect.and_then(|v| normalize(v));
+        blocked_ms = timings.blocked.and_then(&normalize);
+        dns_ms = timings.dns.and_then(&normalize);
+        connect_ms = timings.connect.and_then(&normalize);
         send_ms = normalize(timings.send);
         wait_ms = normalize(timings.wait);
         receive_ms = normalize(timings.receive);
-        ssl_ms = timings.ssl.and_then(|v| normalize(v));
+        ssl_ms = timings.ssl.and_then(normalize);
     }
     let tls_details = extract_tls_details(entry);
 
@@ -1277,9 +1267,14 @@ mod tests {
         )
         .expect("insert import");
 
-        let result =
-            insert_entry(&conn, import_id, entry, &options, &EntryRelations::default())
-                .expect("insert entry");
+        let result = insert_entry(
+            &conn,
+            import_id,
+            entry,
+            &options,
+            &EntryRelations::default(),
+        )
+        .expect("insert entry");
         assert!(result.inserted);
         assert_eq!(result.blob_stats.request.created, 0);
         assert_eq!(result.blob_stats.response.created, 1);
@@ -1437,8 +1432,14 @@ mod tests {
         )
         .expect("insert import");
 
-        insert_entry(&conn, import_id, entry, &options, &EntryRelations::default())
-            .expect("insert entry");
+        insert_entry(
+            &conn,
+            import_id,
+            entry,
+            &options,
+            &EntryRelations::default(),
+        )
+        .expect("insert entry");
 
         let (hash, body): (String, Vec<u8>) = conn
             .query_row(
@@ -1508,8 +1509,14 @@ mod tests {
         )
         .expect("insert import");
 
-        insert_entry(&conn, import_id, entry, &options, &EntryRelations::default())
-            .expect("insert entry");
+        insert_entry(
+            &conn,
+            import_id,
+            entry,
+            &options,
+            &EntryRelations::default(),
+        )
+        .expect("insert entry");
 
         let request_body_hash: Option<String> = conn
             .query_row("SELECT request_body_hash FROM entries", [], |r| r.get(0))
@@ -1574,8 +1581,14 @@ mod tests {
         )
         .expect("insert import");
 
-        insert_entry(&conn, import_id, entry, &options, &EntryRelations::default())
-            .expect("insert entry");
+        insert_entry(
+            &conn,
+            import_id,
+            entry,
+            &options,
+            &EntryRelations::default(),
+        )
+        .expect("insert entry");
 
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM blobs", [], |r| r.get(0))
@@ -1645,9 +1658,16 @@ mod tests {
             &InsertEntryOptions::default(),
             &EntryRelations::default(),
         )
-            .expect("insert entry");
+        .expect("insert entry");
 
-        let row: (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>) =
+        type TlsRow = (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        );
+        let row: TlsRow =
             conn.query_row(
                 "SELECT tls_version, tls_cipher_suite, tls_cert_subject, tls_cert_issuer, tls_cert_expiry FROM entries",
                 [],

@@ -274,20 +274,17 @@ fn select_target(base_url: &str, target_hint: Option<&str>) -> Result<TargetInfo
 
     if let Some(hint) = target_hint {
         let hint_lower = hint.to_lowercase();
-        candidates = candidates
-            .into_iter()
-            .filter(|t| {
-                t.id.eq_ignore_ascii_case(hint)
-                    || t.url
-                        .as_deref()
-                        .map(|u| u.to_lowercase().contains(&hint_lower))
-                        .unwrap_or(false)
-                    || t.title
-                        .as_deref()
-                        .map(|t| t.to_lowercase().contains(&hint_lower))
-                        .unwrap_or(false)
-            })
-            .collect();
+        candidates.retain(|t| {
+            t.id.eq_ignore_ascii_case(hint)
+                || t.url
+                    .as_deref()
+                    .map(|u| u.to_lowercase().contains(&hint_lower))
+                    .unwrap_or(false)
+                || t.title
+                    .as_deref()
+                    .map(|t| t.to_lowercase().contains(&hint_lower))
+                    .unwrap_or(false)
+        });
     }
 
     match candidates.len() {
@@ -305,9 +302,8 @@ fn set_socket_timeout(
     socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
     timeout: Duration,
 ) -> Result<()> {
-    match socket.get_mut() {
-        MaybeTlsStream::Plain(stream) => stream.set_read_timeout(Some(timeout))?,
-        _ => {}
+    if let MaybeTlsStream::Plain(stream) = socket.get_mut() {
+        stream.set_read_timeout(Some(timeout))?
     }
     Ok(())
 }
@@ -794,8 +790,13 @@ fn import_entries(path: &PathBuf, har: &Har, options: &CdpOptions) -> Result<()>
 
     let tx = conn.unchecked_transaction()?;
     for entry in &har.log.entries {
-        let entry_result =
-            insert_entry(&tx, import_id, entry, &entry_options, &EntryRelations::default())?;
+        let entry_result = insert_entry(
+            &tx,
+            import_id,
+            entry,
+            &entry_options,
+            &EntryRelations::default(),
+        )?;
         if entry_result.inserted {
             stats.entries_imported += 1;
             stats.request.add_assign(entry_result.blob_stats.request);

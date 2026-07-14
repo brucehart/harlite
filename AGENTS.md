@@ -24,12 +24,16 @@ Use the `harlite` binary to import HAR files into SQLite databases, then query/e
 - `schema` — print the SQLite schema (built-in or from a DB)
 - `info` — summarize database contents
 - `stats` — script-friendly stats output (text or JSON)
+- `analyze` — summarize timing/performance and enforce CI budgets
+- `check` — validate HAR semantics or database/blob/FTS integrity
 - `imports` — list import metadata
 - `prune` — remove a specific import by id
 - `export` — export a database back to HAR
 - `merge` — merge multiple databases into one
 - `redact` — redact sensitive headers/cookies/params/bodies
+- `pii` — scan/redact PII in HAR files or databases
 - `diff` — compare two HAR files or two databases
+- `request` — export requests as cURL/Fetch/node-fetch/PowerShell snippets
 - `report` — generate a self-contained HTML report (waterfall/slow/errors)
 
 ## Flags by command
@@ -70,6 +74,18 @@ Use the `harlite` binary to import HAR files into SQLite databases, then query/e
 - `--json`: JSON output
 - `<DATABASE>`: database to inspect
 
+### `analyze`
+- `--max-p95-total-ms <MS>` / `--max-p95-ttfb-ms <MS>`: fail if timing budgets are exceeded
+- `--max-errors <N>`: fail if the HTTP error count exceeds the budget
+- `<DATABASE>`: database to analyze
+
+### `check`
+- `--json`: JSON output
+- `--strict`: treat warnings as failures
+- `--allow-external-paths`: verify trusted external blob files
+- `--external-path-root <DIR>`: restrict external reads to this root
+- `<INPUT>`: HAR, database, or `-` for HAR stdin
+
 ### `export`
 - `-o, --output <OUTPUT>`: output HAR file (default: `<database>.har`, `-` for stdout)
 - `--bodies`: include stored request/response bodies
@@ -98,7 +114,7 @@ Use the `harlite` binary to import HAR files into SQLite databases, then query/e
 - `--dedup <hash|exact>`: entry deduplication strategy
 
 ### `redact`
-- `-o, --output <OUTPUT>`: output database (default: in-place)
+- `-o, --output <OUTPUT>`: output database/HAR (HAR defaults to a new sibling file)
 - `--force`: overwrite output db if it exists
 - `--dry-run`: report only, no writes
 - `--no-defaults`: disable default redaction patterns
@@ -124,6 +140,17 @@ Use the `harlite` binary to import HAR files into SQLite databases, then query/e
 - `--method <METHOD>`: HTTP method filter (repeatable)
 - `--status <STATUS>`: HTTP status filter (repeatable)
 - `--url-regex <REGEX>`: URL regex filter (repeatable)
+- `--fail-on <KIND>`: fail on any/added/changed/removed/new-errors/regression
+- `--max-total-regression-ms <MS>` / `--max-ttfb-regression-ms <MS>`: timing gates
+- `--max-response-size-increase <BYTES>` / `--max-new-errors <N>`: size/error gates
+- `--ignore-query-param <NAME>`: ignore a query parameter while matching
+
+### `request`
+- `--format <curl|fetch|node-fetch|powershell>`: snippet format
+- `--include-sensitive`: include sensitive headers (off by default)
+- `--index <N>` / `--limit <N>`: select requests
+- `--url-contains`, `--host`, `--method`, `--status`: request filters
+- `<INPUT>`: HAR, database, or `-` for HAR stdin
 
 ### `query`
 - `-f, --format <table|csv|json>`: output format
@@ -152,6 +179,7 @@ Use the `harlite` binary to import HAR files into SQLite databases, then query/e
 
 ## Working with data
 - The tool reads HAR files and writes SQLite `.db` files.
+- Use `-` as a HAR input for streaming commands; pass `--output` when a command must derive a filename.
 - Do not commit generated databases or large sample HAR files unless explicitly requested.
 ## Typical agent workflow
 1) `harlite import session.har -o traffic.db`

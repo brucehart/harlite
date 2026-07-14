@@ -437,7 +437,7 @@ fn resolve_output_path(databases: &[PathBuf], output: Option<&PathBuf>) -> Resul
     }
 
     let first = databases
-        .get(0)
+        .first()
         .ok_or_else(|| HarliteError::InvalidArgs("No input databases".to_string()))?;
     let stem = first
         .file_stem()
@@ -576,8 +576,10 @@ fn load_entry_keys_for_import(
     import_id: i64,
     strategy: DedupStrategy,
 ) -> Result<HashMap<EntryKey, i64>> {
-    let sql = format!("SELECT id, {} FROM entries WHERE import_id = ?1", 
-        ENTRY_COLUMNS.iter()
+    let sql = format!(
+        "SELECT id, {} FROM entries WHERE import_id = ?1",
+        ENTRY_COLUMNS
+            .iter()
             .map(|col| select_col(columns, col))
             .collect::<Vec<_>>()
             .join(", ")
@@ -986,10 +988,8 @@ fn load_existing_fts_hashes(conn: &Connection) -> Result<HashSet<String>> {
     let mut stmt = conn.prepare("SELECT hash FROM response_body_fts")?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
     let mut out = HashSet::new();
-    for row in rows {
-        if let Ok(hash) = row {
-            out.insert(hash);
-        }
+    for hash in rows.flatten() {
+        out.insert(hash);
     }
     Ok(out)
 }
@@ -1000,7 +1000,9 @@ fn load_graphql_fields(conn: &Connection) -> Result<HashMap<i64, Vec<String>>> {
     }
 
     let mut stmt = conn.prepare("SELECT entry_id, field FROM graphql_fields")?;
-    let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
 
     let mut out: HashMap<i64, Vec<String>> = HashMap::new();
     for row in rows {
@@ -1015,9 +1017,8 @@ fn insert_graphql_fields(conn: &Connection, entry_id: i64, fields: &[String]) ->
         return Ok(());
     }
 
-    let mut stmt = conn.prepare_cached(
-        "INSERT OR IGNORE INTO graphql_fields (entry_id, field) VALUES (?1, ?2)",
-    )?;
+    let mut stmt = conn
+        .prepare_cached("INSERT OR IGNORE INTO graphql_fields (entry_id, field) VALUES (?1, ?2)")?;
     let mut seen = HashSet::new();
     for field in fields {
         if !seen.insert(field) {

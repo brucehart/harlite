@@ -45,10 +45,9 @@ pub fn load_entries_with_filters(
 
     let mut query = EntryQuery::default();
     let import_ids = load_import_ids_by_source(conn, &options.source, &options.source_contains)?;
-    if !options.source.is_empty() || !options.source_contains.is_empty() {
-        if import_ids.is_empty() {
-            return Ok(Vec::new());
-        }
+    if (!options.source.is_empty() || !options.source_contains.is_empty()) && import_ids.is_empty()
+    {
+        return Ok(Vec::new());
     }
     if !import_ids.is_empty() {
         query.import_ids = import_ids;
@@ -173,8 +172,7 @@ fn load_import_ids_by_source(
     }
 
     if !source_contains.is_empty() {
-        let joined = std::iter::repeat("source_file LIKE '%' || ? || '%'")
-            .take(source_contains.len())
+        let joined = std::iter::repeat_n("source_file LIKE '%' || ? || '%'", source_contains.len())
             .collect::<Vec<_>>()
             .join(" OR ");
         clauses.push(format!("({joined})"));

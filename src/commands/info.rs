@@ -102,7 +102,10 @@ pub fn run_info(database: PathBuf, options: &InfoOptions) -> Result<()> {
 
         println!("\nRequest chains:");
         println!("  Requests with request_id: {}", request_id_count);
-        println!("  Requests with parent_request_id: {}", parent_request_count);
+        println!(
+            "  Requests with parent_request_id: {}",
+            parent_request_count
+        );
         println!("  Parent request ids: {}", parent_roots);
         println!("  Redirects (redirect_url set): {}", redirect_count);
 
@@ -111,7 +114,9 @@ pub fn run_info(database: PathBuf, options: &InfoOptions) -> Result<()> {
              FROM entries WHERE initiator_type IS NOT NULL \
              GROUP BY initiator_type ORDER BY cnt DESC LIMIT 5",
         )?;
-        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
         let mut initiators = Vec::new();
         for row in rows {
             initiators.push(row?);

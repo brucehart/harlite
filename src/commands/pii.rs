@@ -2,18 +2,22 @@ use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use percent_encoding::percent_decode_str;
 use regex::{NoExpand, Regex};
 use rusqlite::{params, Connection, OptionalExtension};
 use url::Url;
 
 use crate::db::store_blob;
 use crate::error::{HarliteError, Result};
+use crate::har::{Har, QueryParam};
 
 use super::csv::write_csv_field;
 use super::query::OutputFormat;
 use super::util::{
-    canonicalize_path_for_compare, delete_orphaned_blobs, finalize_sensitive_write,
-    prepare_sensitive_write, resolve_database, ExternalPathPolicy, StagedDatabase,
+    canonicalize_path_for_compare, delete_orphaned_blobs, derived_output_path,
+    finalize_sensitive_write, is_sqlite_file, prepare_sensitive_write, resolve_database,
+    write_json_atomic, ExternalPathPolicy, StagedDatabase,
 };
 
 #[derive(Clone, Copy, Debug, serde::Serialize)]
@@ -104,21 +108,51 @@ struct PiiRedactedBlob {
     text: String,
 }
 
+#[derive(Clone)]
+struct PiiTextBlob {
+    text: String,
+    mime_type: Option<String>,
+}
+
 pub fn run_pii(database: Option<PathBuf>, options: &PiiOptions) -> Result<()> {
     run_pii_with_external_paths(database, options, false, None)
 }
 
-/// Scan/redact PII with an explicit policy for externally stored bodies.
-pub fn run_pii_with_external_paths(
-    database: Option<PathBuf>,
+/// Scan or redact either a HAR file or a harlite database. The existing
+/// database-only entry points remain available to library callers.
+pub fn run_pii_input(
+    input: Option<PathBuf>,
     options: &PiiOptions,
     allow_external_paths: bool,
     external_path_root: Option<&Path>,
 ) -> Result<()> {
+    if input.as_deref().is_some_and(is_har_input) {
+        return run_pii_har(input.expect("HAR input"), options);
+    }
+    run_pii_with_external_paths(input, options, allow_external_paths, external_path_root)
+}
+
+fn is_har_input(path: &Path) -> bool {
+    if path == Path::new("-") {
+        return true;
+    }
+    if path.exists() {
+        return !is_sqlite_file(path);
+    }
+    !matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.to_ascii_lowercase())
+            .as_deref(),
+        Some("db" | "db3" | "sqlite" | "sqlite3")
+    )
+}
+
+fn validate_pii_options(options: &PiiOptions) -> Result<()> {
     if !options.redact {
         if options.output.is_some() {
             return Err(HarliteError::InvalidArgs(
-                "PII output database requires --redact".to_string(),
+                "PII output requires --redact".to_string(),
             ));
         }
         if options.force {
@@ -132,13 +166,506 @@ pub fn run_pii_with_external_paths(
             ));
         }
     }
+    Ok(())
+}
+
+fn run_pii_har(input: PathBuf, options: &PiiOptions) -> Result<()> {
+    validate_pii_options(options)?;
+    let matchers = build_matchers(options)?;
+    if matchers.is_empty() {
+        return Err(HarliteError::InvalidArgs(
+            "No PII patterns provided".to_string(),
+        ));
+    }
+
+    let mut har = crate::har::parse_har_file(&input)?;
+    let findings = scan_har(&mut har, &matchers, options);
+
+    if options.redact && !options.dry_run {
+        let output = options
+            .output
+            .clone()
+            .map(Ok)
+            .unwrap_or_else(|| derived_output_path(&input, "-pii-redacted", "har"))?;
+        if output == Path::new("-") {
+            return Err(HarliteError::InvalidArgs(
+                "PII redaction output cannot be standard output because findings are written there; use --output <FILE>"
+                    .to_string(),
+            ));
+        }
+        if input != Path::new("-")
+            && canonicalize_path_for_compare(&input)? == canonicalize_path_for_compare(&output)?
+        {
+            return Err(HarliteError::InvalidArgs(
+                "Output HAR must be different from input HAR".to_string(),
+            ));
+        }
+        write_json_atomic(&output, &har, true, options.force)?;
+    }
+
+    write_findings(&findings, options.format)
+}
+
+fn scan_har(har: &mut Har, matchers: &PiiMatchers, options: &PiiOptions) -> Vec<PiiFinding> {
+    let mut findings = Vec::new();
+    for (index, entry) in har.log.entries.iter_mut().enumerate() {
+        let entry_id = index as i64 + 1;
+        let original_url = entry.request.url.clone();
+        append_har_url_findings(
+            &mut findings,
+            entry_id,
+            &original_url,
+            entry.request.query_string.as_deref(),
+            matchers,
+        );
+        if options.redact {
+            if let Some(redacted) = redact_har_url(&original_url, matchers, &options.token) {
+                entry.request.url = redacted;
+            }
+            redact_query_string(
+                entry.request.query_string.as_mut(),
+                matchers,
+                &options.token,
+            );
+        }
+
+        if let Some(post_data) = entry.request.post_data.as_mut() {
+            let form_urlencoded = is_form_urlencoded_mime(post_data.mime_type.as_deref());
+            if let Some(text) = post_data.text.as_mut() {
+                append_findings(
+                    &mut findings,
+                    entry_id,
+                    &original_url,
+                    PiiLocation::RequestBody,
+                    scan_body_text(text, form_urlencoded, matchers),
+                );
+                if options.redact {
+                    if let Some((redacted, _)) =
+                        redact_body_text(text, form_urlencoded, matchers, &options.token)
+                    {
+                        *text = redacted;
+                        if entry.request.body_size.is_some_and(|size| size >= 0) {
+                            entry.request.body_size = Some(text.len() as i64);
+                        }
+                    }
+                }
+            }
+            if let Some(params) = post_data.params.as_mut() {
+                for param in params {
+                    for field in [
+                        Some(&mut param.name),
+                        param.value.as_mut(),
+                        param.file_name.as_mut(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        scan_and_redact_har_field(
+                            &mut findings,
+                            entry_id,
+                            &original_url,
+                            field,
+                            matchers,
+                            options,
+                        );
+                    }
+                }
+            }
+        }
+
+        let response_form_urlencoded =
+            is_form_urlencoded_mime(entry.response.content.mime_type.as_deref());
+        if let Some(text) = entry.response.content.text.as_mut() {
+            let encoded = entry
+                .response
+                .content
+                .encoding
+                .as_deref()
+                .is_some_and(|encoding| encoding.eq_ignore_ascii_case("base64"));
+            let decoded = if encoded {
+                STANDARD
+                    .decode(text.as_bytes())
+                    .ok()
+                    .and_then(|bytes| String::from_utf8(bytes).ok())
+            } else {
+                Some(text.clone())
+            };
+            if let Some(decoded) = decoded {
+                append_findings(
+                    &mut findings,
+                    entry_id,
+                    &original_url,
+                    PiiLocation::ResponseBody,
+                    scan_body_text(&decoded, response_form_urlencoded, matchers),
+                );
+                if options.redact {
+                    if let Some((redacted, _)) = redact_body_text(
+                        &decoded,
+                        response_form_urlencoded,
+                        matchers,
+                        &options.token,
+                    ) {
+                        entry.response.content.size = redacted.len() as i64;
+                        *text = if encoded {
+                            STANDARD.encode(redacted.as_bytes())
+                        } else {
+                            redacted
+                        };
+                    }
+                }
+            }
+        }
+    }
+    findings
+}
+
+fn scan_and_redact_har_field(
+    findings: &mut Vec<PiiFinding>,
+    entry_id: i64,
+    original_url: &str,
+    field: &mut String,
+    matchers: &PiiMatchers,
+    options: &PiiOptions,
+) {
+    append_findings(
+        findings,
+        entry_id,
+        original_url,
+        PiiLocation::RequestBody,
+        scan_text(field, matchers),
+    );
+    if options.redact {
+        if let Some((redacted, _)) = redact_text(field, matchers, &options.token) {
+            *field = redacted;
+        }
+    }
+}
+
+fn append_har_url_findings(
+    findings: &mut Vec<PiiFinding>,
+    entry_id: i64,
+    original_url: &str,
+    query_string: Option<&[QueryParam]>,
+    matchers: &PiiMatchers,
+) {
+    let Ok(parsed) = Url::parse(original_url) else {
+        append_findings(
+            findings,
+            entry_id,
+            original_url,
+            PiiLocation::Url,
+            scan_text(&decode_url_component(original_url), matchers),
+        );
+        if let Some(params) = query_string {
+            for param in params {
+                append_url_component_findings(
+                    findings,
+                    entry_id,
+                    original_url,
+                    &param.name,
+                    matchers,
+                );
+                append_url_component_findings(
+                    findings,
+                    entry_id,
+                    original_url,
+                    &param.value,
+                    matchers,
+                );
+            }
+        }
+        return;
+    };
+
+    let parsed_pairs: Vec<(String, String)> = parsed
+        .query_pairs()
+        .map(|(name, value)| (name.into_owned(), value.into_owned()))
+        .collect();
+    append_findings(
+        findings,
+        entry_id,
+        original_url,
+        PiiLocation::Url,
+        scan_url_base(&parsed, matchers),
+    );
+
+    let mut seen = HashSet::new();
+    for (name, value) in parsed_pairs {
+        seen.insert((name.clone(), value.clone()));
+        append_url_component_findings(findings, entry_id, original_url, &name, matchers);
+        append_url_component_findings(findings, entry_id, original_url, &value, matchers);
+    }
+    if let Some(params) = query_string {
+        for param in params {
+            if seen.insert((param.name.clone(), param.value.clone())) {
+                append_url_component_findings(
+                    findings,
+                    entry_id,
+                    original_url,
+                    &param.name,
+                    matchers,
+                );
+                append_url_component_findings(
+                    findings,
+                    entry_id,
+                    original_url,
+                    &param.value,
+                    matchers,
+                );
+            }
+        }
+    }
+}
+
+fn append_url_component_findings(
+    findings: &mut Vec<PiiFinding>,
+    entry_id: i64,
+    original_url: &str,
+    value: &str,
+    matchers: &PiiMatchers,
+) {
+    append_findings(
+        findings,
+        entry_id,
+        original_url,
+        PiiLocation::Url,
+        scan_text(&decode_url_component(value), matchers),
+    );
+}
+
+fn redact_har_url(original_url: &str, matchers: &PiiMatchers, token: &str) -> Option<String> {
+    let Ok(mut parsed) = Url::parse(original_url) else {
+        let decoded = decode_url_component(original_url);
+        return redact_text(&decoded, matchers, token).map(|(value, _)| value);
+    };
+
+    let pairs: Vec<(String, String)> = parsed
+        .query_pairs()
+        .map(|(name, value)| (name.into_owned(), value.into_owned()))
+        .collect();
+
+    let mut changed = false;
+    let username = decode_url_component(parsed.username());
+    if let Some((redacted, _)) = redact_text(&username, matchers, token) {
+        parsed.set_username(&redacted).ok()?;
+        changed = true;
+    }
+    if let Some(password) = parsed.password().map(decode_url_component) {
+        if let Some((redacted, _)) = redact_text(&password, matchers, token) {
+            parsed.set_password(Some(&redacted)).ok()?;
+            changed = true;
+        }
+    }
+    if let Some(host) = parsed.host_str().map(str::to_string) {
+        if let Some((redacted, _)) = redact_text(&host, matchers, token) {
+            if parsed.set_host(Some(&redacted)).is_err() {
+                parsed.set_host(Some("redacted.invalid")).ok()?;
+            }
+            changed = true;
+        }
+    }
+
+    if let Some(segments) = parsed
+        .path_segments()
+        .map(|segments| segments.map(decode_url_component).collect::<Vec<_>>())
+    {
+        let mut redacted_segments = Vec::with_capacity(segments.len());
+        let mut path_changed = false;
+        for segment in segments {
+            if let Some((redacted, _)) = redact_text(&segment, matchers, token) {
+                redacted_segments.push(redacted);
+                path_changed = true;
+            } else {
+                redacted_segments.push(segment);
+            }
+        }
+        if path_changed {
+            let mut output = parsed.path_segments_mut().ok()?;
+            output.clear();
+            for segment in &redacted_segments {
+                output.push(segment);
+            }
+            drop(output);
+            changed = true;
+        }
+    } else {
+        let path = decode_url_component(parsed.path());
+        if let Some((redacted, _)) = redact_text(&path, matchers, token) {
+            parsed.set_path(&redacted);
+            changed = true;
+        }
+    }
+
+    if let Some(fragment) = parsed.fragment().map(decode_url_component) {
+        if let Some((redacted, _)) = redact_text(&fragment, matchers, token) {
+            parsed.set_fragment(Some(&redacted));
+            changed = true;
+        }
+    }
+
+    let mut redacted_pairs = Vec::with_capacity(pairs.len());
+    let mut query_changed = false;
+    for (name, value) in pairs {
+        let redacted_name =
+            redact_text(&decode_url_component(&name), matchers, token).map(|(value, _)| value);
+        let redacted_value =
+            redact_text(&decode_url_component(&value), matchers, token).map(|(value, _)| value);
+        query_changed |= redacted_name.is_some() || redacted_value.is_some();
+        redacted_pairs.push((
+            redacted_name.unwrap_or(name),
+            redacted_value.unwrap_or(value),
+        ));
+    }
+    changed |= query_changed;
+    if !changed {
+        return None;
+    }
+
+    if query_changed {
+        parsed.set_query(None);
+        let mut query = parsed.query_pairs_mut();
+        for (name, value) in redacted_pairs {
+            query.append_pair(&name, &value);
+        }
+    }
+
+    Some(parsed.into())
+}
+
+fn decode_url_component(value: &str) -> String {
+    percent_decode_str(value).decode_utf8_lossy().into_owned()
+}
+
+fn is_form_urlencoded_mime(mime_type: Option<&str>) -> bool {
+    mime_type
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|value| {
+            value
+                .trim()
+                .eq_ignore_ascii_case("application/x-www-form-urlencoded")
+        })
+}
+
+fn scan_body_text(text: &str, form_urlencoded: bool, matchers: &PiiMatchers) -> PiiCounts {
+    if !form_urlencoded {
+        return scan_text(text, matchers);
+    }
+
+    let mut counts = PiiCounts::default();
+    for (name, value) in url::form_urlencoded::parse(text.as_bytes()) {
+        counts.add_assign(scan_text(&decode_url_component(&name), matchers));
+        counts.add_assign(scan_text(&decode_url_component(&value), matchers));
+    }
+    counts
+}
+
+fn redact_body_text(
+    text: &str,
+    form_urlencoded: bool,
+    matchers: &PiiMatchers,
+    token: &str,
+) -> Option<(String, u64)> {
+    if !form_urlencoded {
+        return redact_text(text, matchers, token);
+    }
+
+    let mut changed = false;
+    let mut total = 0;
+    let mut pairs = Vec::new();
+    for (name, value) in url::form_urlencoded::parse(text.as_bytes()) {
+        let name = name.into_owned();
+        let value = value.into_owned();
+        let redacted_name = redact_text(&decode_url_component(&name), matchers, token);
+        let redacted_value = redact_text(&decode_url_component(&value), matchers, token);
+        changed |= redacted_name.is_some() || redacted_value.is_some();
+        total += redacted_name.as_ref().map_or(0, |(_, count)| *count);
+        total += redacted_value.as_ref().map_or(0, |(_, count)| *count);
+        pairs.push((
+            redacted_name.map_or(name, |(value, _)| value),
+            redacted_value.map_or(value, |(value, _)| value),
+        ));
+    }
+    if !changed {
+        return None;
+    }
+
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    for (name, value) in pairs {
+        serializer.append_pair(&name, &value);
+    }
+    Some((serializer.finish(), total))
+}
+
+fn scan_url_base(parsed: &Url, matchers: &PiiMatchers) -> PiiCounts {
+    let mut counts = PiiCounts::default();
+    let mut scan_component = |value: &str| {
+        counts.add_assign(scan_text(&decode_url_component(value), matchers));
+    };
+
+    if !parsed.username().is_empty() {
+        scan_component(parsed.username());
+    }
+    if let Some(password) = parsed.password() {
+        scan_component(password);
+    }
+    if let Some(host) = parsed.host_str() {
+        scan_component(host);
+    }
+    if let Some(segments) = parsed.path_segments() {
+        for segment in segments {
+            scan_component(segment);
+        }
+    } else {
+        scan_component(parsed.path());
+    }
+    if let Some(fragment) = parsed.fragment() {
+        scan_component(fragment);
+    }
+    counts
+}
+
+fn redact_query_string(
+    query_string: Option<&mut Vec<QueryParam>>,
+    matchers: &PiiMatchers,
+    token: &str,
+) {
+    let Some(params) = query_string else {
+        return;
+    };
+    for param in params {
+        if let Some((redacted, _)) =
+            redact_text(&decode_url_component(&param.name), matchers, token)
+        {
+            param.name = redacted;
+        }
+        if let Some((redacted, _)) =
+            redact_text(&decode_url_component(&param.value), matchers, token)
+        {
+            param.value = redacted;
+        }
+    }
+}
+
+fn write_findings(findings: &[PiiFinding], format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => write_json(findings),
+        OutputFormat::Csv => write_csv(findings),
+        OutputFormat::Table => write_table(findings),
+    }
+}
+
+/// Scan/redact PII with an explicit policy for externally stored bodies.
+pub fn run_pii_with_external_paths(
+    database: Option<PathBuf>,
+    options: &PiiOptions,
+    allow_external_paths: bool,
+    external_path_root: Option<&Path>,
+) -> Result<()> {
+    validate_pii_options(options)?;
 
     let input_db = resolve_database(database)?;
-    let external_paths = ExternalPathPolicy::new(
-        &input_db,
-        allow_external_paths,
-        external_path_root,
-    )?;
+    let external_paths =
+        ExternalPathPolicy::new(&input_db, allow_external_paths, external_path_root)?;
 
     let matchers = build_matchers(options)?;
     if matchers.is_empty() {
@@ -189,7 +716,7 @@ pub fn run_pii_with_external_paths(
     let work_conn = &conn;
 
     let mut stmt = work_conn.prepare(
-        "SELECT id, url, query_string, request_body_hash, request_body_size, response_body_hash, response_body_size, response_body_hash_raw, response_body_size_raw FROM entries ORDER BY id",
+        "SELECT id, url, host, path, query_string, request_body_hash, request_body_size, response_body_hash, response_body_size, response_body_hash_raw, response_body_size_raw FROM entries ORDER BY id",
     )?;
 
     let rows = stmt.query_map([], |row| {
@@ -198,16 +725,18 @@ pub fn run_pii_with_external_paths(
             row.get::<_, Option<String>>(1)?,
             row.get::<_, Option<String>>(2)?,
             row.get::<_, Option<String>>(3)?,
-            row.get::<_, Option<i64>>(4)?,
+            row.get::<_, Option<String>>(4)?,
             row.get::<_, Option<String>>(5)?,
             row.get::<_, Option<i64>>(6)?,
             row.get::<_, Option<String>>(7)?,
             row.get::<_, Option<i64>>(8)?,
+            row.get::<_, Option<String>>(9)?,
+            row.get::<_, Option<i64>>(10)?,
         ))
     })?;
 
     let mut update = work_conn.prepare(
-        "UPDATE entries SET url=?1, query_string=?2, request_body_hash=?3, request_body_size=?4, response_body_hash=?5, response_body_size=?6, response_body_hash_raw=?7, response_body_size_raw=?8 WHERE id=?9",
+        "UPDATE entries SET url=?1, host=?2, path=?3, query_string=?4, request_body_hash=?5, request_body_size=?6, response_body_hash=?7, response_body_size=?8, response_body_hash_raw=?9, response_body_size_raw=?10 WHERE id=?11",
     )?;
 
     let has_fts: bool = work_conn
@@ -220,7 +749,7 @@ pub fn run_pii_with_external_paths(
         > 0;
 
     let mut findings: Vec<PiiFinding> = Vec::new();
-    let mut text_cache: HashMap<String, Option<String>> = HashMap::new();
+    let mut text_cache: HashMap<String, Option<PiiTextBlob>> = HashMap::new();
     let mut redacted_cache: HashMap<String, Option<PiiRedactedBlob>> = HashMap::new();
     let mut changed_response_hashes: HashSet<String> = HashSet::new();
 
@@ -228,6 +757,8 @@ pub fn run_pii_with_external_paths(
         let (
             entry_id,
             url,
+            host,
+            path,
             query_string,
             req_body_hash,
             req_body_size,
@@ -239,6 +770,8 @@ pub fn run_pii_with_external_paths(
 
         let mut changed = false;
         let mut new_url = url.clone();
+        let mut new_host = host;
+        let mut new_path = path;
         let mut new_query_string = query_string.clone();
         let mut new_req_body_hash = req_body_hash.clone();
         let mut new_req_body_size = req_body_size;
@@ -248,20 +781,20 @@ pub fn run_pii_with_external_paths(
         let mut new_resp_body_size_raw = resp_body_size_raw;
 
         if let Some(url_str) = url.as_deref() {
-            append_findings(
-                &mut findings,
-                entry_id,
-                url_str,
-                PiiLocation::Url,
-                scan_text(url_str, &matchers),
-            );
+            append_har_url_findings(&mut findings, entry_id, url_str, None, &matchers);
 
             if options.redact {
-                if let Some((redacted, _)) = redact_text(url_str, &matchers, &options.token) {
+                if let Some(redacted) = redact_har_url(url_str, &matchers, &options.token) {
                     if redacted != url_str {
                         new_url = Some(redacted.clone());
                         if let Ok(parsed) = Url::parse(&redacted) {
+                            new_host = parsed.host_str().map(str::to_string);
+                            new_path = Some(parsed.path().to_string());
                             new_query_string = parsed.query().map(|q| q.to_string());
+                        } else {
+                            new_host = None;
+                            new_path = None;
+                            new_query_string = None;
                         }
                         changed = true;
                     }
@@ -276,7 +809,11 @@ pub fn run_pii_with_external_paths(
                     entry_id,
                     url.as_deref().unwrap_or_default(),
                     PiiLocation::RequestBody,
-                    scan_text(&text, &matchers),
+                    scan_body_text(
+                        &text.text,
+                        is_form_urlencoded_mime(text.mime_type.as_deref()),
+                        &matchers,
+                    ),
                 );
 
                 if options.redact {
@@ -304,7 +841,11 @@ pub fn run_pii_with_external_paths(
                     entry_id,
                     url.as_deref().unwrap_or_default(),
                     PiiLocation::ResponseBody,
-                    scan_text(&text, &matchers),
+                    scan_body_text(
+                        &text.text,
+                        is_form_urlencoded_mime(text.mime_type.as_deref()),
+                        &matchers,
+                    ),
                 );
 
                 if options.redact {
@@ -351,6 +892,8 @@ pub fn run_pii_with_external_paths(
         if changed && write {
             update.execute(params![
                 new_url,
+                new_host,
+                new_path,
                 new_query_string,
                 new_req_body_hash,
                 new_req_body_size,
@@ -388,11 +931,7 @@ pub fn run_pii_with_external_paths(
         staged.publish()?;
     }
 
-    match options.format {
-        OutputFormat::Json => write_json(&findings),
-        OutputFormat::Csv => write_csv(&findings),
-        OutputFormat::Table => write_table(&findings),
-    }
+    write_findings(&findings, options.format)
 }
 
 fn append_findings(
@@ -425,6 +964,13 @@ struct PiiCounts {
 }
 
 impl PiiCounts {
+    fn add_assign(&mut self, other: Self) {
+        self.email += other.email;
+        self.phone += other.phone;
+        self.ssn += other.ssn;
+        self.credit_card += other.credit_card;
+    }
+
     fn iter(&self) -> Vec<(PiiKind, u64)> {
         vec![
             (PiiKind::Email, self.email),
@@ -532,14 +1078,14 @@ fn redact_credit_cards(text: &str, regexes: &[Regex], token: &str) -> (String, u
 fn load_blob_text(
     conn: &Connection,
     hash: &str,
-    cache: &mut HashMap<String, Option<String>>,
+    cache: &mut HashMap<String, Option<PiiTextBlob>>,
     external_paths: &ExternalPathPolicy,
-) -> Result<Option<String>> {
+) -> Result<Option<PiiTextBlob>> {
     if let Some(existing) = cache.get(hash) {
         return Ok(existing.clone());
     }
 
-    let Some((content, _mime_type)) = load_blob_for_pii(conn, hash, external_paths)? else {
+    let Some((content, mime_type)) = load_blob_for_pii(conn, hash, external_paths)? else {
         cache.insert(hash.to_string(), None);
         return Ok(None);
     };
@@ -552,8 +1098,9 @@ fn load_blob_text(
         }
     };
 
-    cache.insert(hash.to_string(), Some(text.clone()));
-    Ok(Some(text))
+    let blob = PiiTextBlob { text, mime_type };
+    cache.insert(hash.to_string(), Some(blob.clone()));
+    Ok(Some(blob))
 }
 
 fn load_blob_for_pii(
@@ -622,7 +1169,12 @@ fn redact_blob_cached(
         }
     };
 
-    let Some((redacted_text, _)) = redact_text(text, matchers, token) else {
+    let Some((redacted_text, _)) = redact_body_text(
+        text,
+        is_form_urlencoded_mime(mime_type.as_deref()),
+        matchers,
+        token,
+    ) else {
         cache.insert(hash.to_string(), None);
         return Ok(None);
     };
@@ -776,7 +1328,7 @@ fn write_table(rows: &[PiiFinding]) -> Result<()> {
     }
 
     for width in &mut widths {
-        *width = (*width).min(80).max(8);
+        *width = (*width).clamp(8, 80);
     }
 
     let mut out = io::stdout().lock();

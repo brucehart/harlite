@@ -2,32 +2,86 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  test:
+  quality:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Install stable Rust
         run: |
           rustup update stable
           rustup default stable
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Lint all targets and features
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
       - name: Test all features
         run: cargo test --all-features --locked
+      - name: Check minimal build
+        run: cargo check --all-targets --no-default-features --locked
+      - name: Test minimal library
+        run: cargo test --lib --no-default-features --locked
+      - name: Verify publishable package
+        run: cargo package --locked
+
+  platform-check:
+    name: Platform check (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux ARM64
+            os: ubuntu-24.04-arm
+          - name: macOS ARM64
+            os: macos-15
+          - name: macOS AMD64
+            os: macos-15-intel
+          - name: Windows AMD64
+            os: windows-2025
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install stable Rust
+        shell: bash
+        run: |
+          rustup update stable
+          rustup default stable
+      - name: Compile all targets and features
+        run: cargo check --all-targets --all-features --locked
+
+  msrv:
+    name: Rust 1.85 compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install minimum supported Rust
+        run: rustup toolchain install 1.85.0 --profile minimal
+      - name: Check minimum supported Rust
+        run: cargo +1.85.0 check --all-features --locked
 
   security-audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Install stable Rust
         run: |
           rustup update stable
           rustup default stable
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        run: cargo install cargo-audit --version 0.22.2 --locked
       - name: Audit locked dependencies
         run: cargo audit

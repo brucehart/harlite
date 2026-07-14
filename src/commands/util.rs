@@ -1,4 +1,5 @@
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -6,6 +7,157 @@ use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use rusqlite::{Connection, DatabaseName, OpenFlags};
 
 use crate::error::{HarliteError, Result};
+
+/// Return whether a path points to a SQLite database by inspecting its magic
+/// header. Standard input (`-`) is never treated as SQLite.
+pub fn is_sqlite_file(path: &Path) -> bool {
+    if path == Path::new("-") {
+        return false;
+    }
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+    let mut header = [0u8; 16];
+    file.read_exact(&mut header).is_ok() && header == *b"SQLite format 3\0"
+}
+
+/// Build a sibling output name such as `capture-redacted.har`.
+pub fn derived_output_path(input: &Path, suffix: &str, extension: &str) -> Result<PathBuf> {
+    if input == Path::new("-") {
+        return Err(HarliteError::InvalidArgs(
+            "Reading from standard input requires --output".to_string(),
+        ));
+    }
+    let parent = input
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let stem = input
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .ok_or_else(|| HarliteError::InvalidArgs("Input path must have a filename".to_string()))?;
+    Ok(parent.join(format!("{stem}{suffix}.{extension}")))
+}
+
+/// Serialize JSON through a same-directory temporary file and publish it with
+/// a rename, so failures never leave a partial output at the destination.
+pub fn write_json_atomic<T: serde::Serialize>(
+    destination: &Path,
+    value: &T,
+    pretty: bool,
+    overwrite: bool,
+) -> Result<()> {
+    if destination == Path::new("-") {
+        let stdout = std::io::stdout();
+        let mut output = stdout.lock();
+        if pretty {
+            serde_json::to_writer_pretty(&mut output, value)?;
+        } else {
+            serde_json::to_writer(&mut output, value)?;
+        }
+        output.write_all(b"\n")?;
+        return Ok(());
+    }
+    write_file_atomic(destination, overwrite, |output| {
+        if pretty {
+            serde_json::to_writer_pretty(&mut *output, value)?;
+        } else {
+            serde_json::to_writer(&mut *output, value)?;
+        }
+        output.write_all(b"\n")?;
+        Ok(())
+    })
+}
+
+/// Write already-rendered bytes through a same-directory temporary file and
+/// atomically publish the completed output.
+pub fn write_bytes_atomic(destination: &Path, bytes: &[u8], overwrite: bool) -> Result<()> {
+    if destination == Path::new("-") {
+        std::io::stdout().lock().write_all(bytes)?;
+        return Ok(());
+    }
+    write_file_atomic(destination, overwrite, |output| {
+        output.write_all(bytes)?;
+        Ok(())
+    })
+}
+
+fn write_file_atomic(
+    destination: &Path,
+    overwrite: bool,
+    write: impl FnOnce(&mut BufWriter<File>) -> Result<()>,
+) -> Result<()> {
+    if destination.exists() && !destination.is_file() {
+        return Err(HarliteError::InvalidArgs(format!(
+            "Output path must be a file: {}",
+            destination.display()
+        )));
+    }
+    if destination.exists() && !overwrite {
+        return Err(HarliteError::InvalidArgs(format!(
+            "Output file already exists: {} (use --force to overwrite)",
+            destination.display()
+        )));
+    }
+
+    let parent = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let file_name = destination
+        .file_name()
+        .ok_or_else(|| HarliteError::InvalidArgs("Output path must be a file".to_string()))?
+        .to_string_lossy();
+    let staged_path = unique_sibling(parent, &file_name, "stage")?;
+
+    let write_result = (|| -> Result<()> {
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staged_path)?;
+        let mut output = BufWriter::new(file);
+        write(&mut output)?;
+        output.flush()?;
+        output.get_ref().sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&staged_path);
+        return Err(error);
+    }
+
+    let backup_path = if destination.exists() {
+        let backup = unique_sibling(parent, &file_name, "backup")?;
+        fs::rename(destination, &backup)?;
+        Some(backup)
+    } else {
+        None
+    };
+    if let Err(error) = fs::rename(&staged_path, destination) {
+        if let Some(backup) = &backup_path {
+            let _ = fs::rename(backup, destination);
+        }
+        let _ = fs::remove_file(&staged_path);
+        return Err(error.into());
+    }
+    if let Some(backup) = backup_path {
+        fs::remove_file(backup)?;
+    }
+    Ok(())
+}
+
+fn unique_sibling(parent: &Path, file_name: &str, kind: &str) -> Result<PathBuf> {
+    loop {
+        let id = NEXT_STAGED_DATABASE_ID.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(
+            ".{file_name}.harlite-{kind}-{}-{id}",
+            std::process::id()
+        ));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+}
 
 /// Controls whether database-supplied blob paths may be accessed.
 ///
@@ -331,9 +483,9 @@ pub fn canonicalize_path_for_compare(path: &Path) -> Result<PathBuf> {
 
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let parent_canon = fs::canonicalize(parent)?;
-    let name = path.file_name().ok_or_else(|| {
-        HarliteError::InvalidArgs("Output path must be a file".to_string())
-    })?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| HarliteError::InvalidArgs("Output path must be a file".to_string()))?;
     Ok(parent_canon.join(name))
 }
 
@@ -597,13 +749,12 @@ mod tests {
         std::fs::write(&inside_file, b"inside").unwrap();
         std::fs::write(&outside_file, b"outside").unwrap();
 
-        let policy = ExternalPathPolicy::new(
-            &root.path().join("test.db"),
-            true,
-            Some(root.path()),
-        )
-        .unwrap();
-        assert_eq!(policy.resolve_file("blob"), Some(inside_file.canonicalize().unwrap()));
+        let policy =
+            ExternalPathPolicy::new(&root.path().join("test.db"), true, Some(root.path())).unwrap();
+        assert_eq!(
+            policy.resolve_file("blob"),
+            Some(inside_file.canonicalize().unwrap())
+        );
         assert!(policy
             .resolve_file(outside_file.to_str().unwrap())
             .is_none());

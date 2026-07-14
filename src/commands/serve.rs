@@ -122,18 +122,10 @@ pub fn run_serve(input: PathBuf, options: &ServeOptions) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()
         .map_err(|err| HarliteError::InvalidArgs(format!("Failed to start runtime: {err}")))?;
 
-    if options.tls_cert.is_some() {
-        let tls_config = load_tls_config(
-            options.tls_cert.as_ref().unwrap(),
-            options.tls_key.as_ref().unwrap(),
-        )?;
+    if let (Some(cert), Some(key)) = (&options.tls_cert, &options.tls_key) {
+        let tls_config = load_tls_config(cert, key)?;
         let tls_acceptor = TlsAcceptor::from(Arc::new(tls_config));
-        rt.block_on(run_tls_server(
-            addr,
-            state,
-            tls_acceptor,
-            shutdown_rx,
-        ))
+        rt.block_on(run_tls_server(addr, state, tls_acceptor, shutdown_rx))
     } else {
         rt.block_on(run_plain_server(addr, state, shutdown_rx))
     }
@@ -249,7 +241,10 @@ async fn handle_request(
 
     match entry {
         Some(entry) => {
-            println!("HIT {} {} -> {} ({})", method, path, entry.status, entry.url);
+            println!(
+                "HIT {} {} -> {} ({})",
+                method, path, entry.status, entry.url
+            );
             Ok(build_response(entry))
         }
         None => {
@@ -305,14 +300,10 @@ fn select_entry<'a>(
     match match_mode {
         MatchMode::Strict => entries
             .iter()
-            .filter(|entry| {
-                entry.method.eq_ignore_ascii_case(method) && entry.url == full_url
-            })
+            .filter(|entry| entry.method.eq_ignore_ascii_case(method) && entry.url == full_url)
             .max_by(|a, b| compare_recency(a, b)),
         MatchMode::Fuzzy => {
-            let Some(req_norm) = normalized else {
-                return None;
-            };
+            let req_norm = normalized?;
 
             let mut best: Option<&ServeEntry> = None;
             let mut best_score = 0usize;
@@ -467,9 +458,14 @@ fn load_entries_from_db(path: &Path, options: &ServeOptions) -> Result<Vec<Serve
 
     let mut out = Vec::new();
     for row in rows {
-        let Some(url) = row.url.clone() else { continue; };
+        let Some(url) = row.url.clone() else {
+            continue;
+        };
         let method = row.method.unwrap_or_else(|| "GET".to_string());
-        let status = row.status.and_then(|s| u16::try_from(s).ok()).unwrap_or(200);
+        let status = row
+            .status
+            .and_then(|s| u16::try_from(s).ok())
+            .unwrap_or(200);
         let headers_map = headers_from_json(row.response_headers.as_deref());
         let mut headers = headers_from_map(&headers_map);
         let has_content_encoding = headers_map
@@ -477,9 +473,13 @@ fn load_entries_from_db(path: &Path, options: &ServeOptions) -> Result<Vec<Serve
             .any(|name| name.eq_ignore_ascii_case("content-encoding"));
 
         let body_hash = if has_content_encoding {
-            row.response_body_hash_raw.clone().or(row.response_body_hash.clone())
+            row.response_body_hash_raw
+                .clone()
+                .or(row.response_body_hash.clone())
         } else {
-            row.response_body_hash.clone().or(row.response_body_hash_raw.clone())
+            row.response_body_hash
+                .clone()
+                .or(row.response_body_hash_raw.clone())
         };
         let body = body_hash
             .as_ref()
@@ -659,11 +659,11 @@ fn is_db_path(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_response, headers_from_list, normalize_url, query_score, select_entry, strip_content_encoding,
-        MatchMode, NormalizedUrl, ServeEntry,
+        build_response, headers_from_list, normalize_url, query_score, select_entry,
+        strip_content_encoding, MatchMode, NormalizedUrl, ServeEntry,
     };
-    use bytes::Bytes;
     use crate::har::Header;
+    use bytes::Bytes;
 
     fn entry(method: &str, url: &str, started_at: Option<&str>) -> ServeEntry {
         ServeEntry {
@@ -687,8 +687,16 @@ mod tests {
     #[test]
     fn fuzzy_match_prefers_query_hits() {
         let entries = vec![
-            entry("GET", "http://example.com/api?foo=1", Some("2024-01-01T00:00:00Z")),
-            entry("GET", "http://example.com/api?foo=2", Some("2024-01-02T00:00:00Z")),
+            entry(
+                "GET",
+                "http://example.com/api?foo=1",
+                Some("2024-01-01T00:00:00Z"),
+            ),
+            entry(
+                "GET",
+                "http://example.com/api?foo=2",
+                Some("2024-01-02T00:00:00Z"),
+            ),
         ];
 
         let req = normalize_url("http://example.com/api?foo=2").unwrap();

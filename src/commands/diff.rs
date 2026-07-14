@@ -3,9 +3,10 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
+use clap::ValueEnum;
 use regex::Regex;
 use rusqlite::{Connection, OpenFlags};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::db::{load_entries, EntryQuery, EntryRow};
@@ -14,12 +15,32 @@ use crate::har::{parse_har_file, Entry as HarEntry, Header};
 
 use super::{csv::write_csv_field, OutputFormat};
 
+const FLOAT_TOLERANCE: f64 = 1e-6;
+
 pub struct DiffOptions {
     pub format: OutputFormat,
     pub host: Vec<String>,
     pub method: Vec<String>,
     pub status: Vec<i32>,
     pub url_regex: Vec<String>,
+    pub fail_on: Vec<DiffFailOn>,
+    pub max_total_regression_ms: Option<f64>,
+    pub max_ttfb_regression_ms: Option<f64>,
+    pub max_response_size_increase: Option<i64>,
+    pub max_new_errors: Option<usize>,
+    pub ignore_query_params: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+#[clap(rename_all = "kebab-case")]
+pub enum DiffFailOn {
+    Any,
+    Added,
+    Changed,
+    Removed,
+    NewErrors,
+    Regression,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -74,6 +95,12 @@ struct Filters {
 }
 
 pub fn run_diff(left: PathBuf, right: PathBuf, options: &DiffOptions) -> Result<()> {
+    if left == Path::new("-") && right == Path::new("-") {
+        return Err(HarliteError::InvalidArgs(
+            "Only one diff input may read from standard input".to_string(),
+        ));
+    }
+    validate_gate_options(options)?;
     let left_is_db = is_db_path(&left);
     let right_is_db = is_db_path(&right);
     if left_is_db != right_is_db {
@@ -96,13 +123,33 @@ pub fn run_diff(left: PathBuf, right: PathBuf, options: &DiffOptions) -> Result<
         load_entries_from_har(&right, &filters)?
     };
 
-    let rows = diff_entries(left_entries, right_entries);
+    let rows = diff_entries(left_entries, right_entries, &options.ignore_query_params);
 
     match options.format {
         OutputFormat::Json => write_json(&rows),
         OutputFormat::Csv => write_csv(&rows),
         OutputFormat::Table => write_table(&rows),
+    }?;
+
+    enforce_diff_gates(&rows, options)
+}
+
+fn validate_gate_options(options: &DiffOptions) -> Result<()> {
+    if options
+        .max_total_regression_ms
+        .is_some_and(|value| !value.is_finite() || value < 0.0)
+        || options
+            .max_ttfb_regression_ms
+            .is_some_and(|value| !value.is_finite() || value < 0.0)
+        || options
+            .max_response_size_increase
+            .is_some_and(|value| value < 0)
+    {
+        return Err(HarliteError::InvalidArgs(
+            "Diff regression thresholds must be finite and non-negative".to_string(),
+        ));
     }
+    Ok(())
 }
 
 fn is_db_path(path: &Path) -> bool {
@@ -172,10 +219,10 @@ fn load_entries_from_db(
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
 
-    let mut query = EntryQuery::default();
-    query.hosts = options.host.clone();
-    query.methods = options.method.clone();
-    query.statuses = options.status.clone();
+    let query = EntryQuery {
+        statuses: options.status.clone(),
+        ..EntryQuery::default()
+    };
 
     let entries = load_entries(&conn, &query)?;
     Ok(entries
@@ -211,19 +258,18 @@ fn entry_matches_filters(entry: &EntrySnapshot, filters: &Filters) -> bool {
         return false;
     }
 
-    if !filters.status_set.is_empty() {
-        if entry
+    if !filters.status_set.is_empty()
+        && entry
             .status
             .is_none_or(|s| !filters.status_set.contains(&s))
-        {
-            return false;
-        }
+    {
+        return false;
     }
 
-    if !filters.url_regexes.is_empty() {
-        if entry.url.is_empty() || !filters.url_regexes.iter().any(|re| re.is_match(&entry.url)) {
-            return false;
-        }
+    if !filters.url_regexes.is_empty()
+        && (entry.url.is_empty() || !filters.url_regexes.iter().any(|re| re.is_match(&entry.url)))
+    {
+        return false;
     }
 
     true
@@ -347,14 +393,18 @@ fn headers_from_json(json: Option<&str>) -> HashMap<String, String> {
     map
 }
 
-fn diff_entries(left: Vec<EntrySnapshot>, right: Vec<EntrySnapshot>) -> Vec<DiffRow> {
+fn diff_entries(
+    left: Vec<EntrySnapshot>,
+    right: Vec<EntrySnapshot>,
+    ignore_query_params: &[String],
+) -> Vec<DiffRow> {
     let mut left_map: HashMap<EntryKey, Vec<EntrySnapshot>> = HashMap::new();
     let mut right_map: HashMap<EntryKey, Vec<EntrySnapshot>> = HashMap::new();
 
     for entry in left {
         let key = EntryKey {
             method: entry.method.clone(),
-            url: entry.url.clone(),
+            url: comparison_url(&entry.url, ignore_query_params),
         };
         left_map.entry(key).or_default().push(entry);
     }
@@ -362,7 +412,7 @@ fn diff_entries(left: Vec<EntrySnapshot>, right: Vec<EntrySnapshot>) -> Vec<Diff
     for entry in right {
         let key = EntryKey {
             method: entry.method.clone(),
-            url: entry.url.clone(),
+            url: comparison_url(&entry.url, ignore_query_params),
         };
         right_map.entry(key).or_default().push(entry);
     }
@@ -389,6 +439,142 @@ fn diff_entries(left: Vec<EntrySnapshot>, right: Vec<EntrySnapshot>) -> Vec<Diff
     }
 
     rows
+}
+
+fn comparison_url(raw: &str, ignored_params: &[String]) -> String {
+    if ignored_params.is_empty() {
+        return raw.to_string();
+    }
+    let ignored: HashSet<String> = ignored_params
+        .iter()
+        .map(|name| name.to_ascii_lowercase())
+        .collect();
+    let (without_fragment, fragment) = raw
+        .split_once('#')
+        .map(|(url, fragment)| (url, Some(fragment)))
+        .unwrap_or((raw, None));
+    let Some((prefix, query)) = without_fragment.split_once('?') else {
+        return raw.to_string();
+    };
+    let mut removed = false;
+    let kept: Vec<&str> = query
+        .split('&')
+        .filter(|pair| {
+            let raw_name = pair.split_once('=').map_or(*pair, |(name, _)| name);
+            let decoded_name = url::form_urlencoded::parse(raw_name.as_bytes())
+                .next()
+                .map(|(name, _)| name.into_owned())
+                .unwrap_or_else(|| raw_name.to_string());
+            let should_remove = ignored.contains(&decoded_name.to_ascii_lowercase());
+            removed |= should_remove;
+            !should_remove
+        })
+        .collect();
+    if !removed {
+        return raw.to_string();
+    }
+
+    let mut result = prefix.to_string();
+    if !kept.is_empty() {
+        result.push('?');
+        result.push_str(&kept.join("&"));
+    }
+    if let Some(fragment) = fragment {
+        result.push('#');
+        result.push_str(fragment);
+    }
+    result
+}
+
+fn enforce_diff_gates(rows: &[DiffRow], options: &DiffOptions) -> Result<()> {
+    let added = rows.iter().filter(|row| row.change == "added").count();
+    let changed = rows.iter().filter(|row| row.change == "changed").count();
+    let removed = rows.iter().filter(|row| row.change == "removed").count();
+    let new_errors = rows
+        .iter()
+        .filter(|row| {
+            row.status_right.is_some_and(|status| status >= 400)
+                && row.status_left.is_none_or(|status| status < 400)
+        })
+        .count();
+    let regressions = rows
+        .iter()
+        .filter(|row| {
+            row.delta_total_ms
+                .is_some_and(|delta| regression_exceeds(delta, 0.0))
+                || row
+                    .delta_ttfb_ms
+                    .is_some_and(|delta| regression_exceeds(delta, 0.0))
+                || row.delta_response_body_size.is_some_and(|delta| delta > 0)
+        })
+        .count();
+
+    let mut violations = Vec::new();
+    for condition in &options.fail_on {
+        let (count, label) = match condition {
+            DiffFailOn::Any => (rows.len(), "difference(s)"),
+            DiffFailOn::Added => (added, "added request(s)"),
+            DiffFailOn::Changed => (changed, "changed request(s)"),
+            DiffFailOn::Removed => (removed, "removed request(s)"),
+            DiffFailOn::NewErrors => (new_errors, "new HTTP error(s)"),
+            DiffFailOn::Regression => (regressions, "regression(s)"),
+        };
+        if count > 0 {
+            violations.push(format!("{count} {label}"));
+        }
+    }
+
+    if let Some(limit) = options.max_new_errors {
+        if new_errors > limit {
+            violations.push(format!("{new_errors} new HTTP error(s) exceed {limit}"));
+        }
+    }
+    if let Some(limit) = options.max_total_regression_ms {
+        let count = rows
+            .iter()
+            .filter(|row| {
+                row.delta_total_ms
+                    .is_some_and(|delta| regression_exceeds(delta, limit))
+            })
+            .count();
+        if count > 0 {
+            violations.push(format!(
+                "{count} total-time regression(s) exceed {limit:.2}ms"
+            ));
+        }
+    }
+    if let Some(limit) = options.max_ttfb_regression_ms {
+        let count = rows
+            .iter()
+            .filter(|row| {
+                row.delta_ttfb_ms
+                    .is_some_and(|delta| regression_exceeds(delta, limit))
+            })
+            .count();
+        if count > 0 {
+            violations.push(format!("{count} TTFB regression(s) exceed {limit:.2}ms"));
+        }
+    }
+    if let Some(limit) = options.max_response_size_increase {
+        let count = rows
+            .iter()
+            .filter(|row| {
+                row.delta_response_body_size
+                    .is_some_and(|delta| delta > limit)
+            })
+            .count();
+        if count > 0 {
+            violations.push(format!(
+                "{count} response-size increase(s) exceed {limit} bytes"
+            ));
+        }
+    }
+
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(HarliteError::ThresholdExceeded(violations.join("; ")))
+    }
 }
 
 fn diff_entry(left: Option<&EntrySnapshot>, right: Option<&EntrySnapshot>) -> Option<DiffRow> {
@@ -497,9 +683,13 @@ fn count_header_changes(left: &HashMap<String, String>, right: &HashMap<String, 
 fn f64_changed(left: Option<f64>, right: Option<f64>) -> bool {
     match (left, right) {
         (None, None) => false,
-        (Some(a), Some(b)) => (a - b).abs() > 1e-6,
+        (Some(a), Some(b)) => (a - b).abs() > FLOAT_TOLERANCE,
         _ => true,
     }
+}
+
+fn regression_exceeds(delta: f64, limit: f64) -> bool {
+    delta - limit > FLOAT_TOLERANCE
 }
 
 fn diff_f64(left: Option<f64>, right: Option<f64>) -> Option<f64> {
@@ -550,7 +740,7 @@ fn write_table(rows: &[DiffRow]) -> Result<()> {
     }
 
     for width in &mut widths {
-        *width = (*width).min(80).max(8);
+        *width = (*width).clamp(8, 80);
     }
 
     let mut out = io::stdout().lock();
@@ -630,8 +820,7 @@ fn write_table_row<'a, I>(out: &mut impl Write, fields: I, widths: &[usize]) -> 
 where
     I: IntoIterator<Item = &'a str>,
 {
-    let mut i = 0usize;
-    for field in fields {
+    for (i, field) in fields.into_iter().enumerate() {
         if i > 0 {
             out.write_all(b" | ")?;
         }
@@ -642,7 +831,6 @@ where
         if field_len < width {
             out.write_all(" ".repeat(width - field_len).as_bytes())?;
         }
-        i += 1;
     }
     out.write_all(b"\n")?;
     Ok(())

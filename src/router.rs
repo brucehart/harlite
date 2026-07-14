@@ -3,14 +3,13 @@ use clap::CommandFactory;
 
 use crate::cli::{Cli, Commands};
 use crate::commands::{
-    run_analyze, run_diff, run_export, run_export_data, run_fts_rebuild, run_import, run_imports,
-    run_info, run_merge, run_openapi, run_pii, run_pii_with_external_paths, run_prune,
-    run_prune_with_options, run_query, run_redact, run_redact_with_external_paths,
-    run_report,
-    run_schema, run_search, run_stats, run_waterfall, AnalyzeOptions, DiffOptions,
+    run_analyze, run_check, run_diff, run_export, run_export_data, run_fts_rebuild, run_import,
+    run_imports, run_info, run_merge, run_openapi, run_pii_input, run_prune,
+    run_prune_with_options, run_query, run_redact_input, run_report, run_request_export,
+    run_schema, run_search, run_stats, run_waterfall, AnalyzeOptions, CheckOptions, DiffOptions,
     EntryFilterOptions, ExportDataOptions, ExportOptions, ImportOptions, InfoOptions, MergeOptions,
-    OpenApiOptions, PiiOptions, PruneOptions, QueryOptions, RedactOptions, ReportOptions, StatsOptions,
-    WaterfallFormat, WaterfallGroupBy, WaterfallOptions,
+    OpenApiOptions, PiiOptions, PruneOptions, QueryOptions, RedactOptions, ReportOptions,
+    RequestExportOptions, StatsOptions, WaterfallFormat, WaterfallGroupBy, WaterfallOptions,
 };
 #[cfg(feature = "cdp")]
 use crate::commands::{run_cdp, CdpOptions};
@@ -227,6 +226,22 @@ pub fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
 
+        Commands::Check {
+            input,
+            json,
+            strict,
+            allow_external_paths,
+            external_path_root,
+        } => run_check(
+            input,
+            &CheckOptions {
+                json,
+                strict,
+                allow_external_paths,
+                external_path_root,
+            },
+        ),
+
         Commands::Schema { database } => run_schema(database),
 
         Commands::Info {
@@ -283,6 +298,9 @@ pub fn run(cli: Cli) -> Result<()> {
             slow_total_ms,
             slow_ttfb_ms,
             top,
+            max_p95_total_ms,
+            max_p95_ttfb_ms,
+            max_errors,
         } => {
             let options = AnalyzeOptions {
                 json: json.unwrap_or(false),
@@ -294,6 +312,9 @@ pub fn run(cli: Cli) -> Result<()> {
                 slow_total_ms: slow_total_ms.unwrap_or(1000.0),
                 slow_ttfb_ms: slow_ttfb_ms.unwrap_or(500.0),
                 top: top.unwrap_or(10),
+                max_p95_total_ms,
+                max_p95_ttfb_ms,
+                max_errors,
             };
             run_analyze(database, &options)
         }
@@ -412,6 +433,38 @@ pub fn run(cli: Cli) -> Result<()> {
             };
             run_export_data(database, &options)
         }
+
+        Commands::Request {
+            input,
+            format,
+            output,
+            force,
+            include_sensitive,
+            index,
+            limit,
+            url_contains,
+            host,
+            method,
+            status,
+            allow_external_paths,
+            external_path_root,
+        } => run_request_export(
+            input,
+            &RequestExportOptions {
+                format,
+                output,
+                force,
+                include_sensitive,
+                indexes: index.unwrap_or_default(),
+                limit,
+                url_contains: url_contains.unwrap_or_default(),
+                host: host.unwrap_or_default(),
+                method: method.unwrap_or_default(),
+                status: status.unwrap_or_default(),
+                allow_external_paths,
+                external_path_root,
+            },
+        ),
 
         #[cfg(feature = "otel")]
         Commands::Otel {
@@ -641,16 +694,12 @@ pub fn run(cli: Cli) -> Result<()> {
                 match_mode: match_mode.unwrap_or(defaults.match_mode),
                 token: token.unwrap_or_else(|| defaults.token.clone()),
             };
-            if allow_external_paths {
-                run_redact_with_external_paths(
-                    database,
-                    &options,
-                    allow_external_paths,
-                    external_path_root.as_deref(),
-                )
-            } else {
-                run_redact(database, &options)
-            }
+            run_redact_input(
+                database,
+                &options,
+                allow_external_paths,
+                external_path_root.as_deref(),
+            )
         }
 
         Commands::Pii {
@@ -692,16 +741,12 @@ pub fn run(cli: Cli) -> Result<()> {
                     .unwrap_or_else(|| defaults.credit_card_regex.clone()),
                 token: token.unwrap_or_else(|| defaults.token.clone()),
             };
-            if allow_external_paths {
-                run_pii_with_external_paths(
-                    database,
-                    &options,
-                    allow_external_paths,
-                    external_path_root.as_deref(),
-                )
-            } else {
-                run_pii(database, &options)
-            }
+            run_pii_input(
+                database,
+                &options,
+                allow_external_paths,
+                external_path_root.as_deref(),
+            )
         }
 
         Commands::Diff {
@@ -712,6 +757,12 @@ pub fn run(cli: Cli) -> Result<()> {
             method,
             status,
             url_regex,
+            fail_on,
+            max_total_regression_ms,
+            max_ttfb_regression_ms,
+            max_response_size_increase,
+            max_new_errors,
+            ignore_query_param,
         } => {
             let defaults = &resolved.diff;
             let options = DiffOptions {
@@ -720,6 +771,15 @@ pub fn run(cli: Cli) -> Result<()> {
                 method: method.unwrap_or_else(|| defaults.method.clone()),
                 status: status.unwrap_or_else(|| defaults.status.clone()),
                 url_regex: url_regex.unwrap_or_else(|| defaults.url_regex.clone()),
+                fail_on: fail_on.unwrap_or_else(|| defaults.fail_on.clone()),
+                max_total_regression_ms: max_total_regression_ms
+                    .or(defaults.max_total_regression_ms),
+                max_ttfb_regression_ms: max_ttfb_regression_ms.or(defaults.max_ttfb_regression_ms),
+                max_response_size_increase: max_response_size_increase
+                    .or(defaults.max_response_size_increase),
+                max_new_errors: max_new_errors.or(defaults.max_new_errors),
+                ignore_query_params: ignore_query_param
+                    .unwrap_or_else(|| defaults.ignore_query_param.clone()),
             };
             run_diff(left, right, &options)
         }

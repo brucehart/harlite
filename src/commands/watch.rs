@@ -192,7 +192,7 @@ pub fn run_watch(directory: PathBuf, options: &WatchOptions) -> Result<()> {
                 }
             }
 
-            if let Err(err) = run_import(&[canonical.clone()], &import_options) {
+            if let Err(err) = run_import(std::slice::from_ref(&canonical), &import_options) {
                 eprintln!("Import failed for {}: {}", canonical.display(), err);
                 continue;
             }
@@ -354,7 +354,7 @@ fn import_existing_files(
                     continue;
                 }
             }
-            run_import(&[canonical.clone()], import_options)?;
+            run_import(std::slice::from_ref(&canonical), import_options)?;
             imported_files.insert(key, fingerprint);
             if options.post_info {
                 let info_options = InfoOptions {

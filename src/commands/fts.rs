@@ -101,10 +101,8 @@ pub fn run_fts_rebuild(
     let hashes_iter = stmt.query_map([], |row| row.get::<_, String>(0))?;
 
     let mut hashes: Vec<String> = Vec::new();
-    for h in hashes_iter {
-        if let Ok(hash) = h {
-            hashes.push(hash);
-        }
+    for hash in hashes_iter.flatten() {
+        hashes.push(hash);
     }
 
     // Keep ordering stable, but dedup defensively.

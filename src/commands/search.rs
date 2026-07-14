@@ -106,14 +106,12 @@ fn write_table_row<'a, I>(out: &mut impl Write, fields: I, widths: &[usize]) -> 
 where
     I: IntoIterator<Item = &'a str>,
 {
-    let mut i = 0usize;
-    for field in fields {
+    for (i, field) in fields.into_iter().enumerate() {
         if i > 0 {
             out.write_all(b"  ")?;
         }
         let width = widths.get(i).copied().unwrap_or(0);
         write!(out, "{:width$}", field, width = width)?;
-        i += 1;
     }
     out.write_all(b"\n")?;
     Ok(())
@@ -154,9 +152,9 @@ fn write_table(columns: &[&str], rows: &mut rusqlite::Rows<'_>, quiet: bool) -> 
     }
     while let Some(row) = rows.next()? {
         let mut fields: Vec<String> = Vec::with_capacity(columns.len());
-        for i in 0..columns.len() {
+        for (i, width) in widths.iter().copied().enumerate().take(columns.len()) {
             let value = value_to_table(row.get_ref(i)?);
-            fields.push(truncate(&value, widths[i]));
+            fields.push(truncate(&value, width));
         }
         write_table_row(&mut out, fields.iter().map(|s| s.as_str()), &widths)?;
     }

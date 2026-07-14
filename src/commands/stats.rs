@@ -125,7 +125,7 @@ pub fn run_stats(database: PathBuf, options: &StatsOptions) -> Result<()> {
                 if let Some(expiry) = parse_cert_expiry(&expiry_raw) {
                     if expiry <= cutoff {
                         count += 1;
-                        if earliest.map_or(true, |dt| expiry < dt) {
+                        if earliest.is_none_or(|dt| expiry < dt) {
                             earliest = Some(expiry);
                         }
                     }

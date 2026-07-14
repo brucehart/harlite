@@ -188,7 +188,9 @@ pub fn run_replay(input: PathBuf, options: &ReplayOptions) -> Result<()> {
 
 fn resolve_concurrency(configured: usize, total: usize) -> Result<usize> {
     if configured == 0 {
-        let available = thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        let available = thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
         return Ok(available.max(1).min(total.max(1)));
     }
     Ok(configured.min(total.max(1)))
@@ -228,7 +230,11 @@ fn build_agent(timeout: Option<Duration>) -> ureq::Agent {
     builder.build()
 }
 
-fn replay_entry(agent: &ureq::Agent, entry: ReplayEntry, runtime: &ReplayRuntime) -> (usize, ReplayRow) {
+fn replay_entry(
+    agent: &ureq::Agent,
+    entry: ReplayEntry,
+    runtime: &ReplayRuntime,
+) -> (usize, ReplayRow) {
     let method = entry.method.to_ascii_uppercase();
     let mut row = ReplayRow {
         method: method.clone(),
@@ -400,9 +406,9 @@ fn split_host_port(host: &str) -> Result<(String, Option<u16>)> {
             let host_part = &stripped[..end];
             let rest = &stripped[end + 1..];
             if let Some(port_str) = rest.strip_prefix(':') {
-                let port = port_str.parse::<u16>().map_err(|_| {
-                    HarliteError::InvalidArgs("invalid override port".to_string())
-                })?;
+                let port = port_str
+                    .parse::<u16>()
+                    .map_err(|_| HarliteError::InvalidArgs("invalid override port".to_string()))?;
                 return Ok((host_part.to_string(), Some(port)));
             }
             return Ok((host_part.to_string(), None));
@@ -412,9 +418,9 @@ fn split_host_port(host: &str) -> Result<(String, Option<u16>)> {
     if let Some(idx) = host.rfind(':') {
         let (host_part, port_str) = host.split_at(idx);
         if !host_part.is_empty() {
-            let port = port_str[1..].parse::<u16>().map_err(|_| {
-                HarliteError::InvalidArgs("invalid override port".to_string())
-            })?;
+            let port = port_str[1..]
+                .parse::<u16>()
+                .map_err(|_| HarliteError::InvalidArgs("invalid override port".to_string()))?;
             return Ok((host_part.to_string(), Some(port)));
         }
     }
@@ -467,12 +473,14 @@ fn load_entries_from_db(path: &Path, options: &ReplayOptions) -> Result<Vec<Repl
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
 
-    let mut query = EntryQuery::default();
-    query.hosts = options.host.clone();
-    query.methods = options.method.clone();
-    query.statuses = options.status.clone();
-    query.url_exact = options.url.clone();
-    query.url_contains = options.url_contains.clone();
+    let query = EntryQuery {
+        hosts: options.host.clone(),
+        methods: options.method.clone(),
+        statuses: options.status.clone(),
+        url_exact: options.url.clone(),
+        url_contains: options.url_contains.clone(),
+        ..EntryQuery::default()
+    };
 
     let url_regexes = compile_url_regexes(&options.url_regex)?;
 
@@ -507,11 +515,14 @@ fn load_entries_from_db(path: &Path, options: &ReplayOptions) -> Result<Vec<Repl
         }
     }
 
-    let blob_map: HashMap<String, BlobRow> = blobs.into_iter().map(|b| (b.hash.clone(), b)).collect();
+    let blob_map: HashMap<String, BlobRow> =
+        blobs.into_iter().map(|b| (b.hash.clone(), b)).collect();
 
     let mut out = Vec::new();
     for (idx, row) in rows.into_iter().enumerate() {
-        let Some(url) = row.url.clone() else { continue; };
+        let Some(url) = row.url.clone() else {
+            continue;
+        };
         if !url_regexes.is_empty() && !url_regexes.iter().any(|re| re.is_match(&url)) {
             continue;
         }
@@ -526,7 +537,13 @@ fn load_entries_from_db(path: &Path, options: &ReplayOptions) -> Result<Vec<Repl
             .request_body_hash
             .as_ref()
             .and_then(|hash| blob_map.get(hash))
-            .and_then(|blob| if blob.content.is_empty() { None } else { Some(blob.content.clone()) });
+            .and_then(|blob| {
+                if blob.content.is_empty() {
+                    None
+                } else {
+                    Some(blob.content.clone())
+                }
+            });
 
         out.push(ReplayEntry {
             index: idx,
@@ -562,8 +579,14 @@ fn load_entries_from_har(path: &Path, options: &ReplayOptions) -> Result<Vec<Rep
 
     let mut out = Vec::new();
     for (idx, entry) in har.log.entries.into_iter().enumerate() {
-        if !entry_matches_filters(&entry, options, &url_regexes, &host_set, &method_set, &status_set)
-        {
+        if !entry_matches_filters(
+            &entry,
+            options,
+            &url_regexes,
+            &host_set,
+            &method_set,
+            &status_set,
+        ) {
             continue;
         }
 
@@ -756,11 +779,9 @@ fn compile_rules(options: &ReplayOptions) -> Result<CompiledOverrides> {
 }
 
 fn parse_host_override(raw: &str) -> Result<HostOverrideRule> {
-    let (pattern_raw, host) = raw
-        .split_once('=')
-        .ok_or_else(|| HarliteError::InvalidArgs(
-            "override-host must be '<url-regex>=<host>'".to_string(),
-        ))?;
+    let (pattern_raw, host) = raw.split_once('=').ok_or_else(|| {
+        HarliteError::InvalidArgs("override-host must be '<url-regex>=<host>'".to_string())
+    })?;
     let pattern = compile_override_pattern(pattern_raw)?;
     if host.trim().is_empty() {
         return Err(HarliteError::InvalidArgs(
@@ -774,10 +795,11 @@ fn parse_host_override(raw: &str) -> Result<HostOverrideRule> {
 }
 
 fn parse_header_override(raw: &str) -> Result<HeaderOverrideRule> {
-    let (left, value) = raw.split_once('=')
-        .ok_or_else(|| HarliteError::InvalidArgs(
+    let (left, value) = raw.split_once('=').ok_or_else(|| {
+        HarliteError::InvalidArgs(
             "override-header must be '<url-regex>:<name>=<value>' or '<name>=<value>'".to_string(),
-        ))?;
+        )
+    })?;
 
     let (pattern_raw, name) = match left.rsplit_once(':') {
         Some((pattern, name)) => (pattern, name),
@@ -876,7 +898,7 @@ fn write_table(rows: &[ReplayRow]) -> Result<()> {
     }
 
     for width in &mut widths {
-        *width = (*width).min(80).max(8);
+        *width = (*width).clamp(8, 80);
     }
 
     let mut out = io::stdout().lock();
@@ -960,8 +982,7 @@ fn write_table_row<'a, I>(out: &mut impl Write, fields: I, widths: &[usize]) -> 
 where
     I: IntoIterator<Item = &'a str>,
 {
-    let mut i = 0usize;
-    for field in fields {
+    for (i, field) in fields.into_iter().enumerate() {
         if i > 0 {
             out.write_all(b" | ")?;
         }
@@ -972,7 +993,6 @@ where
         if field_len < width {
             out.write_all(" ".repeat(width - field_len).as_bytes())?;
         }
-        i += 1;
     }
     out.write_all(b"\n")?;
     Ok(())
@@ -998,13 +1018,11 @@ fn truncate(s: &str, max: usize) -> String {
         return "...".to_string();
     }
     let mut end = 0usize;
-    let mut chars_seen = 0usize;
-    for (i, ch) in s.char_indices() {
+    for (chars_seen, (i, ch)) in s.char_indices().enumerate() {
         if chars_seen >= max.saturating_sub(3) {
             break;
         }
         end = i + ch.len_utf8();
-        chars_seen += 1;
     }
     let mut out = s[..end].to_string();
     out.push_str("...");

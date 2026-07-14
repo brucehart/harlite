@@ -8,7 +8,9 @@ use chrono::{DateTime, NaiveDate, Utc};
 use rusqlite::Connection;
 use serde::Serialize;
 
-use crate::db::{ensure_schema_upgrades, load_entries, load_pages_for_imports, EntryQuery, PageRow};
+use crate::db::{
+    ensure_schema_upgrades, load_entries, load_pages_for_imports, EntryQuery, PageRow,
+};
 use crate::error::{HarliteError, Result};
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -113,7 +115,7 @@ fn page_matches_filter(
 }
 
 fn is_navigation_entry(entry: &WaterfallEntry) -> bool {
-    if entry.method.to_ascii_uppercase() != "GET" {
+    if !entry.method.eq_ignore_ascii_case("GET") {
         return false;
     }
     let Some(mime) = entry.mime.as_deref() else {
@@ -139,13 +141,18 @@ fn build_bar(offset_ms: f64, duration_ms: f64, total_ms: f64, width: usize) -> S
     let start = start_col.clamp(0, (width - 1) as isize) as usize;
     buf[start] = '|';
     let end = (start as isize + 1 + dur_cols).clamp(0, width as isize) as usize;
-    for idx in (start + 1)..end {
-        buf[idx] = '=';
+    for cell in buf.iter_mut().take(end).skip(start + 1) {
+        *cell = '=';
     }
     buf.into_iter().collect()
 }
 
-fn render_text(groups: &[GroupInfo], total_ms: f64, width: usize, writer: &mut dyn Write) -> Result<()> {
+fn render_text(
+    groups: &[GroupInfo],
+    total_ms: f64,
+    width: usize,
+    writer: &mut dyn Write,
+) -> Result<()> {
     writeln!(
         writer,
         "Range: 0.0ms..{:.1}ms | width={} | groups={}",
@@ -156,7 +163,12 @@ fn render_text(groups: &[GroupInfo], total_ms: f64, width: usize, writer: &mut d
 
     for group in groups {
         writeln!(writer)?;
-        writeln!(writer, "Group: {} (entries={})", group.name, group.entries.len())?;
+        writeln!(
+            writer,
+            "Group: {} (entries={})",
+            group.name,
+            group.entries.len()
+        )?;
         for entry in &group.entries {
             let bar = build_bar(entry.start_ms, entry.duration_ms, total_ms, width);
             let status = entry
@@ -166,12 +178,7 @@ fn render_text(groups: &[GroupInfo], total_ms: f64, width: usize, writer: &mut d
             writeln!(
                 writer,
                 "{:>8.1} {:>8.1} {} {} {} {}",
-                entry.start_ms,
-                entry.duration_ms,
-                bar,
-                entry.method,
-                status,
-                entry.url
+                entry.start_ms, entry.duration_ms, bar, entry.method, status, entry.url
             )?;
         }
     }
@@ -267,10 +274,12 @@ pub fn run_waterfall(database: PathBuf, options: &WaterfallOptions) -> Result<()
         None => None,
     };
 
-    let mut query = EntryQuery::default();
-    query.from_started_at = from_started_at;
-    query.to_started_at = to_started_at;
-    query.hosts = options.host.clone();
+    let query = EntryQuery {
+        from_started_at,
+        to_started_at,
+        hosts: options.host.clone(),
+        ..EntryQuery::default()
+    };
 
     let mut rows = load_entries(&conn, &query)?;
     if rows.is_empty() {

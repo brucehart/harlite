@@ -1,38 +1,41 @@
-mod diff;
 mod analyze;
+mod check;
 mod csv;
+mod diff;
 mod entry_filter;
 mod export;
 mod export_data;
-mod openapi;
 mod fts;
 mod import;
 mod imports;
 mod info;
 mod merge;
+mod openapi;
 #[cfg(feature = "otel")]
 mod otel;
-mod report;
+mod pii;
 mod prune;
 mod query;
-mod pii;
 mod redact;
 #[cfg(feature = "repl")]
 mod repl;
 #[cfg(feature = "replay")]
 mod replay;
-#[cfg(feature = "serve")]
-mod serve;
+mod report;
+mod request;
 mod schema;
 mod search;
+#[cfg(feature = "serve")]
+mod serve;
 mod stats;
 pub mod util;
 #[cfg(feature = "watch")]
 mod watch;
 mod waterfall;
 
-pub use diff::{run_diff, DiffOptions};
 pub use analyze::{run_analyze, AnalyzeOptions};
+pub use check::{run_check, CheckOptions};
+pub use diff::{run_diff, DiffFailOn, DiffOptions};
 pub use entry_filter::EntryFilterOptions;
 pub use export::{run_export, ExportInputFormat, ExportOptions};
 pub use export_data::{run_export_data, DataExportFormat, ExportDataOptions};
@@ -41,22 +44,25 @@ pub use import::{run_import, ImportOptions};
 pub use imports::run_imports;
 pub use info::{run_info, InfoOptions};
 pub use merge::{run_merge, DedupStrategy, MergeOptions};
+pub use openapi::{run_openapi, OpenApiOptions};
 #[cfg(feature = "otel")]
 pub use otel::{run_otel, OtelExportFormat, OtelExportOptions};
-pub use report::{run_report, ReportOptions};
+pub use pii::{run_pii, run_pii_input, run_pii_with_external_paths, PiiOptions};
 pub use prune::{run_prune, run_prune_with_options, PruneOptions};
 pub use query::{run_query, OutputFormat, QueryOptions};
-pub use pii::{run_pii, run_pii_with_external_paths, PiiOptions};
-pub use redact::{run_redact, run_redact_with_external_paths, NameMatchMode, RedactOptions};
+pub use redact::{
+    run_redact, run_redact_input, run_redact_with_external_paths, NameMatchMode, RedactOptions,
+};
 #[cfg(feature = "repl")]
 pub use repl::{run_repl, ReplOptions};
 #[cfg(feature = "replay")]
 pub use replay::{run_replay, ReplayOptions};
-#[cfg(feature = "serve")]
-pub use serve::{run_serve, MatchMode, ServeOptions};
+pub use report::{run_report, ReportOptions};
+pub use request::{run_request_export, RequestExportFormat, RequestExportOptions};
 pub use schema::run_schema;
 pub use search::run_search;
-pub use openapi::{run_openapi, OpenApiOptions};
+#[cfg(feature = "serve")]
+pub use serve::{run_serve, MatchMode, ServeOptions};
 pub use stats::{run_stats, StatsOptions};
 pub use waterfall::{run_waterfall, WaterfallFormat, WaterfallGroupBy, WaterfallOptions};
 #[cfg(feature = "cdp")]

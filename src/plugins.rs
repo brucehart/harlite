@@ -38,7 +38,7 @@ pub struct PluginConfig {
 
 impl PluginConfig {
     fn effective_phase(&self) -> PluginPhase {
-        self.phase.unwrap_or_else(|| match self.kind {
+        self.phase.unwrap_or(match self.kind {
             PluginKind::Exporter => PluginPhase::Export,
             _ => PluginPhase::Import,
         })
@@ -68,11 +68,11 @@ impl PluginSet {
         self.plugins.is_empty()
     }
 
-    fn iter_kind_phase<'a>(
-        &'a self,
+    fn iter_kind_phase(
+        &self,
         kind: PluginKind,
         phase: PluginPhase,
-    ) -> impl Iterator<Item = &'a PluginConfig> {
+    ) -> impl Iterator<Item = &PluginConfig> {
         self.plugins
             .iter()
             .filter(move |plugin| plugin.kind == kind && plugin.matches_phase(phase))
@@ -118,8 +118,7 @@ impl PluginSet {
             }
         }
         for plugin in self.iter_kind_phase(PluginKind::Transform, PluginPhase::Export) {
-            if let Some(next) =
-                run_transform_plugin(plugin, &entry, context, PluginPhase::Export)?
+            if let Some(next) = run_transform_plugin(plugin, &entry, context, PluginPhase::Export)?
             {
                 entry = next;
             }
@@ -127,11 +126,7 @@ impl PluginSet {
         Ok(Some(entry))
     }
 
-    pub fn run_exporters(
-        &self,
-        har: &Har,
-        context: &PluginContext<'_>,
-    ) -> Result<ExporterOutcome> {
+    pub fn run_exporters(&self, har: &Har, context: &PluginContext<'_>) -> Result<ExporterOutcome> {
         let mut ran = false;
         let mut skip_default = false;
         for plugin in self.iter_kind_phase(PluginKind::Exporter, PluginPhase::Export) {
@@ -141,10 +136,7 @@ impl PluginSet {
                 skip_default = true;
             }
         }
-        Ok(ExporterOutcome {
-            ran,
-            skip_default,
-        })
+        Ok(ExporterOutcome { ran, skip_default })
     }
 }
 
@@ -302,10 +294,7 @@ fn run_plugin<T: Serialize, R: for<'de> Deserialize<'de>>(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|err| {
-            HarliteError::InvalidArgs(format!(
-                "Failed to spawn plugin '{}': {}",
-                plugin.name, err
-            ))
+            HarliteError::InvalidArgs(format!("Failed to spawn plugin '{}': {}", plugin.name, err))
         })?;
 
     if let Some(mut stdin) = child.stdin.take() {
@@ -370,11 +359,15 @@ mod tests {
 
     #[test]
     fn explicit_cli_enable_is_required_and_config_can_disable() {
-        assert!(!resolve_plugins(&[config(None)], &["test".to_string()], &[])
-            .unwrap()
-            .is_empty());
-        assert!(resolve_plugins(&[config(Some(false))], &["test".to_string()], &[])
-            .unwrap()
-            .is_empty());
+        assert!(
+            !resolve_plugins(&[config(None)], &["test".to_string()], &[])
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            resolve_plugins(&[config(Some(false))], &["test".to_string()], &[])
+                .unwrap()
+                .is_empty()
+        );
     }
 }
