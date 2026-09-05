@@ -180,6 +180,9 @@ fn run_pii_har(input: PathBuf, options: &PiiOptions) -> Result<()> {
 
     let mut har = crate::har::parse_har_file(&input)?;
     let findings = scan_har(&mut har, &matchers, options);
+    if options.redact {
+        super::metadata::discard_har_metadata(&mut har, options.dry_run);
+    }
 
     if options.redact && !options.dry_run {
         let output = options
@@ -920,6 +923,9 @@ pub fn run_pii_with_external_paths(
 
     drop(update);
     drop(stmt);
+    if options.redact {
+        super::metadata::discard_database_metadata(work_conn, write)?;
+    }
     if write {
         delete_orphaned_blobs(work_conn)?;
         conn.execute_batch("COMMIT")?;
