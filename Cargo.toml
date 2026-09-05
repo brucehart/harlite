@@ -78,7 +78,7 @@ graphql = ["dep:graphql-parser"]
 otel = ["dep:h2", "dep:opentelemetry-proto", "dep:prost", "dep:tokio", "dep:tonic", "dep:ureq"]
 repl = ["dep:rustyline"]
 replay = ["dep:ureq"]
-serve = ["dep:h2", "dep:hyper-util", "dep:http-body-util", "dep:ctrlc", "dep:hyper", "dep:rustls", "dep:rustls-pemfile", "dep:tokio", "dep:tokio-rustls"]
+serve = ["tokio/net", "tokio/io-util", "tokio/time", "tokio/sync", "dep:h2", "dep:hyper-util", "dep:http-body-util", "dep:ctrlc", "dep:hyper", "dep:rustls", "dep:rustls-pemfile", "dep:tokio", "dep:tokio-rustls"]
 watch = ["dep:ctrlc", "dep:notify"]
 parquet = ["dep:parquet"]
 
