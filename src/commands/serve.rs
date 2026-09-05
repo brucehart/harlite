@@ -431,7 +431,8 @@ fn load_entries_from_db(path: &Path, options: &ServeOptions) -> Result<Vec<Serve
     for row in &rows {
         if let Some(hash) = row.response_body_hash.clone() {
             hashes.push(hash);
-        } else if let Some(hash) = row.response_body_hash_raw.clone() {
+        }
+        if let Some(hash) = row.response_body_hash_raw.clone() {
             hashes.push(hash);
         }
     }
@@ -479,22 +480,35 @@ fn load_entries_from_db(path: &Path, options: &ServeOptions) -> Result<Vec<Serve
             .keys()
             .any(|name| name.eq_ignore_ascii_case("content-encoding"));
 
-        let body_hash = if has_content_encoding {
-            row.response_body_hash_raw
-                .clone()
-                .or(row.response_body_hash.clone())
+        let candidates = if has_content_encoding {
+            [
+                row.response_body_hash_raw.as_ref(),
+                row.response_body_hash.as_ref(),
+            ]
         } else {
-            row.response_body_hash
-                .clone()
-                .or(row.response_body_hash_raw.clone())
+            [
+                row.response_body_hash.as_ref(),
+                row.response_body_hash_raw.as_ref(),
+            ]
         };
-        let body = body_hash
-            .as_ref()
-            .and_then(|hash| blob_map.get(hash))
+        let selected = candidates
+            .iter()
+            .flatten()
+            .filter_map(|hash| blob_map.get(*hash))
+            .find(|blob| !blob.content.is_empty() || blob.size == 0);
+        if selected.is_none() && candidates.iter().any(|hash| hash.is_some()) {
+            return Err(HarliteError::InvalidArgs(format!("Recorded body is unavailable for {url}; enable trusted external bodies or reimport with --bodies")));
+        }
+        let body = selected
             .map(|blob| Bytes::from(blob.content.clone()))
-            .unwrap_or_else(Bytes::new);
-
-        if has_content_encoding && row.response_body_hash_raw.is_none() {
+            .unwrap_or_default();
+        let raw = selected
+            .is_some_and(|blob| row.response_body_hash_raw.as_deref() == Some(blob.hash.as_str()));
+        let encoding = headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-encoding"))
+            .map(|(_, value)| value.as_str());
+        if has_content_encoding && !raw && !body_is_encoded(&body, encoding)? {
             strip_content_encoding(&mut headers);
         }
 
@@ -521,8 +535,15 @@ fn load_entries_from_har(path: &Path) -> Result<Vec<ServeEntry>> {
         let method = entry.request.method.clone();
         let url = entry.request.url.clone();
         let status = u16::try_from(entry.response.status).unwrap_or(200);
-        let headers = headers_from_list(&entry.response.headers);
+        let mut headers = headers_from_list(&entry.response.headers);
         let body = content_to_bytes(&entry.response.content)?;
+        let encoding = headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-encoding"))
+            .map(|(_, value)| value.as_str());
+        if entry.response.content.encoding.is_none() || !body_is_encoded(&body, encoding)? {
+            strip_content_encoding(&mut headers);
+        }
         let mime_type = entry.response.content.mime_type.clone();
 
         out.push(ServeEntry {
@@ -538,6 +559,26 @@ fn load_entries_from_har(path: &Path) -> Result<Vec<ServeEntry>> {
     }
 
     Ok(out)
+}
+
+fn body_is_encoded(body: &[u8], encoding: Option<&str>) -> Result<bool> {
+    if body.is_empty() || encoding.is_none() {
+        return Ok(false);
+    }
+    let outer = encoding
+        .unwrap_or_default()
+        .rsplit(',')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if matches!(outer.as_str(), "gzip" | "x-gzip") {
+        return Ok(body.starts_with(&[0x1f, 0x8b]));
+    }
+    let decoded = super::body_codec::decode_captured(body, encoding, 50 * 1024 * 1024)?;
+    let encoded = decoded.encoded;
+    drop(decoded.bytes);
+    Ok(encoded)
 }
 
 fn content_to_bytes(content: &Content) -> Result<Bytes> {
@@ -748,6 +789,94 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
+    }
+
+    #[cfg(feature = "compression")]
+    #[test]
+    fn stored_compressed_responses_keep_matching_headers_and_available_bytes() {
+        use base64::Engine;
+        use std::io::Write;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plain = b"recorded response body";
+        for codec in ["gzip", "br"] {
+            let compressed = if codec == "gzip" {
+                let mut writer =
+                    flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+                writer.write_all(plain).unwrap();
+                writer.finish().unwrap()
+            } else {
+                let mut bytes = Vec::new();
+                {
+                    let mut writer = brotli::CompressorWriter::new(&mut bytes, 4096, 5, 22);
+                    writer.write_all(plain).unwrap();
+                }
+                bytes
+            };
+            for external in [false, true] {
+                for (decompress, keep) in [(false, false), (true, false), (true, true)] {
+                    let path = tmp
+                        .path()
+                        .join(format!("{codec}-{external}-{decompress}-{keep}.db"));
+                    let conn = rusqlite::Connection::open(&path).unwrap();
+                    crate::db::create_schema(&conn).unwrap();
+                    let import = crate::db::create_import(&conn, "fixture.har", None).unwrap();
+                    let mut har: crate::har::Har =
+                        serde_json::from_str(include_str!("../../tests/fixtures/simple.har"))
+                            .unwrap();
+                    let entry = &mut har.log.entries[0];
+                    entry.response.headers = vec![Header {
+                        name: "Content-Encoding".into(),
+                        value: codec.into(),
+                    }];
+                    entry.response.content.text =
+                        Some(base64::engine::general_purpose::STANDARD.encode(&compressed));
+                    entry.response.content.encoding = Some("base64".into());
+                    crate::db::insert_entry(
+                        &conn,
+                        import,
+                        entry,
+                        &crate::db::InsertEntryOptions {
+                            store_bodies: true,
+                            decompress_bodies: decompress,
+                            keep_compressed: keep,
+                            extract_bodies_dir: external.then(|| tmp.path().join("bodies")),
+                            ..Default::default()
+                        },
+                        &Default::default(),
+                    )
+                    .unwrap();
+                    drop(conn);
+                    let mut options = super::ServeOptions {
+                        bind: "127.0.0.1".into(),
+                        port: 0,
+                        match_mode: MatchMode::Strict,
+                        allow_external_paths: external,
+                        external_path_root: Some(tmp.path().to_path_buf()),
+                        tls_cert: None,
+                        tls_key: None,
+                    };
+                    let served = super::load_entries_from_db(&path, &options).unwrap();
+                    let response = &served[0];
+                    let encoding = response
+                        .headers
+                        .iter()
+                        .find(|(name, _)| name == "content-encoding")
+                        .map(|(_, value)| value.as_str());
+                    assert_eq!(encoding.is_some(), !decompress || keep);
+                    let decoded = crate::commands::body_codec::decode_captured(
+                        &response.body,
+                        encoding,
+                        1024,
+                    )
+                    .unwrap();
+                    assert_eq!(decoded.bytes, plain);
+                    if external {
+                        options.allow_external_paths = false;
+                        assert!(super::load_entries_from_db(&path, &options).is_err());
+                    }
+                }
+            }
+        }
     }
 
     #[test]
