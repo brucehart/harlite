@@ -43,6 +43,9 @@ Notes:
 - `command` can be absolute or relative to the current working directory.
 - Plugin definitions are never executed implicitly. Each run must name the plugin with `--plugin`.
 - `enabled = false` is an administrative deny switch and prevents `--plugin` from enabling it.
+- `timeout_secs` defaults to 30 (allowed: 1 through 86400). It includes input/output transfer and process completion.
+- `max_output_bytes` defaults to 8388608 per stream (allowed: 1 through 536870912). Set a larger value for transforms returning large bodies.
+- stdin, stdout, and stderr are transferred concurrently. A timeout, output-limit violation, or I/O failure terminates and reaps the child. On Unix, its process group is terminated too; on Windows, plugins are responsible for their own descendants.
 
 ## Enabling/disabling per run
 

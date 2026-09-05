@@ -1,7 +1,5 @@
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{self, BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use clap::ValueEnum;
@@ -35,6 +33,10 @@ pub struct OtelExportOptions {
 }
 
 pub fn run_otel(database: PathBuf, options: &OtelExportOptions) -> Result<()> {
+    if let Some(output) = options.output.as_deref() {
+        super::util::ensure_output_not_input(&database, output)?;
+    }
+
     let conn = Connection::open(&database)?;
     ensure_schema_upgrades(&conn)?;
 
@@ -61,10 +63,9 @@ pub fn run_otel(database: PathBuf, options: &OtelExportOptions) -> Result<()> {
     match options.format {
         OtelExportFormat::Json => {
             let output_path = options.output.clone().unwrap_or_else(|| PathBuf::from("-"));
-            let mut writer = open_output(&output_path)?;
+            super::util::ensure_output_not_input(&database, &output_path)?;
             let payload = build_json_export(resource_attrs, spans);
-            serde_json::to_writer(&mut writer, &payload)?;
-            writer.write_all(b"\n")?;
+            super::util::write_json_atomic(&output_path, &payload, false, true)?;
             if output_path != std::path::Path::new("-") {
                 println!(
                     "Exported {} spans to {}",
@@ -110,13 +111,6 @@ pub fn run_otel(database: PathBuf, options: &OtelExportOptions) -> Result<()> {
             Ok(())
         }
     }
-}
-
-fn open_output(path: &Path) -> Result<Box<dyn Write>> {
-    if path == Path::new("-") {
-        return Ok(Box::new(io::stdout().lock()));
-    }
-    Ok(Box::new(BufWriter::new(File::create(path)?)))
 }
 
 fn validate_sampling(sample_rate: f64) -> Result<()> {
@@ -474,18 +468,7 @@ fn cache_attributes(headers_json: Option<&str>) -> Option<Vec<Attribute>> {
 }
 
 fn headers_from_json(json: Option<&str>) -> Option<HashMap<String, String>> {
-    let json = json?;
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
-        return None;
-    };
-    let obj = value.as_object()?;
-    let mut map = HashMap::new();
-    for (key, value) in obj {
-        if let Some(val) = value.as_str() {
-            map.insert(key.to_string(), val.to_string());
-        }
-    }
-    Some(map)
+    json.map(|_| crate::har::header_lookup(json))
 }
 
 fn request_bounds(entry: &EntryRow, base_ns: u64) -> (u64, u64) {

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{self, BufWriter, Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -90,27 +90,7 @@ impl Default for ExportOptions {
 }
 
 fn headers_from_json(json: Option<&str>) -> Vec<Header> {
-    let Some(json) = json else {
-        return Vec::new();
-    };
-
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
-        return Vec::new();
-    };
-    let Some(obj) = value.as_object() else {
-        return Vec::new();
-    };
-
-    let mut out: Vec<Header> = obj
-        .iter()
-        .filter_map(|(k, v)| v.as_str().map(|s| (k, s)))
-        .map(|(k, v)| Header {
-            name: k.to_string(),
-            value: v.to_string(),
-        })
-        .collect();
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    out
+    crate::har::headers_from_json(json)
 }
 
 fn normalize_ms(value: Option<f64>) -> Option<f64> {
@@ -214,15 +194,12 @@ fn page_export_id(import_id: i64, page_id: &str, multi_import: bool) -> String {
     }
 }
 
-fn open_output(path: &Path) -> Result<Box<dyn Write>> {
-    if path == Path::new("-") {
-        return Ok(Box::new(io::stdout().lock()));
-    }
-    Ok(Box::new(BufWriter::new(File::create(path)?)))
-}
-
 /// Export a harlite database or HAR back to a HAR file.
 pub fn run_export(database: PathBuf, options: &ExportOptions) -> Result<()> {
+    if let Some(output) = options.output.as_deref() {
+        super::util::ensure_output_not_input(&database, output)?;
+    }
+
     let input_format = resolve_export_format(&database, options.format)?;
     if database == Path::new("-") && options.output.is_none() {
         return Err(HarliteError::InvalidArgs(
@@ -233,6 +210,8 @@ pub fn run_export(database: PathBuf, options: &ExportOptions) -> Result<()> {
         .output
         .clone()
         .unwrap_or_else(|| default_export_output_path(&database, input_format));
+
+    super::util::ensure_output_not_input(&database, &output_path)?;
 
     match input_format {
         ExportInputFormat::Db => run_export_from_db(&database, &output_path, options),
@@ -897,13 +876,7 @@ fn write_exported_har(
         return Ok(());
     }
 
-    let mut writer = open_output(output_path)?;
-    if pretty {
-        serde_json::to_writer_pretty(&mut writer, &har)?;
-    } else {
-        serde_json::to_writer(&mut writer, &har)?;
-    }
-    writer.write_all(b"\n")?;
+    super::util::write_json_atomic(output_path, har, pretty, true)?;
 
     if output_path != Path::new("-") {
         println!(

@@ -725,20 +725,7 @@ fn post_data_to_body(
 }
 
 fn headers_from_json(json: Option<&str>) -> HashMap<String, String> {
-    let Some(json) = json else {
-        return HashMap::new();
-    };
-
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
-        return HashMap::new();
-    };
-    let Some(obj) = value.as_object() else {
-        return HashMap::new();
-    };
-
-    obj.iter()
-        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-        .collect()
+    crate::har::header_lookup(json)
 }
 
 fn headers_from_list(headers: &[Header]) -> HashMap<String, String> {
