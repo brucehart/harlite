@@ -82,6 +82,19 @@ pub fn write_bytes_atomic(destination: &Path, bytes: &[u8], overwrite: bool) -> 
     })
 }
 
+/// Restrict secret-bearing files at creation, before any bytes are copied.
+/// Windows uses the containing directory's inherited ACL.
+fn private_file_options() -> OpenOptions {
+    let mut options = OpenOptions::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.read(true).write(true).create_new(true);
+    options
+}
+
 fn write_file_atomic(
     destination: &Path,
     overwrite: bool,
@@ -111,10 +124,7 @@ fn write_file_atomic(
     let staged_path = unique_sibling(parent, &file_name, "stage")?;
 
     let write_result = (|| -> Result<()> {
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&staged_path)?;
+        let file = private_file_options().open(&staged_path)?;
         let mut output = BufWriter::new(file);
         write(&mut output)?;
         output.flush()?;
@@ -266,12 +276,7 @@ impl StagedDatabase {
                 ".{file_name}.harlite-stage-{}-{id}",
                 std::process::id()
             ));
-            match OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create_new(true)
-                .open(&candidate)
-            {
+            match private_file_options().open(&candidate) {
                 Ok(file) => {
                     drop(file);
                     break candidate;
@@ -573,6 +578,54 @@ mod tests {
     };
     use crate::error::HarliteError;
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    #[test]
+    fn sensitive_staging_and_published_outputs_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new().unwrap();
+        let source = tmp.path().join("private.db");
+        let destination = tmp.path().join("redacted.db");
+        let conn = rusqlite::Connection::open(&source).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE secrets (value TEXT); INSERT INTO secrets VALUES ('private');",
+        )
+        .unwrap();
+        drop(conn);
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let staged = StagedDatabase::copy_from(&source, &destination, false).unwrap();
+        assert_eq!(
+            std::fs::metadata(staged.path())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        staged.publish().unwrap();
+        assert_eq!(
+            std::fs::metadata(&destination)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        let output = tmp.path().join("redacted.har");
+        super::write_file_atomic(&output, false, |writer| {
+            assert_eq!(
+                writer.get_ref().metadata()?.permissions().mode() & 0o777,
+                0o600
+            );
+            std::io::Write::write_all(writer, b"sensitive")?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::metadata(output).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
 
     #[test]
     fn resolve_database_in_dir_returns_single_match() {
