@@ -46,7 +46,7 @@ pub struct ServeOptions {
 struct ServeEntry {
     method: String,
     url: String,
-    status: u16,
+    status: StatusCode,
     headers: Vec<(String, String)>,
     body: Bytes,
     mime_type: Option<String>,
@@ -265,9 +265,10 @@ async fn handle_request(
 }
 
 fn build_response(entry: &ServeEntry) -> Response<Body> {
-    let mut builder = Response::builder().status(entry.status);
+    let mut response = Response::new(Body::from(entry.body.clone()));
+    *response.status_mut() = entry.status;
     {
-        let headers = builder.headers_mut().expect("headers mut");
+        let headers = response.headers_mut();
         for (name, value) in &entry.headers {
             if name.eq_ignore_ascii_case("content-length")
                 || name.eq_ignore_ascii_case("transfer-encoding")
@@ -294,7 +295,7 @@ fn build_response(entry: &ServeEntry) -> Response<Body> {
         );
     }
 
-    builder.body(Body::from(entry.body.clone())).unwrap()
+    response
 }
 
 fn select_entry<'a>(
@@ -470,10 +471,7 @@ fn load_entries_from_db(path: &Path, options: &ServeOptions) -> Result<Vec<Serve
             continue;
         };
         let method = row.method.unwrap_or_else(|| "GET".to_string());
-        let status = row
-            .status
-            .and_then(|s| u16::try_from(s).ok())
-            .unwrap_or(200);
+        let status = validate_status(row.status.unwrap_or(200), &url)?;
         let mut headers = headers_from_list(&crate::har::headers_from_json(
             row.response_headers.as_deref(),
         ));
@@ -535,7 +533,7 @@ fn load_entries_from_har(path: &Path) -> Result<Vec<ServeEntry>> {
     for entry in har.log.entries.into_iter() {
         let method = entry.request.method.clone();
         let url = entry.request.url.clone();
-        let status = u16::try_from(entry.response.status).unwrap_or(200);
+        let status = validate_status(entry.response.status, &url)?;
         let mut headers = headers_from_list(&entry.response.headers);
         let body = content_to_bytes(&entry.response.content)?;
         let encoding = headers
@@ -580,6 +578,13 @@ fn body_is_encoded(body: &[u8], encoding: Option<&str>) -> Result<bool> {
     let encoded = decoded.encoded;
     drop(decoded.bytes);
     Ok(encoded)
+}
+
+fn validate_status(status: i32, url: &str) -> Result<StatusCode> {
+    u16::try_from(status)
+        .ok()
+        .and_then(|status| StatusCode::from_u16(status).ok())
+        .ok_or_else(|| HarliteError::InvalidHar(format!("Invalid HTTP status {status} for {url}")))
 }
 
 fn content_to_bytes(content: &Content) -> Result<Bytes> {
@@ -700,7 +705,7 @@ mod tests {
         ServeEntry {
             method: method.to_string(),
             url: url.to_string(),
-            status: 200,
+            status: hyper::StatusCode::OK,
             headers: Vec::new(),
             body: Bytes::new(),
             mime_type: None,
