@@ -750,6 +750,8 @@ fn redact_entries(
         }
     }
 
+    super::metadata::discard_database_metadata(conn, write)?;
+
     Ok(report)
 }
 
@@ -795,6 +797,8 @@ fn run_redact_har(input: PathBuf, options: &RedactOptions) -> Result<()> {
         &body_regexes,
         &options.token,
     );
+
+    super::metadata::discard_har_metadata(&mut har, options.dry_run);
 
     if options.dry_run {
         println!(
