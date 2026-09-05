@@ -7,10 +7,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use regex::Regex;
-use rusqlite::{Connection, OpenFlags};
 use url::Url;
 
-use crate::db::{ensure_schema_upgrades, load_blobs_by_hashes, load_entries, BlobRow, EntryQuery};
+use crate::db::{load_blobs_by_hashes, load_entries, BlobRow, EntryQuery};
 use crate::error::{HarliteError, Result};
 use crate::har::{parse_har_file, Entry as HarEntry, Header, PostData};
 
@@ -467,17 +466,7 @@ fn load_entries_from_db(path: &Path, options: &ReplayOptions) -> Result<Vec<Repl
     // Best-effort schema upgrades: if the database is writable, run upgrades on a
     // separate read-write connection. If opening in read-write mode fails (e.g.
     // read-only filesystem), skip upgrades and continue with a read-only connection.
-    if let Ok(upgrade_conn) = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    ) {
-        ensure_schema_upgrades(&upgrade_conn)?;
-    }
-
-    let conn = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
+    let conn = super::query::open_readonly_compatible_connection(path)?;
 
     let query = EntryQuery {
         hosts: options.host.clone(),

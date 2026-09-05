@@ -2,9 +2,8 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use clap::ValueEnum;
-use rusqlite::Connection;
 
-use crate::db::{ensure_schema_upgrades, EntryRow};
+use crate::db::EntryRow;
 use crate::error::{HarliteError, Result};
 
 use super::csv::write_csv_field;
@@ -39,8 +38,7 @@ pub fn run_export_data(database: PathBuf, options: &ExportDataOptions) -> Result
         super::util::ensure_output_not_input(&database, output)?;
     }
 
-    let conn = Connection::open(&database)?;
-    ensure_schema_upgrades(&conn)?;
+    let conn = super::query::open_readonly_compatible_connection(&database)?;
 
     let entries = load_entries_with_filters(&conn, &options.filters)?;
 

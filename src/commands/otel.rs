@@ -3,11 +3,10 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use clap::ValueEnum;
-use rusqlite::Connection;
 use serde::Serialize;
 use url::Url;
 
-use crate::db::{ensure_schema_upgrades, EntryRow};
+use crate::db::EntryRow;
 use crate::error::{HarliteError, Result};
 
 use super::entry_filter::{load_entries_with_filters, EntryFilterOptions};
@@ -37,8 +36,7 @@ pub fn run_otel(database: PathBuf, options: &OtelExportOptions) -> Result<()> {
         super::util::ensure_output_not_input(&database, output)?;
     }
 
-    let conn = Connection::open(&database)?;
-    ensure_schema_upgrades(&conn)?;
+    let conn = super::query::open_readonly_compatible_connection(&database)?;
 
     validate_sampling(options.sample_rate)?;
 

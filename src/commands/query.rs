@@ -45,6 +45,28 @@ pub fn open_readonly_connection(database: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
+/// Inspect current databases directly; upgrade legacy schemas only in a private
+/// in-memory snapshot. Never create or migrate an inspection input on disk.
+pub(crate) fn open_readonly_compatible_connection(database: &Path) -> Result<Connection> {
+    let conn = open_readonly_connection(database)?;
+    match crate::db::ensure_schema_upgrades(&conn) {
+        Ok(()) => Ok(conn),
+        Err(HarliteError::Database(rusqlite::Error::SqliteFailure(error, _)))
+            if error.code == rusqlite::ErrorCode::ReadOnly =>
+        {
+            let mut snapshot = Connection::open_in_memory()?;
+            {
+                let backup = rusqlite::backup::Backup::new(&conn, &mut snapshot)?;
+                backup.run_to_completion(100, std::time::Duration::from_millis(10), None)?;
+            }
+            crate::db::ensure_schema_upgrades(&snapshot)?;
+            snapshot.execute_batch("PRAGMA query_only=ON;")?;
+            Ok(snapshot)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 pub fn run_query(sql: String, database: Option<PathBuf>, options: &QueryOptions) -> Result<()> {
     let database = resolve_database(database)?;
     let conn = open_readonly_connection(&database)?;
@@ -378,6 +400,31 @@ mod tests {
     use super::{normalize_single_statement, wrap_query};
     use crate::error::HarliteError;
     use rusqlite::types::Value;
+
+    #[test]
+    fn compatible_inspection_uses_disk_readonly_and_protects_legacy_snapshots() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("source.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        crate::db::create_schema(&conn).unwrap();
+        drop(conn);
+        let current = super::open_readonly_compatible_connection(&path).unwrap();
+        assert!(current.is_readonly(rusqlite::DatabaseName::Main).unwrap());
+        drop(current);
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("ALTER TABLE entries DROP COLUMN tls_cipher_suite;")
+            .unwrap();
+        drop(conn);
+        let snapshot = super::open_readonly_compatible_connection(&path).unwrap();
+        assert!(snapshot.execute_batch("DELETE FROM entries").is_err());
+        assert!(snapshot
+            .prepare("SELECT tls_cipher_suite FROM entries")
+            .is_ok());
+        let source = super::open_readonly_connection(&path).unwrap();
+        assert!(source
+            .prepare("SELECT tls_cipher_suite FROM entries")
+            .is_err());
+    }
 
     #[test]
     fn normalize_single_statement_allows_semicolons_in_strings() {

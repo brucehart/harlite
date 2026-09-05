@@ -4,12 +4,9 @@ use std::path::PathBuf;
 
 use chrono::SecondsFormat;
 use chrono::{DateTime, NaiveDate, Utc};
-use rusqlite::Connection;
 use serde::Serialize;
 
-use crate::db::{
-    ensure_schema_upgrades, load_entries, load_pages_for_imports, EntryQuery, PageRow,
-};
+use crate::db::{load_entries, load_pages_for_imports, EntryQuery, PageRow};
 use crate::error::{HarliteError, Result};
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -258,8 +255,7 @@ pub fn run_waterfall(database: PathBuf, options: &WaterfallOptions) -> Result<()
         super::util::ensure_output_not_input(&database, output)?;
     }
 
-    let conn = Connection::open(&database)?;
-    ensure_schema_upgrades(&conn)?;
+    let conn = super::query::open_readonly_compatible_connection(&database)?;
 
     let from_started_at = match options.from.as_deref() {
         Some(s) => Some(parse_started_at_bound(s, false)?),

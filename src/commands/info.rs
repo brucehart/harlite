@@ -12,7 +12,7 @@ pub struct InfoOptions {
 
 /// Show summary information for a harlite database.
 pub fn run_info(database: PathBuf, options: &InfoOptions) -> Result<()> {
-    let conn = Connection::open(&database)?;
+    let conn = super::query::open_readonly_connection(&database)?;
 
     let import_count: i64 = conn.query_row("SELECT COUNT(*) FROM imports", [], |row| row.get(0))?;
 

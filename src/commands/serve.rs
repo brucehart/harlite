@@ -17,12 +17,11 @@ use hyper_util::server::conn::auto::Builder as ConnectionBuilder;
 use hyper_util::server::graceful::{GracefulShutdown, Watcher};
 type Body = Full<Bytes>;
 use hyper::{Request, Response, StatusCode};
-use rusqlite::{Connection, OpenFlags};
 use tokio::sync::oneshot;
 use tokio_rustls::TlsAcceptor;
 use url::Url;
 
-use crate::db::{ensure_schema_upgrades, load_blobs_by_hashes, load_entries, BlobRow, EntryQuery};
+use crate::db::{load_blobs_by_hashes, load_entries, BlobRow, EntryQuery};
 use crate::error::{HarliteError, Result};
 use crate::har::{parse_har_file, Content, Header};
 
@@ -413,17 +412,7 @@ fn query_score(request: &NormalizedUrl, entry: &NormalizedUrl) -> usize {
 }
 
 fn load_entries_from_db(path: &Path, options: &ServeOptions) -> Result<Vec<ServeEntry>> {
-    if let Ok(upgrade_conn) = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    ) {
-        ensure_schema_upgrades(&upgrade_conn)?;
-    }
-
-    let conn = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
+    let conn = super::query::open_readonly_compatible_connection(path)?;
 
     let query = EntryQuery::default();
     let rows = load_entries(&conn, &query)?;
