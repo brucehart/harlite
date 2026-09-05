@@ -1,4 +1,6 @@
 mod analyze;
+#[cfg_attr(not(feature = "serve"), allow(dead_code))]
+mod body_codec;
 mod check;
 mod csv;
 mod diff;
@@ -15,6 +17,7 @@ mod openapi;
 #[cfg(feature = "otel")]
 mod otel;
 mod pii;
+mod privacy_body;
 mod prune;
 mod query;
 mod redact;
