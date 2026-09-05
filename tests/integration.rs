@@ -4389,3 +4389,14 @@ fn test_serve_rejects_invalid_status_before_starting_server() {
         .code(1)
         .stderr(predicate::str::contains("Invalid HTTP status 0"));
 }
+
+#[test]
+fn test_replay_invalid_rate_is_an_argument_error_before_loading_input() {
+    for rate in ["NaN", "inf", "0", "1e-300", "1e300"] {
+        harlite()
+            .args(["replay", "missing.har", "--rate-limit", rate])
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains("--rate-limit must be finite"));
+    }
+}

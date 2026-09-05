@@ -91,12 +91,20 @@ struct RateLimiter {
 }
 
 impl RateLimiter {
-    fn new(rate_limit: f64) -> Self {
-        let interval = Duration::from_secs_f64(1.0 / rate_limit);
-        Self {
+    fn new(rate_limit: f64) -> Result<Self> {
+        let invalid = || {
+            HarliteError::InvalidArgs(
+            "--rate-limit must be finite and between 1/86400 and 1000000000 requests per second".to_string(),
+        )
+        };
+        if !rate_limit.is_finite() || !(1.0 / 86400.0..=1_000_000_000.0).contains(&rate_limit) {
+            return Err(invalid());
+        }
+        let interval = Duration::try_from_secs_f64(1.0 / rate_limit).map_err(|_| invalid())?;
+        Ok(Self {
             interval,
             next_allowed: Mutex::new(Instant::now()),
-        }
+        })
     }
 
     fn wait(&self) {
@@ -120,13 +128,11 @@ impl RateLimiter {
 }
 
 pub fn run_replay(input: PathBuf, options: &ReplayOptions) -> Result<()> {
-    if let Some(rate) = options.rate_limit {
-        if rate <= 0.0 {
-            return Err(HarliteError::InvalidArgs(
-                "--rate-limit must be greater than 0".to_string(),
-            ));
-        }
-    }
+    let rate_limiter = options
+        .rate_limit
+        .map(RateLimiter::new)
+        .transpose()?
+        .map(Arc::new);
 
     let compiled = compile_rules(options)?;
     let mut entries = if is_db_path(&input) {
@@ -143,7 +149,7 @@ pub fn run_replay(input: PathBuf, options: &ReplayOptions) -> Result<()> {
     let runtime = ReplayRuntime {
         allow_unsafe: options.allow_unsafe,
         timeout: options.timeout_secs.map(Duration::from_secs),
-        rate_limiter: options.rate_limit.map(|rl| Arc::new(RateLimiter::new(rl))),
+        rate_limiter,
         host_overrides: compiled.host_overrides,
         header_overrides: compiled.header_overrides,
     };
@@ -1018,7 +1024,28 @@ fn truncate(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::build_agent;
+    use super::{build_agent, RateLimiter};
+
+    #[test]
+    fn replay_rate_rejects_unrepresentable_or_impractical_intervals() {
+        for rate in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            0.0,
+            -1.0,
+            f64::MIN_POSITIVE,
+            f64::from_bits(1),
+            f64::MAX,
+            1e-6,
+        ] {
+            assert!(RateLimiter::new(rate).is_err(), "accepted {rate}");
+        }
+        for rate in [1.0 / 86400.0, 0.5, 1.0, 100.0, 1e9] {
+            assert!(RateLimiter::new(rate).is_ok(), "rejected {rate}");
+        }
+    }
+
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
