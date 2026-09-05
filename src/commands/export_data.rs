@@ -1,6 +1,5 @@
-use std::fs::File;
-use std::io::{self, BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::io::Write;
+use std::path::PathBuf;
 
 use clap::ValueEnum;
 
@@ -35,6 +34,10 @@ pub struct ExportDataOptions {
 }
 
 pub fn run_export_data(database: PathBuf, options: &ExportDataOptions) -> Result<()> {
+    if let Some(output) = options.output.as_deref() {
+        super::util::ensure_output_not_input(&database, output)?;
+    }
+
     let conn = super::query::open_readonly_compatible_connection(&database)?;
 
     let entries = load_entries_with_filters(&conn, &options.filters)?;
@@ -58,16 +61,23 @@ pub fn run_export_data(database: PathBuf, options: &ExportDataOptions) -> Result
         ));
     }
 
+    super::util::ensure_output_not_input(&database, &output_path)?;
     match options.format {
         DataExportFormat::Csv => {
-            let mut writer = open_output(&output_path)?;
-            write_csv(&mut writer, &entries)?;
+            super::util::write_output_atomic(&output_path, |mut writer| {
+                write_csv(&mut writer, &entries)
+            })?;
         }
         DataExportFormat::Jsonl => {
-            let mut writer = open_output(&output_path)?;
-            write_jsonl(&mut writer, &entries)?;
+            super::util::write_output_atomic(&output_path, |mut writer| {
+                write_jsonl(&mut writer, &entries)
+            })?;
         }
-        DataExportFormat::Parquet => write_parquet(&output_path, &entries)?,
+        DataExportFormat::Parquet => {
+            super::util::write_file_atomic(&output_path, true, |writer| {
+                write_parquet(writer.get_ref().try_clone()?, &entries)
+            })?
+        }
     }
 
     if output_path != std::path::Path::new("-") {
@@ -79,13 +89,6 @@ pub fn run_export_data(database: PathBuf, options: &ExportDataOptions) -> Result
     }
 
     Ok(())
-}
-
-fn open_output(path: &Path) -> Result<Box<dyn Write>> {
-    if path == Path::new("-") {
-        return Ok(Box::new(io::stdout().lock()));
-    }
-    Ok(Box::new(BufWriter::new(File::create(path)?)))
 }
 
 const ENTRY_COLUMNS: &[&str] = &[
@@ -366,7 +369,7 @@ impl From<&EntryRow> for EntryExportRecord {
 }
 
 #[cfg(feature = "parquet")]
-fn write_parquet(path: &Path, entries: &[EntryRow]) -> Result<()> {
+fn write_parquet(file: std::fs::File, entries: &[EntryRow]) -> Result<()> {
     use parquet::basic::{Repetition, Type as PhysicalType};
     use parquet::column::writer::ColumnWriter;
     use parquet::data_type::ByteArray;
@@ -624,7 +627,6 @@ fn write_parquet(path: &Path, entries: &[EntryRow]) -> Result<()> {
         ])
         .build()?;
 
-    let file = File::create(path)?;
     let props = WriterProperties::builder().build();
     let mut writer = SerializedFileWriter::new(file, Arc::new(schema), Arc::new(props))?;
 
@@ -990,7 +992,7 @@ fn write_parquet(path: &Path, entries: &[EntryRow]) -> Result<()> {
 }
 
 #[cfg(not(feature = "parquet"))]
-fn write_parquet(_path: &Path, _entries: &[EntryRow]) -> Result<()> {
+fn write_parquet(_file: std::fs::File, _entries: &[EntryRow]) -> Result<()> {
     Err(HarliteError::InvalidArgs(
         "Parquet export requires the 'parquet' feature".to_string(),
     ))

@@ -383,25 +383,7 @@ fn multipart_quoted(value: &str) -> String {
 }
 
 fn headers_from_json(json: Option<&str>) -> Vec<Header> {
-    let Some(json) = json else {
-        return Vec::new();
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
-        return Vec::new();
-    };
-    let Some(object) = value.as_object() else {
-        return Vec::new();
-    };
-    object
-        .iter()
-        .map(|(name, value)| Header {
-            name: name.clone(),
-            value: value
-                .as_str()
-                .map(str::to_string)
-                .unwrap_or_else(|| value.to_string()),
-        })
-        .collect()
+    crate::har::headers_from_json(json)
 }
 
 fn cookies_from_json(json: Option<&str>) -> Vec<Cookie> {

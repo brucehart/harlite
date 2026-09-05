@@ -1,7 +1,6 @@
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{self, BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::io::Write;
+use std::path::PathBuf;
 
 use chrono::SecondsFormat;
 use chrono::{DateTime, NaiveDate, Utc};
@@ -59,13 +58,6 @@ fn parse_started_at_bound(s: &str, is_end: bool) -> Result<String> {
             .ok_or_else(|| HarliteError::InvalidHar("Invalid start date".to_string()))?
     };
     Ok(dt.to_rfc3339_opts(SecondsFormat::Millis, true))
-}
-
-fn open_output(path: &Path) -> Result<Box<dyn Write>> {
-    if path == Path::new("-") {
-        return Ok(Box::new(io::stdout().lock()));
-    }
-    Ok(Box::new(BufWriter::new(File::create(path)?)))
 }
 
 #[derive(Debug, Clone)]
@@ -259,6 +251,10 @@ fn render_trace(groups: &[GroupInfo], writer: &mut dyn Write) -> Result<()> {
 }
 
 pub fn run_waterfall(database: PathBuf, options: &WaterfallOptions) -> Result<()> {
+    if let Some(output) = options.output.as_deref() {
+        super::util::ensure_output_not_input(&database, output)?;
+    }
+
     let conn = super::query::open_readonly_compatible_connection(&database)?;
 
     let from_started_at = match options.from.as_deref() {
@@ -450,17 +446,18 @@ pub fn run_waterfall(database: PathBuf, options: &WaterfallOptions) -> Result<()
         Some(p) => p.clone(),
         None => PathBuf::from("-"),
     };
-    let mut writer = open_output(&output_path)?;
-
-    match options.format {
-        WaterfallFormat::Text => {
-            let width = options.width.unwrap_or(60);
-            render_text(&groups, max_end, width, writer.as_mut())?;
+    super::util::ensure_output_not_input(&database, &output_path)?;
+    super::util::write_output_atomic(&output_path, |writer| {
+        match options.format {
+            WaterfallFormat::Text => {
+                let width = options.width.unwrap_or(60);
+                render_text(&groups, max_end, width, writer)?;
+            }
+            WaterfallFormat::Trace => {
+                render_trace(&groups, writer)?;
+            }
         }
-        WaterfallFormat::Trace => {
-            render_trace(&groups, writer.as_mut())?;
-        }
-    }
 
-    Ok(())
+        Ok(())
+    })
 }

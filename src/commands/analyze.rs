@@ -482,22 +482,7 @@ fn host_from_url(url: &str) -> Option<String> {
 }
 
 fn headers_from_json(json: Option<&str>) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    let Some(json) = json else {
-        return map;
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
-        return map;
-    };
-    let Some(obj) = value.as_object() else {
-        return map;
-    };
-    for (k, v) in obj {
-        if let Some(s) = v.as_str() {
-            map.insert(k.to_ascii_lowercase(), s.to_string());
-        }
-    }
-    map
+    crate::har::header_lookup(json)
 }
 
 fn is_cache_candidate(row: &EntryRow) -> bool {

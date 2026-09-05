@@ -4327,3 +4327,76 @@ fn test_diff_can_ignore_query_parameters_when_matching() {
         .failure()
         .stderr(predicate::str::contains("Threshold exceeded"));
 }
+
+#[test]
+fn test_redaction_accepts_new_relative_outputs() {
+    let tmp = TempDir::new().unwrap();
+    let source = tmp.path().join("source.db");
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "--bodies", "-o"])
+        .arg(&source)
+        .assert()
+        .success();
+    for output in ["redacted.db", "./redacted-dot.db", "sub/redacted.db"] {
+        fs::create_dir_all(tmp.path().join("sub")).unwrap();
+        harlite()
+            .current_dir(tmp.path())
+            .args(["redact", "source.db", "-o", output])
+            .assert()
+            .success();
+        assert!(tmp.path().join(output).is_file());
+    }
+    harlite()
+        .current_dir(tmp.path())
+        .args(["pii", "source.db", "--redact", "-o", "pii.db"])
+        .assert()
+        .success();
+    assert!(tmp.path().join("pii.db").is_file());
+}
+
+#[test]
+fn test_serve_rejects_invalid_status_before_starting_server() {
+    let tmp = TempDir::new().unwrap();
+    let input = tmp.path().join("invalid.har");
+    let mut har: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/simple.har")).unwrap();
+    for status in [-1, 0, 99, 1000, 65536] {
+        har["log"]["entries"][0]["response"]["status"] = json!(status);
+        fs::write(&input, serde_json::to_vec(&har).unwrap()).unwrap();
+        harlite()
+            .arg("serve")
+            .arg(&input)
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains(format!(
+                "Invalid HTTP status {status}"
+            )))
+            .stderr(predicate::str::contains("panicked").not());
+    }
+    let db = tmp.path().join("invalid.db");
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "-o"])
+        .arg(&db)
+        .assert()
+        .success();
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute("UPDATE entries SET status=0", []).unwrap();
+    drop(conn);
+    harlite()
+        .arg("serve")
+        .arg(&db)
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("Invalid HTTP status 0"));
+}
+
+#[test]
+fn test_replay_invalid_rate_is_an_argument_error_before_loading_input() {
+    for rate in ["NaN", "inf", "0", "1e-300", "1e300"] {
+        harlite()
+            .args(["replay", "missing.har", "--rate-limit", rate])
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains("--rate-limit must be finite"));
+    }
+}
