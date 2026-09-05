@@ -12,10 +12,12 @@ mod import;
 mod imports;
 mod info;
 mod merge;
+mod metadata;
 mod openapi;
 #[cfg(feature = "otel")]
 mod otel;
 mod pii;
+mod privacy_body;
 mod prune;
 mod query;
 mod redact;

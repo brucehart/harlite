@@ -433,12 +433,16 @@ fn load_blob_for_redaction(
     }
 
     if content.is_empty() {
+        if size > 0 {
+            eprintln!("Warning: body {hash} is unavailable and was not inspected.");
+        }
         return Ok(None);
     }
 
     Ok(Some((content, mime_type)))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn redact_blob_cached(
     conn: &Connection,
     hash: &str,
@@ -447,26 +451,25 @@ fn redact_blob_cached(
     write: bool,
     cache: &mut HashMap<String, Option<RedactedBlob>>,
     external_paths: &ExternalPathPolicy,
+    encoding: Option<&str>,
 ) -> Result<(Option<RedactedBlob>, bool)> {
-    if let Some(existing) = cache.get(hash) {
+    let cache_key = format!("{hash}\0{}", encoding.unwrap_or_default());
+    if let Some(existing) = cache.get(&cache_key) {
         return Ok((existing.clone(), false));
     }
 
     let Some((content, mime_type)) = load_blob_for_redaction(conn, hash, external_paths)? else {
-        cache.insert(hash.to_string(), None);
+        cache.insert(cache_key.clone(), None);
         return Ok((None, true));
     };
 
-    let text = match std::str::from_utf8(&content) {
-        Ok(s) => s,
-        Err(_) => {
-            cache.insert(hash.to_string(), None);
-            return Ok((None, true));
-        }
+    let Some(text) = super::privacy_body::decode_text(&content, encoding)? else {
+        cache.insert(cache_key, None);
+        return Ok((None, true));
     };
 
-    let Some((redacted_text, matches)) = redact_body_text(text, regexes, token) else {
-        cache.insert(hash.to_string(), None);
+    let Some((redacted_text, matches)) = redact_body_text(&text, regexes, token) else {
+        cache.insert(cache_key.clone(), None);
         return Ok((None, true));
     };
 
@@ -485,7 +488,7 @@ fn redact_blob_cached(
         text: redacted_text,
     };
 
-    cache.insert(hash.to_string(), Some(redacted.clone()));
+    cache.insert(cache_key.clone(), Some(redacted.clone()));
     Ok((Some(redacted), true))
 }
 
@@ -663,6 +666,7 @@ fn redact_entries(
                     write,
                     &mut blob_cache,
                     external_paths,
+                    super::privacy_body::encoding_json(req_h.as_deref()).as_deref(),
                 )?;
                 if let Some(redacted) = redacted {
                     if counted {
@@ -673,6 +677,7 @@ fn redact_entries(
                     if write {
                         new_req_body_hash = Some(redacted.new_hash);
                         new_req_body_size = Some(redacted.new_size);
+                        new_req_h = super::privacy_body::clear_headers_json(new_req_h.as_deref())?;
                     }
                 }
             }
@@ -685,6 +690,7 @@ fn redact_entries(
                     write,
                     &mut blob_cache,
                     external_paths,
+                    super::privacy_body::encoding_json(resp_h.as_deref()).as_deref(),
                 )?;
                 if let Some(redacted) = redacted {
                     if counted {
@@ -695,6 +701,8 @@ fn redact_entries(
                     if write {
                         new_resp_body_hash = Some(redacted.new_hash.clone());
                         new_resp_body_size = Some(redacted.new_size);
+                        new_resp_h =
+                            super::privacy_body::clear_headers_json(new_resp_h.as_deref())?;
                         new_resp_body_hash_raw = None;
                         new_resp_body_size_raw = None;
                         changed_response_hashes.insert(hash.to_string());
@@ -750,6 +758,8 @@ fn redact_entries(
         }
     }
 
+    super::metadata::discard_database_metadata(conn, write)?;
+
     Ok(report)
 }
 
@@ -794,7 +804,9 @@ fn run_redact_har(input: PathBuf, options: &RedactOptions) -> Result<()> {
         &query_matcher,
         &body_regexes,
         &options.token,
-    );
+    )?;
+
+    super::metadata::discard_har_metadata(&mut har, options.dry_run);
 
     if options.dry_run {
         println!(
@@ -848,7 +860,7 @@ fn redact_har_entries(
     query_matcher: &NameMatcher,
     body_regexes: &[Regex],
     token: &str,
-) -> RedactionReport {
+) -> Result<RedactionReport> {
     let mut report = RedactionReport::default();
     for entry in &mut har.log.entries {
         report.entries_scanned += 1;
@@ -920,41 +932,49 @@ fn redact_har_entries(
                 }
             }
             if body_changed {
+                super::privacy_body::clear_headers(&mut entry.request.headers);
                 report.request_bodies += 1;
             }
         }
 
-        if let Some(text) = entry.response.content.text.as_mut() {
-            let redacted = if entry
+        let body_encoding = super::privacy_body::encoding(&entry.response.headers);
+        if let Some(text) = entry
+            .response
+            .content
+            .text
+            .as_mut()
+            .filter(|_| !body_regexes.is_empty())
+        {
+            let base64 = entry
                 .response
                 .content
                 .encoding
                 .as_deref()
-                .is_some_and(|encoding| encoding.eq_ignore_ascii_case("base64"))
-            {
-                STANDARD
-                    .decode(text.as_bytes())
-                    .ok()
-                    .and_then(|bytes| String::from_utf8(bytes).ok())
-                    .and_then(|decoded| {
-                        redact_body_text(&decoded, body_regexes, token).map(
-                            |(redacted, matches)| {
-                                let length = redacted.len() as i64;
-                                (STANDARD.encode(redacted.as_bytes()), matches, length)
-                            },
-                        )
-                    })
+                .is_some_and(|e| e.eq_ignore_ascii_case("base64"));
+            let bytes = if base64 {
+                STANDARD.decode(text.as_bytes()).map_err(|e| {
+                    crate::error::HarliteError::InvalidHar(format!("Invalid base64 body: {e}"))
+                })?
             } else {
-                redact_body_text(text, body_regexes, token).map(|(redacted, matches)| {
-                    let length = redacted.len() as i64;
-                    (redacted, matches, length)
-                })
+                text.as_bytes().to_vec()
             };
-            if let Some((redacted, matches, decoded_length)) = redacted {
-                *text = redacted;
-                entry.response.content.size = decoded_length;
-                report.response_bodies += 1;
-                report.body_matches += matches;
+            if let Some(decoded) =
+                super::privacy_body::decode_text(&bytes, body_encoding.as_deref())?
+            {
+                if let Some((redacted, matches)) = redact_body_text(&decoded, body_regexes, token) {
+                    let size = redacted.len() as i64;
+                    *text = if base64 {
+                        STANDARD.encode(redacted.as_bytes())
+                    } else {
+                        redacted
+                    };
+                    entry.response.content.size = size;
+                    entry.response.content.compression = None;
+                    entry.response.body_size = Some(size);
+                    super::privacy_body::clear_headers(&mut entry.response.headers);
+                    report.response_bodies += 1;
+                    report.body_matches += matches;
+                }
             }
         }
 
@@ -962,7 +982,7 @@ fn redact_har_entries(
             report.entries_changed += 1;
         }
     }
-    report
+    Ok(report)
 }
 
 fn redact_har_headers(
