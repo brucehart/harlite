@@ -4327,3 +4327,39 @@ fn test_diff_can_ignore_query_parameters_when_matching() {
         .failure()
         .stderr(predicate::str::contains("Threshold exceeded"));
 }
+
+#[test]
+fn test_serve_rejects_invalid_status_before_starting_server() {
+    let tmp = TempDir::new().unwrap();
+    let input = tmp.path().join("invalid.har");
+    let mut har: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/simple.har")).unwrap();
+    for status in [-1, 0, 99, 1000, 65536] {
+        har["log"]["entries"][0]["response"]["status"] = json!(status);
+        fs::write(&input, serde_json::to_vec(&har).unwrap()).unwrap();
+        harlite()
+            .arg("serve")
+            .arg(&input)
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains(format!(
+                "Invalid HTTP status {status}"
+            )))
+            .stderr(predicate::str::contains("panicked").not());
+    }
+    let db = tmp.path().join("invalid.db");
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "-o"])
+        .arg(&db)
+        .assert()
+        .success();
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute("UPDATE entries SET status=0", []).unwrap();
+    drop(conn);
+    harlite()
+        .arg("serve")
+        .arg(&db)
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("Invalid HTTP status 0"));
+}
