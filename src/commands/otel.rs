@@ -468,18 +468,7 @@ fn cache_attributes(headers_json: Option<&str>) -> Option<Vec<Attribute>> {
 }
 
 fn headers_from_json(json: Option<&str>) -> Option<HashMap<String, String>> {
-    let json = json?;
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
-        return None;
-    };
-    let obj = value.as_object()?;
-    let mut map = HashMap::new();
-    for (key, value) in obj {
-        if let Some(val) = value.as_str() {
-            map.insert(key.to_string(), val.to_string());
-        }
-    }
-    Some(map)
+    json.map(|_| crate::har::header_lookup(json))
 }
 
 fn request_bounds(entry: &EntryRow, base_ns: u64) -> (u64, u64) {

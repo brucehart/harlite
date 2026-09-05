@@ -224,14 +224,18 @@ fn redact_headers_json(
             continue;
         }
 
-        let cur = v.as_str().unwrap_or_default();
-        if cur == token {
-            continue;
+        let values = match v {
+            serde_json::Value::Array(values) => values.as_mut_slice(),
+            value => std::slice::from_mut(value),
+        };
+        for value in values {
+            if value.as_str() == Some(token) {
+                continue;
+            }
+            *value = serde_json::Value::String(token.to_string());
+            changed += 1;
+            matched_names.insert(name.to_string());
         }
-
-        *v = serde_json::Value::String(token.to_string());
-        changed += 1;
-        matched_names.insert(name.to_string());
     }
 
     if changed == 0 {

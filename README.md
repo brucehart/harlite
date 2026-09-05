@@ -1207,3 +1207,13 @@ Use an ordinary export of the original capture when extension fidelity is needed
 This policy does not extend PII detection to every typed HAR field: PII detection
 still covers its documented URLs and body text, and body redaction still requires
 an appropriate pattern. Review the selected policy before sharing captures.
+
+### Repeated headers in SQLite
+
+Header JSON objects retain a string for a single field value. Repeated names,
+including `set-cookie`, are stored as an ordered array of strings. HAR export,
+request snippets, and mock serving expand these arrays back into separate header
+occurrences. Existing databases with string-only header objects remain supported.
+Header names remain normalized to lowercase; ordering between different header
+names is not retained. SQL consumers inspecting a potentially repeated name should
+handle both a string and an array (for example with SQLite JSON functions).

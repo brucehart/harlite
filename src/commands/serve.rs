@@ -474,11 +474,12 @@ fn load_entries_from_db(path: &Path, options: &ServeOptions) -> Result<Vec<Serve
             .status
             .and_then(|s| u16::try_from(s).ok())
             .unwrap_or(200);
-        let headers_map = headers_from_json(row.response_headers.as_deref());
-        let mut headers = headers_from_map(&headers_map);
-        let has_content_encoding = headers_map
-            .keys()
-            .any(|name| name.eq_ignore_ascii_case("content-encoding"));
+        let mut headers = headers_from_list(&crate::har::headers_from_json(
+            row.response_headers.as_deref(),
+        ));
+        let has_content_encoding = headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("content-encoding"));
 
         let candidates = if has_content_encoding {
             [
@@ -598,24 +599,6 @@ fn content_to_bytes(content: &Content) -> Result<Bytes> {
             .map_err(|err| HarliteError::InvalidHar(format!("Invalid base64 body: {err}"))),
         _ => Ok(Bytes::from(text.as_bytes().to_vec())),
     }
-}
-
-fn headers_from_json(json: Option<&str>) -> HashMap<String, String> {
-    json.and_then(|s| serde_json::from_str::<HashMap<String, String>>(s).ok())
-        .unwrap_or_default()
-}
-
-fn headers_from_map(headers: &HashMap<String, String>) -> Vec<(String, String)> {
-    headers
-        .iter()
-        .filter_map(|(name, value)| {
-            if name.trim().is_empty() {
-                None
-            } else {
-                Some((name.to_ascii_lowercase(), value.clone()))
-            }
-        })
-        .collect()
 }
 
 fn headers_from_list(headers: &[Header]) -> Vec<(String, String)> {
@@ -877,6 +860,23 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn build_response_preserves_repeated_database_headers() {
+        let mut response = entry("GET", "http://example.com/", None);
+        response.headers = headers_from_list(&crate::har::headers_from_json(Some(
+            r#"{"set-cookie":["first=1","second=2"],"content-type":"text/plain"}"#,
+        )));
+        let response = build_response(&response);
+        let cookies: Vec<_> = response
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .map(|v| v.to_str().unwrap())
+            .collect();
+        assert_eq!(cookies, ["first=1", "second=2"]);
+        assert_eq!(response.headers()["content-type"], "text/plain");
     }
 
     #[test]
