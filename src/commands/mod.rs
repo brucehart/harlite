@@ -10,6 +10,7 @@ mod import;
 mod imports;
 mod info;
 mod merge;
+mod metadata;
 mod openapi;
 #[cfg(feature = "otel")]
 mod otel;

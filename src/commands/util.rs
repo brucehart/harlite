@@ -82,6 +82,34 @@ pub fn write_bytes_atomic(destination: &Path, bytes: &[u8], overwrite: bool) -> 
     })
 }
 
+/// Reject aliases of an input, including symlinks and hard links, before output opens.
+pub(crate) fn ensure_output_not_input(input: &Path, output: &Path) -> Result<()> {
+    if input != Path::new("-")
+        && output != Path::new("-")
+        && output.exists()
+        && same_file::is_same_file(input, output)?
+    {
+        return Err(HarliteError::InvalidArgs(
+            "Output must be different from the input file".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Preserve existing export overwrite behavior, but only publish complete bytes.
+pub(crate) fn write_output_atomic(
+    destination: &Path,
+    write: impl FnOnce(&mut dyn Write) -> Result<()>,
+) -> Result<()> {
+    if destination == Path::new("-") {
+        let mut output = std::io::stdout().lock();
+        write(&mut output)?;
+        output.flush()?;
+        return Ok(());
+    }
+    write_file_atomic(destination, true, |output| write(output))
+}
+
 /// Restrict secret-bearing files at creation, before any bytes are copied.
 /// Windows uses the containing directory's inherited ACL.
 fn private_file_options() -> OpenOptions {
@@ -95,7 +123,7 @@ fn private_file_options() -> OpenOptions {
     options
 }
 
-fn write_file_atomic(
+pub(crate) fn write_file_atomic(
     destination: &Path,
     overwrite: bool,
     write: impl FnOnce(&mut BufWriter<File>) -> Result<()>,
@@ -625,6 +653,20 @@ mod tests {
             std::fs::metadata(output).unwrap().permissions().mode() & 0o777,
             0o600
         );
+    }
+
+    #[test]
+    fn failed_output_write_keeps_destination_and_removes_stage() {
+        let tmp = TempDir::new().unwrap();
+        let destination = tmp.path().join("result.json");
+        std::fs::write(&destination, b"previous output").unwrap();
+        let result = super::write_output_atomic(&destination, |out| {
+            out.write_all(b"partial replacement")?;
+            Err(std::io::Error::other("simulated serialization failure").into())
+        });
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"previous output");
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 1);
     }
 
     #[test]
