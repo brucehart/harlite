@@ -1196,3 +1196,14 @@ Contributions welcome! Please open an issue to discuss major changes before subm
 *Created by [Bruce Hart](https://bhart.org)
 
 
+
+### Metadata in privacy outputs
+
+`redact` and `pii --redact` discard unscanned HAR extension maps, cache metadata,
+and duplicated initiator/redirect URL metadata. These fields can retain raw
+credentials even after ordinary headers or bodies are sanitized. A count is
+reported on stderr (including dry runs); stdout formats remain unchanged.
+Use an ordinary export of the original capture when extension fidelity is needed.
+This policy does not extend PII detection to every typed HAR field: PII detection
+still covers its documented URLs and body text, and body redaction still requires
+an appropriate pattern. Review the selected policy before sharing captures.

@@ -9,8 +9,14 @@ use std::sync::Arc;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use bytes::Bytes;
 use clap::ValueEnum;
-use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Request, Response, StatusCode};
+use http_body_util::Full;
+use hyper::body::Incoming;
+use hyper::service::service_fn;
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server::conn::auto::Builder as ConnectionBuilder;
+use hyper_util::server::graceful::{GracefulShutdown, Watcher};
+type Body = Full<Bytes>;
+use hyper::{Request, Response, StatusCode};
 use rusqlite::{Connection, OpenFlags};
 use tokio::sync::oneshot;
 use tokio_rustls::TlsAcceptor;
@@ -136,77 +142,78 @@ async fn run_plain_server(
     state: Arc<ServeState>,
     shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<()> {
-    let make_svc = make_service_fn(move |_| {
-        let state = state.clone();
-        async move {
-            Ok::<_, std::convert::Infallible>(service_fn(move |req| {
-                handle_request(req, state.clone())
-            }))
-        }
-    });
-
-    let server = hyper::Server::bind(&addr).serve(make_svc);
-
-    server
-        .with_graceful_shutdown(async {
-            let _ = shutdown_rx.await;
-        })
-        .await
-        .map_err(|err| HarliteError::InvalidArgs(format!("Server error: {err}")))?;
-
-    Ok(())
+    run_server(addr, state, None, shutdown_rx).await
 }
 
 async fn run_tls_server(
     addr: SocketAddr,
     state: Arc<ServeState>,
     tls_acceptor: TlsAcceptor,
+    shutdown_rx: oneshot::Receiver<()>,
+) -> Result<()> {
+    run_server(addr, state, Some(tls_acceptor), shutdown_rx).await
+}
+
+async fn run_server(
+    addr: SocketAddr,
+    state: Arc<ServeState>,
+    tls_acceptor: Option<TlsAcceptor>,
     mut shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|err| HarliteError::InvalidArgs(format!("Bind failed: {err}")))?;
-
+    let graceful = GracefulShutdown::new();
     loop {
         tokio::select! {
-            _ = &mut shutdown_rx => {
-                break;
-            }
+            _ = &mut shutdown_rx => break,
             incoming = listener.accept() => {
                 let (stream, _) = match incoming {
                     Ok(v) => v,
-                    Err(err) => {
-                        eprintln!("Accept failed: {err}");
-                        continue;
-                    }
+                    Err(err) => { eprintln!("Accept failed: {err}"); continue; }
                 };
-                let tls_acceptor = tls_acceptor.clone();
                 let state = state.clone();
+                let tls_acceptor = tls_acceptor.clone();
+                let watcher = graceful.watcher();
                 tokio::spawn(async move {
-                    let tls_stream = match tls_acceptor.accept(stream).await {
-                        Ok(v) => v,
-                        Err(err) => {
-                            eprintln!("TLS handshake failed: {err}");
-                            return;
+                    if let Some(acceptor) = tls_acceptor {
+                        match tokio::time::timeout(std::time::Duration::from_secs(10), acceptor.accept(stream)).await {
+                            Ok(Ok(stream)) => serve_connection(stream, state, watcher).await,
+                            Ok(Err(err)) => eprintln!("TLS handshake failed: {err}"),
+                            Err(_) => eprintln!("TLS handshake timed out"),
                         }
-                    };
-                    let service = service_fn(move |req| handle_request(req, state.clone()));
-                    if let Err(err) = hyper::server::conn::Http::new()
-                        .serve_connection(tls_stream, service)
-                        .await
-                    {
-                        eprintln!("Connection error: {err}");
+                    } else {
+                        serve_connection(stream, state, watcher).await;
                     }
                 });
             }
         }
     }
-
+    drop(listener);
+    if tokio::time::timeout(std::time::Duration::from_secs(10), graceful.shutdown())
+        .await
+        .is_err()
+    {
+        eprintln!("Timed out waiting for connections to close");
+    }
     Ok(())
 }
 
+async fn serve_connection<T>(stream: T, state: Arc<ServeState>, watcher: Watcher)
+where
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let service = service_fn(move |req| handle_request(req, state.clone()));
+    let connection = ConnectionBuilder::new(TokioExecutor::new())
+        .serve_connection_with_upgrades(TokioIo::new(stream), service)
+        .into_owned();
+    if let Err(err) = watcher.watch(connection).await {
+        eprintln!("Connection error: {err}");
+    }
+}
+
 async fn handle_request(
-    req: Request<Body>,
+    req: Request<Incoming>,
     state: Arc<ServeState>,
 ) -> std::result::Result<Response<Body>, std::convert::Infallible> {
     let method = req.method().as_str().to_string();
@@ -676,6 +683,71 @@ mod tests {
             started_at: started_at.map(|s| s.to_string()),
             normalized: normalize_url(url),
         }
+    }
+
+    #[tokio::test]
+    async fn upgraded_server_serves_http1_and_http2() {
+        use std::sync::Arc;
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = socket.local_addr().unwrap();
+        drop(socket);
+        let mut response = entry("GET", "http://review.test/data", None);
+        response.body = Bytes::from_static(b"recorded body");
+        let state = Arc::new(super::ServeState {
+            entries: vec![response],
+            match_mode: MatchMode::Strict,
+            scheme: "http".into(),
+        });
+        let (shutdown, signal) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(super::run_plain_server(addr, state, signal));
+        let mut stream = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Ok(stream) = tokio::net::TcpStream::connect(addr).await {
+                    break stream;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        stream
+            .write_all(b"GET /data HTTP/1.1\r\nHost: review.test\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut http1 = Vec::new();
+        tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut http1))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(http1.starts_with(b"HTTP/1.1 200"));
+        assert!(http1.ends_with(b"recorded body"));
+
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (mut client, connection) = h2::client::handshake(stream).await.unwrap();
+        let driver = tokio::spawn(connection);
+        let request = hyper::Request::builder()
+            .uri("http://review.test/data")
+            .header("host", "review.test")
+            .body(())
+            .unwrap();
+        let (response, _) = client.send_request(request, true).unwrap();
+        let response = tokio::time::timeout(Duration::from_secs(3), response)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.status(), hyper::StatusCode::OK);
+        let bytes = response.into_body().data().await.unwrap().unwrap();
+        assert_eq!(bytes, b"recorded body".as_slice());
+        drop(client);
+        driver.abort();
+        shutdown.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(3), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
     }
 
     #[test]

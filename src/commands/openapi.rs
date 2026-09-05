@@ -1,6 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::fs::File;
-use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
@@ -24,6 +22,10 @@ pub struct OpenApiOptions {
 }
 
 pub fn run_openapi(database: PathBuf, options: &OpenApiOptions) -> Result<()> {
+    if let Some(output) = options.output.as_deref() {
+        super::util::ensure_output_not_input(&database, output)?;
+    }
+
     let conn = Connection::open(&database)?;
     ensure_schema_upgrades(&conn)?;
 
@@ -147,22 +149,14 @@ pub fn run_openapi(database: PathBuf, options: &OpenApiOptions) -> Result<()> {
         paths,
     );
 
-    let mut writer = open_output(&output_path)?;
-    serde_json::to_writer_pretty(&mut writer, &spec)?;
-    writer.write_all(b"\n")?;
+    super::util::ensure_output_not_input(&database, &output_path)?;
+    super::util::write_json_atomic(&output_path, &spec, true, true)?;
 
     if output_path != std::path::Path::new("-") {
         println!("Exported OpenAPI schema to {}", output_path.display());
     }
 
     Ok(())
-}
-
-fn open_output(path: &Path) -> Result<Box<dyn Write>> {
-    if path == Path::new("-") {
-        return Ok(Box::new(io::stdout().lock()));
-    }
-    Ok(Box::new(BufWriter::new(File::create(path)?)))
 }
 
 fn server_from_url(url: &Url) -> Option<String> {
