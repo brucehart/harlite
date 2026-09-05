@@ -179,7 +179,10 @@ fn run_pii_har(input: PathBuf, options: &PiiOptions) -> Result<()> {
     }
 
     let mut har = crate::har::parse_har_file(&input)?;
-    let findings = scan_har(&mut har, &matchers, options);
+    let findings = scan_har(&mut har, &matchers, options)?;
+    if options.redact {
+        super::metadata::discard_har_metadata(&mut har, options.dry_run);
+    }
 
     if options.redact && !options.dry_run {
         let output = options
@@ -206,7 +209,11 @@ fn run_pii_har(input: PathBuf, options: &PiiOptions) -> Result<()> {
     write_findings(&findings, options.format)
 }
 
-fn scan_har(har: &mut Har, matchers: &PiiMatchers, options: &PiiOptions) -> Vec<PiiFinding> {
+fn scan_har(
+    har: &mut Har,
+    matchers: &PiiMatchers,
+    options: &PiiOptions,
+) -> Result<Vec<PiiFinding>> {
     let mut findings = Vec::new();
     for (index, entry) in har.log.entries.iter_mut().enumerate() {
         let entry_id = index as i64 + 1;
@@ -275,6 +282,7 @@ fn scan_har(har: &mut Har, matchers: &PiiMatchers, options: &PiiOptions) -> Vec<
 
         let response_form_urlencoded =
             is_form_urlencoded_mime(entry.response.content.mime_type.as_deref());
+        let body_encoding = super::privacy_body::encoding(&entry.response.headers);
         if let Some(text) = entry.response.content.text.as_mut() {
             let encoded = entry
                 .response
@@ -282,14 +290,14 @@ fn scan_har(har: &mut Har, matchers: &PiiMatchers, options: &PiiOptions) -> Vec<
                 .encoding
                 .as_deref()
                 .is_some_and(|encoding| encoding.eq_ignore_ascii_case("base64"));
-            let decoded = if encoded {
-                STANDARD
-                    .decode(text.as_bytes())
-                    .ok()
-                    .and_then(|bytes| String::from_utf8(bytes).ok())
+            let bytes = if encoded {
+                STANDARD.decode(text.as_bytes()).map_err(|e| {
+                    crate::error::HarliteError::InvalidHar(format!("Invalid base64 body: {e}"))
+                })?
             } else {
-                Some(text.clone())
+                text.as_bytes().to_vec()
             };
+            let decoded = super::privacy_body::decode_text(&bytes, body_encoding.as_deref())?;
             if let Some(decoded) = decoded {
                 append_findings(
                     &mut findings,
@@ -306,6 +314,9 @@ fn scan_har(har: &mut Har, matchers: &PiiMatchers, options: &PiiOptions) -> Vec<
                         &options.token,
                     ) {
                         entry.response.content.size = redacted.len() as i64;
+                        entry.response.body_size = Some(redacted.len() as i64);
+                        entry.response.content.compression = None;
+                        super::privacy_body::clear_headers(&mut entry.response.headers);
                         *text = if encoded {
                             STANDARD.encode(redacted.as_bytes())
                         } else {
@@ -316,7 +327,7 @@ fn scan_har(har: &mut Har, matchers: &PiiMatchers, options: &PiiOptions) -> Vec<
             }
         }
     }
-    findings
+    Ok(findings)
 }
 
 fn scan_and_redact_har_field(
@@ -716,7 +727,7 @@ pub fn run_pii_with_external_paths(
     let work_conn = &conn;
 
     let mut stmt = work_conn.prepare(
-        "SELECT id, url, host, path, query_string, request_body_hash, request_body_size, response_body_hash, response_body_size, response_body_hash_raw, response_body_size_raw FROM entries ORDER BY id",
+        "SELECT id, url, host, path, query_string, request_body_hash, request_body_size, response_body_hash, response_body_size, response_body_hash_raw, response_body_size_raw, request_headers, response_headers FROM entries ORDER BY id",
     )?;
 
     let rows = stmt.query_map([], |row| {
@@ -732,6 +743,8 @@ pub fn run_pii_with_external_paths(
             row.get::<_, Option<i64>>(8)?,
             row.get::<_, Option<String>>(9)?,
             row.get::<_, Option<i64>>(10)?,
+            row.get::<_, Option<String>>(11)?,
+            row.get::<_, Option<String>>(12)?,
         ))
     })?;
 
@@ -766,6 +779,8 @@ pub fn run_pii_with_external_paths(
             resp_body_size,
             resp_body_hash_raw,
             resp_body_size_raw,
+            request_headers,
+            response_headers,
         ) = row?;
 
         let mut changed = false;
@@ -803,7 +818,13 @@ pub fn run_pii_with_external_paths(
         }
 
         if let Some(hash) = req_body_hash.as_deref() {
-            if let Some(text) = load_blob_text(work_conn, hash, &mut text_cache, &external_paths)? {
+            if let Some(text) = load_blob_text(
+                work_conn,
+                hash,
+                &mut text_cache,
+                &external_paths,
+                super::privacy_body::encoding_json(request_headers.as_deref()).as_deref(),
+            )? {
                 append_findings(
                     &mut findings,
                     entry_id,
@@ -825,9 +846,19 @@ pub fn run_pii_with_external_paths(
                         write,
                         &mut redacted_cache,
                         &external_paths,
+                        super::privacy_body::encoding_json(request_headers.as_deref()).as_deref(),
                     )? {
                         new_req_body_hash = Some(redacted.new_hash);
                         new_req_body_size = Some(redacted.new_size);
+                        if write {
+                            let headers = super::privacy_body::clear_headers_json(
+                                request_headers.as_deref(),
+                            )?;
+                            work_conn.execute(
+                                "UPDATE entries SET request_headers=?1 WHERE id=?2",
+                                params![headers, entry_id],
+                            )?;
+                        }
                         changed = true;
                     }
                 }
@@ -835,7 +866,13 @@ pub fn run_pii_with_external_paths(
         }
 
         if let Some(hash) = resp_body_hash.as_deref() {
-            if let Some(text) = load_blob_text(work_conn, hash, &mut text_cache, &external_paths)? {
+            if let Some(text) = load_blob_text(
+                work_conn,
+                hash,
+                &mut text_cache,
+                &external_paths,
+                super::privacy_body::encoding_json(response_headers.as_deref()).as_deref(),
+            )? {
                 append_findings(
                     &mut findings,
                     entry_id,
@@ -857,9 +894,19 @@ pub fn run_pii_with_external_paths(
                         write,
                         &mut redacted_cache,
                         &external_paths,
+                        super::privacy_body::encoding_json(response_headers.as_deref()).as_deref(),
                     )? {
                         new_resp_body_hash = Some(redacted.new_hash.clone());
                         new_resp_body_size = Some(redacted.new_size);
+                        if write {
+                            let headers = super::privacy_body::clear_headers_json(
+                                response_headers.as_deref(),
+                            )?;
+                            work_conn.execute(
+                                "UPDATE entries SET response_headers=?1 WHERE id=?2",
+                                params![headers, entry_id],
+                            )?;
+                        }
                         new_resp_body_hash_raw = None;
                         new_resp_body_size_raw = None;
                         changed = true;
@@ -920,6 +967,9 @@ pub fn run_pii_with_external_paths(
 
     drop(update);
     drop(stmt);
+    if options.redact {
+        super::metadata::discard_database_metadata(work_conn, write)?;
+    }
     if write {
         delete_orphaned_blobs(work_conn)?;
         conn.execute_batch("COMMIT")?;
@@ -1080,26 +1130,25 @@ fn load_blob_text(
     hash: &str,
     cache: &mut HashMap<String, Option<PiiTextBlob>>,
     external_paths: &ExternalPathPolicy,
+    encoding: Option<&str>,
 ) -> Result<Option<PiiTextBlob>> {
-    if let Some(existing) = cache.get(hash) {
+    let cache_key = format!("{hash}\0{}", encoding.unwrap_or_default());
+    if let Some(existing) = cache.get(&cache_key) {
         return Ok(existing.clone());
     }
 
     let Some((content, mime_type)) = load_blob_for_pii(conn, hash, external_paths)? else {
-        cache.insert(hash.to_string(), None);
+        cache.insert(cache_key.clone(), None);
         return Ok(None);
     };
 
-    let text = match std::str::from_utf8(&content) {
-        Ok(s) => s.to_string(),
-        Err(_) => {
-            cache.insert(hash.to_string(), None);
-            return Ok(None);
-        }
+    let Some(text) = super::privacy_body::decode_text(&content, encoding)? else {
+        cache.insert(cache_key, None);
+        return Ok(None);
     };
 
     let blob = PiiTextBlob { text, mime_type };
-    cache.insert(hash.to_string(), Some(blob.clone()));
+    cache.insert(cache_key.clone(), Some(blob.clone()));
     Ok(Some(blob))
 }
 
@@ -1137,12 +1186,16 @@ fn load_blob_for_pii(
     }
 
     if content.is_empty() {
+        if size > 0 {
+            eprintln!("Warning: body {hash} is unavailable and was not inspected.");
+        }
         return Ok(None);
     }
 
     Ok(Some((content, mime_type)))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn redact_blob_cached(
     conn: &Connection,
     hash: &str,
@@ -1151,31 +1204,30 @@ fn redact_blob_cached(
     write: bool,
     cache: &mut HashMap<String, Option<PiiRedactedBlob>>,
     external_paths: &ExternalPathPolicy,
+    encoding: Option<&str>,
 ) -> Result<Option<PiiRedactedBlob>> {
-    if let Some(existing) = cache.get(hash) {
+    let cache_key = format!("{hash}\0{}", encoding.unwrap_or_default());
+    if let Some(existing) = cache.get(&cache_key) {
         return Ok(existing.clone());
     }
 
     let Some((content, mime_type)) = load_blob_for_pii(conn, hash, external_paths)? else {
-        cache.insert(hash.to_string(), None);
+        cache.insert(cache_key.clone(), None);
         return Ok(None);
     };
 
-    let text = match std::str::from_utf8(&content) {
-        Ok(s) => s,
-        Err(_) => {
-            cache.insert(hash.to_string(), None);
-            return Ok(None);
-        }
+    let Some(text) = super::privacy_body::decode_text(&content, encoding)? else {
+        cache.insert(cache_key, None);
+        return Ok(None);
     };
 
     let Some((redacted_text, _)) = redact_body_text(
-        text,
+        &text,
         is_form_urlencoded_mime(mime_type.as_deref()),
         matchers,
         token,
     ) else {
-        cache.insert(hash.to_string(), None);
+        cache.insert(cache_key.clone(), None);
         return Ok(None);
     };
 
@@ -1193,7 +1245,7 @@ fn redact_blob_cached(
         text: redacted_text,
     };
 
-    cache.insert(hash.to_string(), Some(redacted.clone()));
+    cache.insert(cache_key.clone(), Some(redacted.clone()));
     Ok(Some(redacted))
 }
 

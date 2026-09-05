@@ -4329,6 +4329,32 @@ fn test_diff_can_ignore_query_parameters_when_matching() {
 }
 
 #[test]
+fn test_redaction_accepts_new_relative_outputs() {
+    let tmp = TempDir::new().unwrap();
+    let source = tmp.path().join("source.db");
+    harlite()
+        .args(["import", "tests/fixtures/simple.har", "--bodies", "-o"])
+        .arg(&source)
+        .assert()
+        .success();
+    for output in ["redacted.db", "./redacted-dot.db", "sub/redacted.db"] {
+        fs::create_dir_all(tmp.path().join("sub")).unwrap();
+        harlite()
+            .current_dir(tmp.path())
+            .args(["redact", "source.db", "-o", output])
+            .assert()
+            .success();
+        assert!(tmp.path().join(output).is_file());
+    }
+    harlite()
+        .current_dir(tmp.path())
+        .args(["pii", "source.db", "--redact", "-o", "pii.db"])
+        .assert()
+        .success();
+    assert!(tmp.path().join("pii.db").is_file());
+}
+
+#[test]
 fn test_serve_rejects_invalid_status_before_starting_server() {
     let tmp = TempDir::new().unwrap();
     let input = tmp.path().join("invalid.har");

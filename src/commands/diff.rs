@@ -358,39 +358,28 @@ fn har_response_body_size(entry: &HarEntry) -> Option<i64> {
 }
 
 fn headers_from_list(headers: &[Header]) -> HashMap<String, String> {
-    let mut map = HashMap::new();
+    let mut values: HashMap<String, Vec<&str>> = HashMap::new();
     for header in headers {
-        map.insert(
-            header.name.trim().to_ascii_lowercase(),
-            header.value.clone(),
-        );
+        values
+            .entry(header.name.to_ascii_lowercase())
+            .or_default()
+            .push(&header.value);
     }
-    map
+    values
+        .into_iter()
+        .map(|(name, values)| {
+            let value = if values.len() == 1 {
+                values[0].to_string()
+            } else {
+                serde_json::to_string(&values).unwrap_or_default()
+            };
+            (name, value)
+        })
+        .collect()
 }
 
 fn headers_from_json(json: Option<&str>) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    let Some(json) = json else {
-        return map;
-    };
-
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
-        return map;
-    };
-
-    let serde_json::Value::Object(obj) = value else {
-        return map;
-    };
-
-    for (k, v) in obj {
-        let value_str = match v {
-            serde_json::Value::String(s) => s,
-            _ => v.to_string(),
-        };
-        map.insert(k.trim().to_ascii_lowercase(), value_str);
-    }
-
-    map
+    headers_from_list(&crate::har::headers_from_json(json))
 }
 
 fn diff_entries(
