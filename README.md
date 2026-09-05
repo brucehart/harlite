@@ -64,8 +64,8 @@ Release archives are available for Linux AMD64/ARM64, macOS AMD64/ARM64, and Win
 Each archive includes `harlite`, `README.md`, `CHANGELOG.md`, and `LICENSE`. Releases also include `SHA256SUMS` and keyless Sigstore-backed GitHub artifact attestations:
 
 ```bash
-grep 'harlite-v0.4.0-linux-amd64.tar.gz' SHA256SUMS | sha256sum --check -
-gh attestation verify harlite-v0.4.0-linux-amd64.tar.gz --repo brucehart/harlite
+grep 'harlite-v0.5.0-linux-amd64.tar.gz' SHA256SUMS | sha256sum --check -
+gh attestation verify harlite-v0.5.0-linux-amd64.tar.gz --repo brucehart/harlite
 ```
 
 ## Feature flags
