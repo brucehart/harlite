@@ -1087,6 +1087,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "indicatif",
+ "libc",
  "notify",
  "opentelemetry-proto",
  "parquet",
