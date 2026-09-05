@@ -1189,7 +1189,7 @@ pub enum Commands {
         #[arg(long)]
         concurrency: Option<usize>,
 
-        /// Rate limit in requests per second
+        /// Rate limit in requests per second (finite, 1/86400 through 1000000000)
         #[arg(long)]
         rate_limit: Option<f64>,
 

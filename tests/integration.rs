@@ -4327,3 +4327,14 @@ fn test_diff_can_ignore_query_parameters_when_matching() {
         .failure()
         .stderr(predicate::str::contains("Threshold exceeded"));
 }
+
+#[test]
+fn test_replay_invalid_rate_is_an_argument_error_before_loading_input() {
+    for rate in ["NaN", "inf", "0", "1e-300", "1e300"] {
+        harlite()
+            .args(["replay", "missing.har", "--rate-limit", rate])
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains("--rate-limit must be finite"));
+    }
+}
