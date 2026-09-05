@@ -229,15 +229,22 @@ pub fn store_blob(
 }
 
 fn headers_to_json(headers: &[Header]) -> String {
-    let map: serde_json::Map<String, serde_json::Value> = headers
-        .iter()
-        .map(|h| {
-            (
-                h.name.to_lowercase(),
-                serde_json::Value::String(h.value.clone()),
-            )
-        })
-        .collect();
+    use serde_json::Value;
+    let mut map = serde_json::Map::new();
+    for header in headers {
+        let name = header.name.to_lowercase();
+        let value = Value::String(header.value.clone());
+        match map.get_mut(&name) {
+            None => {
+                map.insert(name, value);
+            }
+            Some(Value::Array(values)) => values.push(value),
+            Some(existing) => {
+                let previous = std::mem::replace(existing, Value::Null);
+                *existing = Value::Array(vec![previous, value]);
+            }
+        }
+    }
     serde_json::to_string(&map).unwrap_or_else(|_| "{}".to_string())
 }
 

@@ -90,27 +90,7 @@ impl Default for ExportOptions {
 }
 
 fn headers_from_json(json: Option<&str>) -> Vec<Header> {
-    let Some(json) = json else {
-        return Vec::new();
-    };
-
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
-        return Vec::new();
-    };
-    let Some(obj) = value.as_object() else {
-        return Vec::new();
-    };
-
-    let mut out: Vec<Header> = obj
-        .iter()
-        .filter_map(|(k, v)| v.as_str().map(|s| (k, s)))
-        .map(|(k, v)| Header {
-            name: k.to_string(),
-            value: v.to_string(),
-        })
-        .collect();
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    out
+    crate::har::headers_from_json(json)
 }
 
 fn normalize_ms(value: Option<f64>) -> Option<f64> {

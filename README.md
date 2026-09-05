@@ -1196,3 +1196,13 @@ Contributions welcome! Please open an issue to discuss major changes before subm
 *Created by [Bruce Hart](https://bhart.org)
 
 
+
+### Repeated headers in SQLite
+
+Header JSON objects retain a string for a single field value. Repeated names,
+including `set-cookie`, are stored as an ordered array of strings. HAR export,
+request snippets, and mock serving expand these arrays back into separate header
+occurrences. Existing databases with string-only header objects remain supported.
+Header names remain normalized to lowercase; ordering between different header
+names is not retained. SQL consumers inspecting a potentially repeated name should
+handle both a string and an array (for example with SQLite JSON functions).
