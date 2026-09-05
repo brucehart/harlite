@@ -245,7 +245,7 @@ pub fn run_merge(databases: Vec<PathBuf>, options: &MergeOptions) -> Result<()> 
         let input_conn = Connection::open(&db_path)?;
         let input_columns = table_columns(&input_conn, "entries")?;
 
-        merge_blobs(&input_conn, &tx, &mut stats)?;
+        merge_blobs(&input_conn, &tx, &mut stats, &db_path)?;
 
         let imports = load_imports(&input_conn)?;
         let mut import_id_map: HashMap<i64, i64> = HashMap::new();
@@ -889,7 +889,17 @@ fn insert_entry(conn: &Connection, import_id: i64, entry: &EntryRow) -> Result<i
     Ok(conn.last_insert_rowid())
 }
 
-fn merge_blobs(conn: &Connection, output: &Connection, stats: &mut MergeStats) -> Result<()> {
+fn merge_blobs(
+    conn: &Connection,
+    output: &Connection,
+    stats: &mut MergeStats,
+    source: &Path,
+) -> Result<()> {
+    let source_root = source
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .canonicalize()?;
     if !table_exists(conn, "blobs")? {
         return Ok(());
     }
@@ -920,7 +930,23 @@ fn merge_blobs(conn: &Connection, output: &Connection, stats: &mut MergeStats) -
         let content = blob.content;
         let size = blob.size;
         let mime_type = blob.mime_type;
-        let external_path = blob.external_path;
+        let external_path = blob.external_path.map(|path| {
+            let path = PathBuf::from(path);
+            if path.is_absolute() {
+                path
+            } else {
+                source_root.join(path)
+            }
+            .to_string_lossy()
+            .into_owned()
+        });
+        if !content.is_empty()
+            && (size != content.len() as i64 || blake3::hash(&content).to_hex().as_str() != hash)
+        {
+            return Err(HarliteError::InvalidArgs(format!(
+                "Blob {hash} has inconsistent content or size"
+            )));
+        }
         let inserted = output.execute(
             "INSERT OR IGNORE INTO blobs (hash, content, size, mime_type, external_path) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
@@ -935,6 +961,14 @@ fn merge_blobs(conn: &Connection, output: &Connection, stats: &mut MergeStats) -
             stats.blobs_added += 1;
         } else {
             stats.blobs_deduped += 1;
+            // A hash identifies bytes, not a storage location. Recover a placeholder
+            // from a complete copy regardless of input order.
+            if !content.is_empty() {
+                output.execute(
+                    "UPDATE blobs SET content=?2, size=?3 WHERE hash=?1 AND length(content)=0",
+                    params![&hash, &content, size],
+                )?;
+            }
             if external_path.is_some() {
                 output.execute(
                     "UPDATE blobs SET external_path = COALESCE(external_path, ?2) WHERE hash = ?1",
@@ -1062,5 +1096,76 @@ fn print_stats(stats: &MergeStats) {
             "FTS:     {} added, {} deduped ({} total)",
             stats.fts_added, stats.fts_deduped, stats.fts_total
         );
+    }
+}
+
+#[cfg(test)]
+mod blob_merge_tests {
+    use super::*;
+
+    fn database(content: &[u8], size: i64, hash: &str, external: Option<&str>) -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO blobs(hash, content, size, external_path) VALUES (?1, ?2, ?3, ?4)",
+            params![hash, content, size, external],
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn merge_recovers_inline_body_in_either_input_order() {
+        let body = b"complete response";
+        let hash = blake3::hash(body).to_hex().to_string();
+        let placeholder = database(b"", body.len() as i64, &hash, Some("missing/body.txt"));
+        let inline = database(body, body.len() as i64, &hash, None);
+        for inputs in [[&placeholder, &inline], [&inline, &placeholder]] {
+            let output = Connection::open_in_memory().unwrap();
+            create_schema(&output).unwrap();
+            for input in inputs {
+                merge_blobs(
+                    input,
+                    &output,
+                    &mut MergeStats::default(),
+                    Path::new("source.db"),
+                )
+                .unwrap();
+            }
+            let (bytes, size, path): (Vec<u8>, i64, String) = output
+                .query_row("SELECT content,size,external_path FROM blobs", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })
+                .unwrap();
+            assert_eq!(bytes, body);
+            assert_eq!(size, body.len() as i64);
+            assert_eq!(
+                PathBuf::from(path),
+                std::env::current_dir().unwrap().join("missing/body.txt")
+            );
+        }
+    }
+
+    #[test]
+    fn merge_rejects_inconsistent_inline_body() {
+        let hash = blake3::hash(b"expected").to_hex().to_string();
+        for (body, size) in [(b"corrupt".as_slice(), 7), (b"expected".as_slice(), 99)] {
+            let input = database(body, size, &hash, None);
+            let output = Connection::open_in_memory().unwrap();
+            create_schema(&output).unwrap();
+            assert!(merge_blobs(
+                &input,
+                &output,
+                &mut MergeStats::default(),
+                Path::new("source.db")
+            )
+            .is_err());
+            assert_eq!(
+                output
+                    .query_row("SELECT COUNT(*) FROM blobs", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+        }
     }
 }
