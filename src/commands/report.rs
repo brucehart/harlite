@@ -1,7 +1,5 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -199,13 +197,6 @@ fn normalize_i64(v: Option<i64>) -> Option<i64> {
         Some(x) if x >= 0 => Some(x),
         _ => None,
     }
-}
-
-fn open_output(path: &Path) -> Result<Box<dyn Write>> {
-    if path == Path::new("-") {
-        return Ok(Box::new(io::stdout().lock()));
-    }
-    Ok(Box::new(BufWriter::new(File::create(path)?)))
 }
 
 fn default_output_for_input(input: &Path) -> PathBuf {
@@ -1287,6 +1278,10 @@ fn waterfall_html(report: &JsonReport<'_>) -> String {
 }
 
 pub fn run_report(input: PathBuf, options: &ReportOptions) -> Result<()> {
+    if let Some(output) = options.output.as_deref() {
+        super::util::ensure_output_not_input(&input, output)?;
+    }
+
     let kind = detect_input_kind(&input)?;
 
     if input == Path::new("-") && options.output.is_none() {
@@ -1476,10 +1471,9 @@ pub fn run_report(input: PathBuf, options: &ReportOptions) -> Result<()> {
         },
     };
 
+    super::util::ensure_output_not_input(&input, &output_path)?;
     let html = render_html(&report)?;
-    let mut writer = open_output(&output_path)?;
-    writer.write_all(html.as_bytes())?;
-    writer.flush()?;
+    super::util::write_bytes_atomic(&output_path, html.as_bytes(), true)?;
     Ok(())
 }
 

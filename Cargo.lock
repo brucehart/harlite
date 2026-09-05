@@ -1087,6 +1087,7 @@ dependencies = [
  "rustls",
  "rustls-pemfile",
  "rustyline",
+ "same-file",
  "serde",
  "serde_json",
  "tempfile",
