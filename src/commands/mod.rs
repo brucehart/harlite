@@ -16,6 +16,7 @@ mod openapi;
 #[cfg(feature = "otel")]
 mod otel;
 mod pii;
+mod privacy_body;
 mod prune;
 mod query;
 mod redact;
