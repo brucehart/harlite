@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 use url::Url;
 
-use crate::db::{ensure_schema_upgrades, load_blobs_by_hashes, BlobRow, EntryRow};
+use crate::db::{load_blobs_by_hashes, BlobRow, EntryRow};
 use crate::error::{HarliteError, Result};
 use crate::size;
 
@@ -24,8 +24,7 @@ pub struct OpenApiOptions {
 }
 
 pub fn run_openapi(database: PathBuf, options: &OpenApiOptions) -> Result<()> {
-    let conn = Connection::open(&database)?;
-    ensure_schema_upgrades(&conn)?;
+    let conn = super::query::open_readonly_compatible_connection(&database)?;
 
     let entries = load_entries_with_filters(&conn, &options.filters)?;
 

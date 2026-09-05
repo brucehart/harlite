@@ -3,11 +3,10 @@ use std::path::PathBuf;
 
 use chrono::SecondsFormat;
 use chrono::{DateTime, NaiveDate, Utc};
-use rusqlite::Connection;
 use serde::Serialize;
 use url::Url;
 
-use crate::db::{ensure_schema_upgrades, load_entries, EntryQuery, EntryRow};
+use crate::db::{load_entries, EntryQuery, EntryRow};
 use crate::error::{HarliteError, Result};
 
 pub struct AnalyzeOptions {
@@ -145,8 +144,7 @@ pub fn run_analyze(database: PathBuf, options: &AnalyzeOptions) -> Result<()> {
             "Analyze timing thresholds must be finite and non-negative".to_string(),
         ));
     }
-    let conn = Connection::open(&database)?;
-    ensure_schema_upgrades(&conn)?;
+    let conn = super::query::open_readonly_compatible_connection(&database)?;
 
     let from_started_at = match options.from.as_deref() {
         Some(s) => Some(parse_started_at_bound(s, false)?),

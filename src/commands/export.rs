@@ -10,7 +10,7 @@ use rusqlite::Connection;
 use url::Url;
 
 use super::entry_filter::{load_entries_with_filters, EntryFilterOptions};
-use crate::db::{ensure_schema_upgrades, load_blobs_by_hashes, load_pages_for_imports, BlobRow};
+use crate::db::{load_blobs_by_hashes, load_pages_for_imports, BlobRow};
 use crate::error::{HarliteError, Result};
 use crate::har::{
     Content, Cookie, Creator, Entry, Extensions, Har, Header, Log, Page, PageTimings, PostData,
@@ -266,8 +266,7 @@ fn default_export_output_path(database: &Path, format: ExportInputFormat) -> Pat
 }
 
 fn run_export_from_db(database: &Path, output_path: &Path, options: &ExportOptions) -> Result<()> {
-    let conn = Connection::open(database)?;
-    ensure_schema_upgrades(&conn)?;
+    let conn = super::query::open_readonly_compatible_connection(database)?;
     let external_root = if options.allow_external_paths {
         let root = options
             .external_path_root

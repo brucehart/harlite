@@ -6,14 +6,13 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use regex::Regex;
-use rusqlite::Connection;
 use serde::Serialize;
 use url::Url;
 
 use super::entry_filter::{load_entries_with_filters, EntryFilterOptions};
 use super::waterfall::WaterfallGroupBy;
 use crate::commands::util::parse_timestamp;
-use crate::db::{ensure_schema_upgrades, load_pages_for_imports, EntryRow, PageRow};
+use crate::db::{load_pages_for_imports, EntryRow, PageRow};
 use crate::error::{HarliteError, Result};
 use crate::har::{parse_har_file, Entry as HarEntry, Page as HarPage};
 use crate::size;
@@ -257,7 +256,7 @@ fn detect_input_kind(input: &Path) -> Result<InputKind> {
     }
 
     // Heuristic fallback: try SQLite, then HAR.
-    if let Ok(conn) = Connection::open(input) {
+    if let Ok(conn) = super::query::open_readonly_connection(input) {
         let has_entries: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='entries'",
@@ -1309,8 +1308,7 @@ pub fn run_report(input: PathBuf, options: &ReportOptions) -> Result<()> {
 
     let (mut entries, pages) = match kind {
         InputKind::Db => {
-            let conn = Connection::open(&input)?;
-            ensure_schema_upgrades(&conn)?;
+            let conn = super::query::open_readonly_compatible_connection(&input)?;
 
             let rows = load_entries_with_filters(&conn, &options.filters)?;
 

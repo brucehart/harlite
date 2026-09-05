@@ -4,11 +4,10 @@ use std::path::{Path, PathBuf};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use clap::ValueEnum;
-use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 use url::Url;
 
-use crate::db::{ensure_schema_upgrades, load_blobs_by_hashes, load_entries, EntryQuery, EntryRow};
+use crate::db::{load_blobs_by_hashes, load_entries, EntryQuery, EntryRow};
 use crate::error::{HarliteError, Result};
 use crate::har::{Cookie, Entry, Header};
 
@@ -97,20 +96,8 @@ fn load_database_requests(
     path: &Path,
     options: &RequestExportOptions,
 ) -> Result<Vec<RequestSnapshot>> {
-    // Upgrade legacy databases through a writable connection when possible,
-    // then keep request export itself read-only. Current-schema databases on a
-    // read-only filesystem do not need the upgrade connection.
-    if let Ok(upgrade_connection) = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    ) {
-        ensure_schema_upgrades(&upgrade_connection)?;
-    }
+    let connection = super::query::open_readonly_compatible_connection(path)?;
 
-    let connection = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
     let query = EntryQuery {
         url_contains: options.url_contains.clone(),
         statuses: options.status.clone(),

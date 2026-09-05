@@ -1,7 +1,5 @@
 use std::path::PathBuf;
 
-use rusqlite::Connection;
-
 use crate::db::SCHEMA;
 use crate::error::Result;
 
@@ -12,7 +10,7 @@ pub fn run_schema(database: Option<PathBuf>) -> Result<()> {
             println!("{}", SCHEMA);
         }
         Some(path) => {
-            let conn = Connection::open(&path)?;
+            let conn = super::query::open_readonly_connection(&path)?;
             let mut stmt = conn.prepare(
                 "SELECT sql FROM sqlite_master WHERE type IN ('table', 'index') AND sql IS NOT NULL ORDER BY type DESC, name",
             )?;
