@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::io::Write;
-use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::io::{Read, Write};
+use std::process::{Child, Command, Stdio};
+use std::sync::{mpsc, Arc};
+use std::time::{Duration, Instant};
 
 use crate::error::{HarliteError, Result};
 use crate::har::{Entry, Har};
@@ -34,6 +35,8 @@ pub struct PluginConfig {
     pub args: Vec<String>,
     pub enabled: Option<bool>,
     pub phase: Option<PluginPhase>,
+    pub timeout_secs: Option<u64>,
+    pub max_output_bytes: Option<usize>,
 }
 
 impl PluginConfig {
@@ -278,31 +281,143 @@ fn run_exporter_plugin(
     run_plugin(plugin, &request)
 }
 
+enum PluginIo {
+    Input(std::io::Result<()>),
+    Stdout(std::io::Result<Vec<u8>>),
+    Stderr(std::io::Result<Vec<u8>>),
+}
+
+fn read_plugin_output(reader: impl Read, limit: usize) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    reader.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(std::io::Error::other(format!(
+            "output exceeded {limit} bytes"
+        )));
+    }
+    Ok(bytes)
+}
+
+struct PluginProcess {
+    child: Child,
+    complete: bool,
+}
+
+impl Drop for PluginProcess {
+    fn drop(&mut self) {
+        if !self.complete {
+            #[cfg(unix)]
+            // SAFETY: the child starts in a new process group whose ID is its
+            // PID. Kill that group so descendants cannot retain the pipe ends.
+            unsafe {
+                libc::kill(-(self.child.id() as i32), libc::SIGKILL);
+            }
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
 fn run_plugin<T: Serialize, R: for<'de> Deserialize<'de>>(
     plugin: &PluginConfig,
     request: &T,
 ) -> Result<R> {
-    let payload = serde_json::to_string(request)?;
-
-    let mut cmd = Command::new(&plugin.command);
-    if !plugin.args.is_empty() {
-        cmd.args(&plugin.args);
+    let timeout = plugin.timeout_secs.unwrap_or(30);
+    let output_limit = plugin.max_output_bytes.unwrap_or(8 * 1024 * 1024);
+    if !(1..=86400).contains(&timeout) || !(1..=512 * 1024 * 1024).contains(&output_limit) {
+        return Err(HarliteError::InvalidArgs(format!(
+            "Plugin '{}' requires timeout_secs in 1..=86400 and max_output_bytes in 1..=536870912",
+            plugin.name
+        )));
     }
-    let mut child = cmd
+    let mut payload = serde_json::to_vec(request)?;
+    payload.push(b'\n');
+    let mut cmd = Command::new(&plugin.command);
+    cmd.args(&plugin.args);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|err| {
-            HarliteError::InvalidArgs(format!("Failed to spawn plugin '{}': {}", plugin.name, err))
+            HarliteError::InvalidArgs(format!("Failed to spawn plugin '{}': {err}", plugin.name))
         })?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(payload.as_bytes())?;
-        stdin.write_all(b"\n")?;
+    let mut process = PluginProcess {
+        child,
+        complete: false,
+    };
+    let mut stdin = process
+        .child
+        .stdin
+        .take()
+        .ok_or_else(|| std::io::Error::other("Missing plugin stdin"))?;
+    let stdout = process
+        .child
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::other("Missing plugin stdout"))?;
+    let stderr = process
+        .child
+        .stderr
+        .take()
+        .ok_or_else(|| std::io::Error::other("Missing plugin stderr"))?;
+    let (sender, receiver) = mpsc::channel();
+    let input_sender = sender.clone();
+    std::thread::spawn(move || {
+        let result = stdin.write_all(&payload);
+        drop(stdin);
+        let _ = input_sender.send(PluginIo::Input(result));
+    });
+    let output_sender = sender.clone();
+    std::thread::spawn(move || {
+        let _ = output_sender.send(PluginIo::Stdout(read_plugin_output(stdout, output_limit)));
+    });
+    std::thread::spawn(move || {
+        let _ = sender.send(PluginIo::Stderr(read_plugin_output(stderr, output_limit)));
+    });
+    let deadline = Instant::now() + Duration::from_secs(timeout);
+    let (mut written, mut stdout, mut stderr, mut status) = (false, None, None, None);
+    while !written || stdout.is_none() || stderr.is_none() || status.is_none() {
+        if Instant::now() >= deadline {
+            return Err(HarliteError::InvalidArgs(format!(
+                "Plugin '{}' timed out after {timeout} seconds",
+                plugin.name
+            )));
+        }
+        if status.is_none() {
+            status = process.child.try_wait()?;
+        }
+        let io_error = |stream, error| {
+            HarliteError::InvalidArgs(format!("Plugin '{}' {stream}: {error}", plugin.name))
+        };
+        match receiver.recv_timeout(Duration::from_millis(10)) {
+            Ok(PluginIo::Input(result)) => {
+                result.map_err(|e| io_error("stdin", e))?;
+                written = true;
+            }
+            Ok(PluginIo::Stdout(result)) => {
+                stdout = Some(result.map_err(|e| io_error("stdout", e))?)
+            }
+            Ok(PluginIo::Stderr(result)) => {
+                stderr = Some(result.map_err(|e| io_error("stderr", e))?)
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => (),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                std::thread::sleep(Duration::from_millis(10))
+            }
+        }
     }
-
-    let output = child.wait_with_output()?;
+    process.complete = true;
+    let output = std::process::Output {
+        status: status.ok_or_else(|| std::io::Error::other("Missing plugin exit status"))?,
+        stdout: stdout.unwrap_or_default(),
+        stderr: stderr.unwrap_or_default(),
+    };
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let detail = if stderr.is_empty() {
@@ -344,7 +459,47 @@ mod tests {
             args: Vec::new(),
             enabled,
             phase: None,
+            timeout_secs: None,
+            max_output_bytes: None,
         }
+    }
+
+    #[cfg(unix)]
+    fn shell_plugin(script: &str) -> PluginConfig {
+        let mut plugin = config(None);
+        plugin.command = "sh".into();
+        plugin.args = vec!["-c".into(), script.into()];
+        plugin.timeout_secs = Some(1);
+        plugin.max_output_bytes = Some(512 * 1024);
+        plugin
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn large_plugin_stdin_and_stderr_do_not_deadlock() {
+        let plugin =
+            shell_plugin("head -c 262144 /dev/zero >&2; cat >/dev/null; printf '{\"allow\":true}'");
+        let response: serde_json::Value = super::run_plugin(&plugin, &"x".repeat(262144)).unwrap();
+        assert_eq!(response["allow"], true);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plugin_timeout_also_closes_descendant_pipes() {
+        let plugin = shell_plugin("sleep 20 & exit 0");
+        let started = std::time::Instant::now();
+        let result = super::run_plugin::<_, serde_json::Value>(&plugin, &"input");
+        assert!(result.unwrap_err().to_string().contains("timed out"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn oversized_plugin_output_is_rejected() {
+        let mut plugin = shell_plugin("head -c 262144 /dev/zero; cat >/dev/null");
+        plugin.max_output_bytes = Some(1024);
+        let error = super::run_plugin::<_, serde_json::Value>(&plugin, &"input").unwrap_err();
+        assert!(error.to_string().contains("output exceeded 1024 bytes"));
     }
 
     #[test]

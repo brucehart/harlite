@@ -78,6 +78,9 @@ serve = ["dep:ctrlc", "dep:hyper", "dep:rustls", "dep:rustls-pemfile", "dep:toki
 watch = ["dep:ctrlc", "dep:notify"]
 parquet = ["dep:parquet"]
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3"
 assert_cmd = "2"

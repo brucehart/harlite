@@ -1076,6 +1076,7 @@ dependencies = [
  "graphql-parser",
  "hyper",
  "indicatif",
+ "libc",
  "notify",
  "opentelemetry-proto",
  "parquet",
