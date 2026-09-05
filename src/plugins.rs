@@ -486,10 +486,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn plugin_timeout_also_closes_descendant_pipes() {
-        let plugin = shell_plugin("sleep 20 & exit 0");
+        let plugin = shell_plugin("cat >/dev/null; sleep 20 & exit 0");
         let started = std::time::Instant::now();
         let result = super::run_plugin::<_, serde_json::Value>(&plugin, &"input");
-        assert!(result.unwrap_err().to_string().contains("timed out"));
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("timed out"), "{error}");
         assert!(started.elapsed() < std::time::Duration::from_secs(3));
     }
 
