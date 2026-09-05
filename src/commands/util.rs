@@ -481,7 +481,10 @@ pub fn canonicalize_path_for_compare(path: &Path) -> Result<PathBuf> {
         return Ok(fs::canonicalize(path)?);
     }
 
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     let parent_canon = fs::canonicalize(parent)?;
     let name = path
         .file_name()
