@@ -45,11 +45,15 @@ tungstenite = { version = "0.21", optional = true }
 ureq = { version = "2", features = ["json"], optional = true }
 rustyline = { version = "14", optional = true }
 parquet = { version = "57.2.0", optional = true }
-opentelemetry-proto = { version = "0.6", features = ["gen-tonic", "trace"], optional = true }
-prost = { version = "0.12", optional = true }
-tonic = { version = "0.11", optional = true }
+opentelemetry-proto = { version = "0.7", features = ["gen-tonic", "trace"], optional = true }
+prost = { version = "0.13", optional = true }
+tonic = { version = "0.12", optional = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"], optional = true }
-hyper = { version = "0.14", features = ["full"], optional = true }
+hyper = { version = "1", features = ["server", "http1", "http2"], optional = true }
+hyper-util = { version = "0.1", features = ["server-auto", "server-graceful", "tokio"], optional = true }
+http-body-util = { version = "0.1", optional = true }
+# Security floor for RUSTSEC-2026-0258 across both server and OTLP paths.
+h2 = { version = "0.4.16", optional = true }
 rustls = { version = "0.23", optional = true }
 rustls-pemfile = { version = "2", optional = true }
 tokio-rustls = { version = "0.26", optional = true }
@@ -71,10 +75,10 @@ cdp = ["dep:ctrlc", "dep:tungstenite", "dep:ureq"]
 compression = ["dep:brotli", "dep:flate2"]
 completions = ["dep:clap_complete"]
 graphql = ["dep:graphql-parser"]
-otel = ["dep:opentelemetry-proto", "dep:prost", "dep:tokio", "dep:tonic", "dep:ureq"]
+otel = ["dep:h2", "dep:opentelemetry-proto", "dep:prost", "dep:tokio", "dep:tonic", "dep:ureq"]
 repl = ["dep:rustyline"]
 replay = ["dep:ureq"]
-serve = ["dep:ctrlc", "dep:hyper", "dep:rustls", "dep:rustls-pemfile", "dep:tokio", "dep:tokio-rustls"]
+serve = ["dep:h2", "dep:hyper-util", "dep:http-body-util", "dep:ctrlc", "dep:hyper", "dep:rustls", "dep:rustls-pemfile", "dep:tokio", "dep:tokio-rustls"]
 watch = ["dep:ctrlc", "dep:notify"]
 parquet = ["dep:parquet"]
 
